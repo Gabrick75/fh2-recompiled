@@ -1,0 +1,36 @@
+# Nothing derived from the game is ever committed: its files, the code generated from default.xex,
+# and the binaries built from that code.
+
+# --- Game files ---------------------------------------------------------------
+assets/
+game_root/
+*.xex
+*.xexp
+*.iso
+*.fxobj
+*.fsb
+*.nfsp
+
+# --- Generated from the game --------------------------------------------------
+generated/
+app*/generated/
+
+# --- Build output -------------------------------------------------------------
+out/
+build/
+android/.gradle/
+android/local.properties
+android/app/build/
+android/app/.cxx/
+*.o
+*.a
+*.log
+
+# --- Tools --------------------------------------------------------------------
+__pycache__/
+*.pyc
+.vscode/
+
+# --- Third-party sources -------------------------------------------------------
+# Fetched by tools/fetch_thirdparty.py; only the files this port changed are committed (git add -f).
+sdk/thirdparty/
