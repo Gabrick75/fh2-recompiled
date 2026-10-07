@@ -19,8 +19,15 @@
 #include <fmt/format.h>
 
 #include <rex/assert.h>
+#include <rex/cvar.h>
 #include <rex/graphics/pipeline/shader/spirv_translator.h>
 #include <rex/math.h>
+
+REXCVAR_DEFINE_INT32(gpu_teste_tfetch3d, 0, "GPU",
+                     "Debug for 3D texture fetches: 0 = normal; 1 = return the coordinates "
+                     "(x, y, z, 1), which is what an identity color grading LUT returns; 2 = return "
+                     "the sum of the four sampled channels in x, y and z (zero = empty texture)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 namespace rex::graphics {
 
@@ -470,6 +477,8 @@ void SpirvShaderTranslator::ProcessVertexFetchInstruction(
 
 void SpirvShaderTranslator::ProcessTextureFetchInstruction(
     const ParsedTextureFetchInstruction& instr) {
+  // Coordinates as the shader passed them, for gpu_teste_tfetch3d.
+  spv::Id coordinates_original[3] = {spv::NoResult, spv::NoResult, spv::NoResult};
   UpdateInstructionPredication(instr.is_predicated, instr.predicate_condition);
 
   EnsureBuildPointAvailable();
@@ -972,6 +981,9 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
       uint32_t coordinate_component_index;
       rex::bit_scan_forward(coordinates_needed_components, &coordinate_component_index);
       coordinates[coordinate_component_index] = coordinates_operand;
+    }
+    for (uint32_t i = 0; i < 3; ++i) {
+      coordinates_original[i] = coordinates[i];
     }
     spv::Id texture_resolution_scaled = spv::NoResult;
     uint32_t revert_resolution_scale_axes =
@@ -2029,11 +2041,27 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
           }
         }
 
-        // Apply the exponent bias from the bits 13:18 of the fetch constant
-        // word 4.
+        // Apply the exponent bias (exp_adjust) from the bits 13:18 of the fetch
+        // constant word 3, as the DXBC translator does. It was read from word 4,
+        // where bits 13:18 are part of the LOD bias, so every texture with a
+        // non-zero LOD bias was scaled by a wrong power of two (Forza Horizon 2's
+        // color grading LUT, LOD bias word 0x003E8003, came out times 2^-12 and
+        // the whole open world was nearly black).
+        id_vector_temp_.clear();
+        id_vector_temp_.push_back(const_int_0_);
+        id_vector_temp_.push_back(
+            builder_->makeIntConstant(int((fetch_constant_word_0_index + 3) >> 2)));
+        id_vector_temp_.push_back(
+            builder_->makeIntConstant(int((fetch_constant_word_0_index + 3) & 3)));
+        spv::Id fetch_constant_word_3_signed = builder_->createUnaryOp(
+            spv::OpBitcast, type_int_,
+            builder_->createLoad(builder_->createAccessChain(spv::StorageClassUniform,
+                                                             uniform_fetch_constants_,
+                                                             id_vector_temp_),
+                                 spv::NoPrecision));
         spv::Id result_exponent_bias = builder_->createBinBuiltinCall(
             type_float_, ext_inst_glsl_std_450_, GLSLstd450Ldexp, const_float_1_,
-            builder_->createTriOp(spv::OpBitFieldSExtract, type_int_, fetch_constant_word_4_signed,
+            builder_->createTriOp(spv::OpBitFieldSExtract, type_int_, fetch_constant_word_3_signed,
                                   builder_->makeUintConstant(13), builder_->makeUintConstant(6)));
         {
           uint32_t result_remaining_components = used_result_nonzero_components;
@@ -2042,6 +2070,34 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
             result_remaining_components &= ~(UINT32_C(1) << result_component_index);
             result[result_component_index] = builder_->createNoContractionBinOp(
                 spv::OpFMul, type_float_, result[result_component_index], result_exponent_bias);
+          }
+        }
+      }
+    }
+  }
+
+  if (REXCVAR_GET(gpu_teste_tfetch3d) != 0 && instr.opcode == ucode::FetchOpcode::kTextureFetch &&
+      instr.dimension == xenos::FetchOpDimension::k3DOrStacked) {
+    if (REXCVAR_GET(gpu_teste_tfetch3d) == 1) {
+      for (uint32_t i = 0; i < 3; ++i) {
+        result[i] = coordinates_original[i];
+      }
+      result[3] = const_float_1_;
+    } else {
+      // Sum of the components the instruction uses (the color grading LUT reads x, y and z).
+      spv::Id sum = spv::NoResult;
+      for (uint32_t i = 0; i < 4; ++i) {
+        if (!(used_result_components & (1u << i)) || result[i] == spv::NoResult) {
+          continue;
+        }
+        sum = sum == spv::NoResult
+                  ? result[i]
+                  : builder_->createNoContractionBinOp(spv::OpFAdd, type_float_, sum, result[i]);
+      }
+      if (sum != spv::NoResult) {
+        for (uint32_t i = 0; i < 4; ++i) {
+          if (used_result_components & (1u << i)) {
+            result[i] = sum;
           }
         }
       }
