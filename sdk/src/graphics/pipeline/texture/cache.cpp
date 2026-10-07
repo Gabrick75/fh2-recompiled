@@ -49,6 +49,10 @@ REXCVAR_DEFINE_BOOL(gpu_3d_to_2d_texture, true, "GPU",
                     "Sample problematic 3D textures through 2D-compatible wrappers")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(gpu_teste_recarregar_3d, false, "GPU",
+                    "Debug: reload bound 3D textures from guest memory on every use")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
 REXCVAR_DEFINE_INT32(anisotropic_override, 3, "GPU",
                      "Forces anisotropic filtering for eligible textures.\n"
                      "Higher values keep textures sharper at oblique angles, but increase texture "
@@ -452,6 +456,24 @@ bool TextureCache::CommitPreparedTextureLoad(const PendingTextureLoad& pending_l
 
 void TextureCache::RequestTextures(uint32_t used_texture_mask) {
   const auto& regs = register_file();
+
+  if (REXCVAR_GET(gpu_teste_recarregar_3d)) {
+    // Debug: reload the bound 3D textures from memory on every use, as if a watch had fired.
+    auto global_lock = global_critical_region_.Acquire();
+    uint32_t bound = used_texture_mask;
+    uint32_t bound_index;
+    while (rex::bit_scan_forward(bound, &bound_index)) {
+      bound &= ~(UINT32_C(1) << bound_index);
+      const TextureBinding& binding = texture_bindings_[bound_index];
+      if (binding.texture && binding.key.dimension == xenos::DataDimension::k3D) {
+        // Also mark the guest range as written by the CPU, so the shared memory uploads it again.
+        shared_memory_.MemoryInvalidationCallback(binding.key.base_page << 12,
+                                                  binding.texture->GetGuestBaseSize(), true);
+        binding.texture->WatchCallback(global_lock, false);
+        texture_became_outdated_.store(true, std::memory_order_release);
+      }
+    }
+  }
 
   if (texture_became_outdated_.exchange(false, std::memory_order_acquire)) {
     // A texture has become outdated - make sure whether textures are outdated
