@@ -88,3 +88,8 @@
 "0x891A4A50" = {}  # lwz r11, 0x1c(r3) ; mr r3, r4
 "0x891A5988" = {}  # li r11, 0 ; clrlwi r10, r4, 0x10
 "0x891F3784" = {}  # li r11, 0 ; stw r11, 0x164(r31)
+
+# --- Second pass of tools/ponteiros_orfaos.py: addresses built in the code ------------------------
+# Left out: 0x890A0420 and 0x890A1CB4 (catch block and SEH filter, only in the exception tables at
+# 0x8908FBxx) and 0x891EDE1C (a run of lbz from r30 that looks like data).
+"0x890CE550" = {}  # comparator: lhz r11, 0(r3) ; lhz r10, 0(r4) ; subf r3, r10, r11 ; blr
