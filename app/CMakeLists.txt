@@ -17,6 +17,8 @@ set(FH2_SOURCES
     src/fh2_teste_entrada.cpp
     # PNG captures of the game image every N seconds (cvar fh2_captura_cada_s).
     src/fh2_captura.cpp
+    # Guards on game functions (null checks the console never needed).
+    src/fh2_correcoes.cpp
 )
 
 if(ANDROID)

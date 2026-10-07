@@ -14,11 +14,13 @@ set -e
 RAIZ=$(cd "$(dirname "$0")/.." && pwd)
 BUILD=${BUILD:-$RAIZ/app/out/linux}
 RUN=$RAIZ/app/out/run
-mkdir -p "$RUN/user"
+# USUARIO picks another user data folder (saves, cache partition), e.g. a fresh profile for a test.
+USER_DIR=${USUARIO:-$RUN/user}
+mkdir -p "$USER_DIR"
 export LD_LIBRARY_PATH=$RAIZ/sdk/out/linux-amd64:$BUILD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 cd "$RUN"
 rm -f fh2.log
-CMD=("$BUILD/fh2" --game_data_root="$RAIZ/assets/game_root" --user_data_root="$RUN/user"
+CMD=("$BUILD/fh2" --game_data_root="$RAIZ/assets/game_root" --user_data_root="$USER_DIR"
      --log_file="$RUN/fh2.log" --gpu_plugin=xenos --mnk_mode=true
      --gpu_allow_invalid_fetch_constants=true --log_max_file_size_mb=200 "$@")
 if [ -n "${SEGUNDOS:-}" ]; then
