@@ -40,6 +40,157 @@
 "0x82CBFCC8" = { size = 0x8 }
 "0x82CBFCD0" = { size = 0x14 }  # slwi/add/stfs/stw; blr
 
+# --- Code pointers in the data that land in no function (tools/ponteiros_orfaos.py) -----------
+#
+# Found after the first boot stopped with "Call to invalid or unregistered function at 0x83243750",
+# an entry of the static initializer table (0x833036xx). Every aligned word in the data that points
+# into the code was compared with the function starts, and the ones that fall in a gap (no function
+# covers them) right after a b / blr / bctr are declared here: static initializers and atexit thunks,
+# adjustor and vcall thunks and small methods reached from vtables. Left out: the import thunks
+# (0x832F0000+, the loader patches them), 0x8303FDFC (starts with an invalid word), and targets inside
+# a function (switch case labels and catch blocks that run in their parent frame).
+"0x824FDEE8" = {}  # lwz r12, 0(r3) ; lwz r11, 0x3ec(r12)
+"0x824FDEF8" = {}  # lwz r12, 0(r3) ; lwz r11, 0x278(r12)
+"0x824FDF08" = {}  # lwz r12, 0(r3) ; lwz r11, 0xf8(r12)
+"0x824FDF18" = {}  # lwz r12, 0(r3) ; lwz r11, 0x3f0(r12)
+"0x824FDF28" = {}  # lwz r12, 0(r3) ; lwz r11, 0x27c(r12)
+"0x824FDF38" = {}  # lwz r12, 0(r3) ; lwz r11, 0xfc(r12)
+"0x824FDF48" = {}  # lwz r12, 0(r3) ; lwz r11, 0x3f4(r12)
+"0x824FDF58" = {}  # lwz r12, 0(r3) ; lwz r11, 0x280(r12)
+"0x824FDF68" = {}  # lwz r12, 0(r3) ; lwz r11, 0x414(r12)
+"0x824FDF78" = {}  # lwz r12, 0(r3) ; lwz r11, 0x3e8(r12)
+"0x824FDF88" = {}  # lwz r12, 0(r3) ; lwz r11, 0x100(r12)
+"0x824FDFB0" = {}  # lwz r12, 0(r3) ; lwz r11, 0x418(r12)
+"0x82B3A508" = {}  # mr r3, r4 ; b 0x82be2c50
+"0x82B3A5C8" = {}  # b 0x82be4ee8 ; ???
+"0x82B3A640" = {}  # b 0x832f0824 ; ???
+"0x82B43C50" = {}  # lwz r11, 4(r3) ; mr r6, r5
+"0x82B479D0" = {}  # lwz r11, 4(r3) ; mr r6, r5
+"0x82B4DA78" = {}  # lfs f0, -4(r3) ; lis r11, -0x7e00
+"0x82B5A830" = {}  # addic. r11, r3, 0x1c ; beq 0x82b5a854
+"0x82BF57B4" = {}  # li r11, 0 ; stw r11, 0x164(r31)
+"0x82C1A0B8" = {}  # addi r3, r3, -0x18 ; b 0x82c19c98
+"0x82C1A0C0" = {}  # addi r3, r3, -0x18 ; b 0x82c19c70
+"0x82C1A0C8" = {}  # addi r3, r3, -4 ; b 0x82c19d10
+"0x82C1A390" = {}  # 822C5944, 822C5B24  ld r11, 0xe8(r3) ; cmpldi cr6, r11, 0
+"0x82C1C4F8" = {}  # addi r3, r3, -0x10 ; b 0x82c1c478
+"0x82C1C500" = {}  # addi r3, r3, -0xc ; b 0x82c1c4a0
+"0x82C1C508" = {}  # addi r3, r3, -0x10 ; b 0x82c1c4a0
+"0x82C1CC10" = {}  # addi r3, r3, -0x10 ; b 0x82c1cbb8
+"0x82C1CC18" = {}  # addi r3, r3, -0xc ; b 0x82c1cb90
+"0x82C1CC20" = {}  # addi r3, r3, -0x10 ; b 0x82c1cb90
+"0x82C2E0F8" = {}  # 820ECA54, 820EE814  addi r11, r3, 0x4c ; mfmsr r9
+"0x82C30AB0" = {}  # addi r3, r3, -0x10 ; b 0x82c30a58
+"0x82C30AB8" = {}  # addi r3, r3, -0xc ; b 0x82c30a30
+"0x82C30AC0" = {}  # addi r3, r3, -0x10 ; b 0x82c30a30
+"0x82F445A8" = {}  # lwz r11, 0(r3) ; lwz r11, 0x34(r11)
+"0x8300E008" = {}  # lis r10, -0x7cc0 ; lwz r6, 4(r3)
+"0x8300E028" = {}  # stw r4, 0x248(r3) ; stw r5, 0x24c(r3)
+"0x830387E0" = {}  # li r5, 1 ; b 0x83033468
+"0x8303EE88" = {}  # lis r11, 0 ; ori r11, r11, 0x80a0
+"0x83139BD0" = {}  # lis r11, -0x7dd9 ; addi r3, r11, -0x40c8
+"0x831980D8" = {}  # 8229E6C8, 8229E870  addi r3, r3, -4 ; b 0x8319e420
+"0x831980E0" = {}  # 8229E6B4, 8229E85C  addi r3, r3, -4 ; b 0x83197fe0
+"0x831980E8" = {}  # 8229E6D4, 8229E87C  addi r3, r3, -4 ; b 0x83197ff8
+"0x831980F0" = {}  # 8229E6C0, 8229E868  addi r3, r3, -4 ; b 0x83197fe8
+"0x831980F8" = {}  # addi r3, r3, -4 ; b 0x831981f8
+"0x83198108" = {}  # 8229E6D0, 8229E878  addi r3, r3, -4 ; b 0x83197ff0
+"0x83198110" = {}  # 8229E6F0, 8229E898  addi r3, r3, -4 ; b 0x83198008
+"0x83198118" = {}  # 8229E71C, 8229E8C4  lwz r11, 0x4c(r3) ; lwz r10, 0xa8(r3)
+"0x83198170" = {}  # 8229E6B0, 8229E858  addi r3, r3, -4 ; b 0x83197030
+"0x8319D218" = {}  # addi r3, r3, -4 ; b 0x8319d388
+"0x8319D228" = {}  # 8229E9F8            addi r3, r3, -4 ; b 0x8319d1f8
+"0x8319D230" = {}  # 8229E9F0            addi r3, r3, -4 ; b 0x8319d1e8
+"0x8319D238" = {}  # lwz r8, 0xb8(r3) ; mr r9, r3
+"0x8319E448" = {}  # 8229E6F8, 8229E8A0  addi r3, r3, -4 ; b 0x83198018
+"0x8319E450" = {}  # 8229E6B8, 8229E860  addi r3, r3, -4 ; b 0x8319e410
+"0x8319E458" = {}  # 8229E6CC, 8229E874  addi r3, r3, -4 ; b 0x8319e428
+"0x8319E460" = {}  # 8229E9C0            addi r3, r3, -4 ; b 0x8319d1d0
+"0x8319E468" = {}  # 8229E6F4, 8229E89C  addi r3, r3, -4 ; b 0x83198010
+"0x8319E470" = {}  # 8229E6C4, 8229E86C  addi r3, r3, -4 ; b 0x8319e418
+"0x8319E478" = {}  # mr r11, r3 ; lwz r8, 0xa8(r3)
+"0x8319EB58" = {}  # lwz r11, 0x48(r3) ; addi r3, r11, 0x40
+"0x831A2CF8" = {}  # lhz r11, 0x28(r3) ; lwz r10, 0x34(r3)
+"0x831B0188" = {}  # 822A2A68            addi r3, r3, -4 ; b 0x831afe60
+"0x831B0198" = {}  # addi r3, r3, -4 ; b 0x831b0020
+"0x831B1858" = {}  # 822A2B2C            addi r3, r3, -4 ; b 0x83188ac0
+"0x831B1868" = {}  # 822A2B40            addi r3, r3, -4 ; b 0x831b17c0
+"0x831D5E18" = {}  # mflr r12 ; bl 0x82c010b4
+"0x831E77E0" = {}  # addi r3, r3, -4 ; b 0x831e7788
+"0x831E8E28" = {}  # 822C1F08, 822C2558  lis r11, -0x7e00 ; li r3, 0
+"0x831E91A8" = {}  # addi r3, r3, -0x1c ; b 0x831e9050
+"0x831E91B0" = {}  # addi r3, r3, -0x20 ; b 0x831e9050
+"0x831E91B8" = {}  # addi r3, r3, -0x18 ; b 0x831e9028
+"0x831E91C0" = {}  # addi r3, r3, -0x1c ; b 0x831e9028
+"0x831E91C8" = {}  # addi r3, r3, -0x20 ; b 0x831e9028
+"0x831EACF8" = {}  # 822C274C            addi r3, r3, -4 ; b 0x831eac98
+"0x831EAD00" = {}  # addi r11, r3, 0x6c ; mfmsr r9
+"0x831EAEC8" = {}  # addi r3, r3, -4 ; b 0x831eb000
+"0x83229D38" = {}  # addi r11, r3, -0x20 ; mfmsr r9
+"0x8322BBC8" = {}  # stw r3, 0(r5) ; addi r11, r3, -0x20
+"0x83237190" = {}  # addi r3, r3, -0x10 ; b 0x83236e38
+"0x83237198" = {}  # addi r3, r3, -8 ; b 0x83236ce0
+"0x832371A0" = {}  # addi r3, r3, -4 ; b 0x83236ba0
+"0x832371A8" = {}  # addi r3, r3, -4 ; b 0x83236d60
+"0x832371B0" = {}  # addi r3, r3, -8 ; b 0x82c27660
+"0x832371B8" = {}  # addi r3, r3, -8 ; b 0x83236c90
+"0x832371C0" = {}  # addi r3, r3, -8 ; b 0x83236ba0
+"0x832371C8" = {}  # addi r3, r3, -4 ; b 0x83236e60
+"0x832371D0" = {}  # addi r3, r3, -8 ; b 0x83236d60
+"0x832371D8" = {}  # addi r3, r3, -4 ; b 0x83236b78
+"0x832371E0" = {}  # addi r3, r3, -4 ; b 0x83236d38
+"0x832371E8" = {}  # addi r3, r3, -8 ; b 0x83236c68
+"0x832371F0" = {}  # addi r3, r3, -8 ; b 0x83236b78
+"0x832371F8" = {}  # addi r3, r3, -4 ; b 0x83236e38
+"0x83237200" = {}  # addi r3, r3, -8 ; b 0x83236d38
+"0x83237F30" = {}  # addi r3, r3, -4 ; b 0x83237eb0
+"0x8323AD50" = {}  # addi r3, r3, -0x10 ; b 0x8323acf8
+"0x8323AD58" = {}  # addi r3, r3, -0xc ; b 0x8323acd0
+"0x8323AD60" = {}  # addi r3, r3, -0x10 ; b 0x8323acd0
+"0x8323AD68" = {}  # 822C66E4            addi r11, r3, 0x138 ; mfmsr r9
+"0x8323ADE8" = {}  # addi r3, r3, -0xc ; b 0x8323ad68
+"0x8323ADF0" = {}  # addi r3, r3, -0x10 ; b 0x8323ad68
+"0x8323ADF8" = {}  # addi r3, r3, -0xc ; b 0x8323ad90
+"0x8323AE00" = {}  # 822C6700            addi r11, r3, 0x9c ; mfmsr r9
+"0x8323F590" = {}  # 822C5F14, 822C6E84  mr r3, r4 ; mr r4, r5
+"0x8323F5A0" = {}  # 822C5E70, 822C5F18  b 0x82be5660 ; ???
+"0x8323F5F8" = {}  # 822C5F2C, 822C6E9C  mr r3, r4 ; mr r4, r5
+"0x8323F668" = {}  # 822C5F38, 822C6EA8  mr r3, r4 ; b 0x82be5668
+"0x8323F718" = {}  # 822C5EC8, 822C6E38  mr r3, r4 ; mr r4, r5
+"0x8323F728" = {}  # 822C5ED0, 822C6E40  mr r3, r4 ; mr r4, r5
+"0x8323F7A0" = {}  # 822C5F10, 822C6E80  b 0x82be5670 ; ???
+"0x8323F7E0" = {}  # 822C5E94, 822C5F3C  mr r3, r4 ; mr r4, r5
+"0x83243750" = {}  # lis r11, -0x7cbe ; li r4, -1
+"0x83243770" = {}  # lis r11, -0x7cbe ; li r4, -1
+"0x83243780" = {}  # lis r11, -0x7cbe ; li r4, -1
+"0x83243790" = {}  # lis r11, -0x7cbe ; li r4, -1
+"0x832437A0" = {}  # lis r11, -0x7cbe ; li r4, -1
+"0x832437B0" = {}  # lis r11, -0x7e00 ; lis r10, -0x7cbe
+"0x83250C50" = {}  # lis r11, -0x7cbc ; li r4, -1
+"0x83250C70" = {}  # lis r11, -0x7cbc ; li r4, -1
+"0x83250C80" = {}  # lis r11, -0x7cbc ; li r4, -1
+"0x83250C90" = {}  # lis r11, -0x7cbc ; li r4, -1
+"0x83250CA0" = {}  # lis r11, -0x7cbc ; li r4, -1
+"0x83250CB0" = {}  # lis r11, -0x7e00 ; lis r10, -0x7cbc
+"0x83251980" = {}  # lis r11, -0x7cbc ; li r4, -1
+"0x832519A0" = {}  # lis r11, -0x7cbc ; li r4, -1
+"0x832519B0" = {}  # lis r11, -0x7cbc ; li r4, -1
+"0x832519C0" = {}  # lis r11, -0x7cbc ; li r4, -1
+"0x832519D0" = {}  # lis r11, -0x7cbc ; li r4, -1
+"0x832519E0" = {}  # lis r11, -0x7e00 ; lis r10, -0x7cbc
+"0x8325F900" = {}  # lis r11, -0x7cbb ; li r4, -1
+"0x8325F920" = {}  # lis r11, -0x7cbb ; li r4, -1
+"0x8325F930" = {}  # lis r11, -0x7cbb ; li r4, -1
+"0x8325F940" = {}  # lis r11, -0x7cbb ; li r4, -1
+"0x8325F950" = {}  # lis r11, -0x7cbb ; li r4, -1
+"0x8325F960" = {}  # lis r11, -0x7e00 ; lis r10, -0x7cbb
+"0x8326F7C0" = {}  # lis r11, -0x7cbb ; li r4, -1
+"0x8326F7E0" = {}  # lis r11, -0x7cbb ; li r4, -1
+"0x8326F7F0" = {}  # lis r11, -0x7cbb ; li r4, -1
+"0x8326F800" = {}  # lis r11, -0x7cbb ; li r4, -1
+"0x8326F810" = {}  # lis r11, -0x7cbb ; li r4, -1
+"0x8326F820" = {}  # lis r11, -0x7e00 ; lis r10, -0x7cbb
+
 # ----------------------------------------------------------------------------
 #  NATIVE XAPI / CRT FUNCTIONS
 #
