@@ -33,6 +33,10 @@ REXCVAR_DEFINE_STRING(user_data_root, "", "Runtime", "Override user data path");
 REXCVAR_DEFINE_STRING(update_data_root, "", "Runtime", "Override update data path");
 REXCVAR_DEFINE_STRING(cache_root, "", "Runtime", "Override shader cache path");
 REXCVAR_DEFINE_STRING(metadata_root, "", "Runtime", "Override metadata path");
+REXCVAR_DEFINE_BOOL(mount_cache, false, "Runtime",
+                    "Mount the console's cache partition (cache:) on a writable folder in the user "
+                    "data root. Off: cache: paths fail with \"device not found\", which most games "
+                    "accept; some (Forza Horizon 2 replay_stream) need the partition to exist");
 
 namespace rex {
 
@@ -362,9 +366,27 @@ bool Runtime::SetupVfs() {
     REXSYS_DEBUG("  Registered NullDevice for \\Device\\Harddisk0\\{{Partition0,Cache0,Cache1}}");
   }
 
-  // NOTE: Do NOT register a device for cache: paths
-  // Games handle "device not found" gracefully but don't handle actual device
-  // errors (like NAME_COLLISION) well. Let cache: fail cleanly.
+  // NOTE: By default no device is registered for cache: paths. Most games
+  // handle "device not found" gracefully but don't handle actual device errors
+  // (like NAME_COLLISION) well, so cache: fails cleanly. With mount_cache the
+  // partition is a writable host folder instead: Forza Horizon 2 creates
+  // cache:\replay_stream after its first race and, when that fails, reads a null
+  // pointer forever and hangs on the loading screen.
+  if (REXCVAR_GET(mount_cache)) {
+    auto cache_root = std::filesystem::absolute(user_data_root_) / "cache_partition";
+    std::error_code ec;
+    std::filesystem::create_directories(cache_root, ec);
+    auto cache_mount = "\\CACHE";
+    auto cache_device =
+        std::make_unique<rex::filesystem::HostPathDevice>(cache_mount, cache_root, false);
+    if (cache_device->Initialize() && file_system_->RegisterDevice(std::move(cache_device))) {
+      file_system_->RegisterSymbolicLink("cache:", cache_mount);
+      REXSYS_INFO("  Mounted cache partition (cache:) at {}", cache_root.string());
+    } else {
+      REXSYS_ERROR("Runtime::SetupVfs: failed to mount the cache partition at {}",
+                   cache_root.string());
+    }
+  }
 
   return true;
 }

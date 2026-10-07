@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <rex/cvar.h>
 #include <rex/rex_app.h>
 
 #include <rex/ui/presenter.h>
@@ -23,7 +24,13 @@ class Fh2App : public rex::ReXApp {
 
   // Override virtual hooks for customization:
   // void OnPostInitLogging() override {}
-  void OnPreSetup(rex::RuntimeConfig& config) override { fh2::teste::EnvolverEntrada(config); }
+  void OnPreSetup(rex::RuntimeConfig& config) override {
+    // The game needs the console's cache partition: after the first race it creates
+    // cache:\replay_stream (rewind / replays), and without the partition it hangs on the loading
+    // screen reading a null pointer. Mounted on user/cache_partition.
+    rex::cvar::SetFlagByName("mount_cache", "true");
+    fh2::teste::EnvolverEntrada(config);
+  }
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}
   void OnPostSetup() override {
