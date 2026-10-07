@@ -1,0 +1,10 @@
+# ============================================================================
+#  XMediaFacade_default.xex (DLL at 0x88000000) - manual declarations for the codegen
+#  Included from the module's entry in fh2_manifest.toml.
+# ============================================================================
+
+[functions]
+
+# Virtual call thunk: lwz r11, 0(r3); lwz r10, 0x48(r11); mtctr r10; bctr.
+# Reached from the stub table at 0x880503B8 (0x880503D0: b here).
+"0x88055B80" = { size = 0x10 }

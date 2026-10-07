@@ -14,7 +14,7 @@ includes = ["overrides.toml"]
 guest_path = "xmediafacade_default.xex"
 file_path = "../assets/game_root/XMediaFacade_default.xex"
 out_directory_path = "generated/xmediafacade_default"
-includes = []
+includes = ["overrides_xmediafacade.toml"]
 
 [[modules]]
 guest_path = "speechfacade_default.xex"
