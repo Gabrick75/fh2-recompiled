@@ -26,7 +26,10 @@ if(EXISTS "{{ cmake_var("CMAKE_CURRENT_SOURCE_DIR") }}/{{ mod.output_dir }}/sour
     target_link_libraries({{ mod.lib_name }} PRIVATE rex::runtime)
     rexglue_apply_recomp_settings({{ mod.lib_name }}
         "{{ cmake_var("CMAKE_CURRENT_SOURCE_DIR") }}/{{ mod.output_dir }}/{{ project }}_pch.h")
-    add_dependencies({{ mod.lib_name }} {{ project }}_codegen)
+    # A cross build (Android, Switch) has no rexglue to run, so no codegen target.
+    if(TARGET {{ project }}_codegen)
+        add_dependencies({{ mod.lib_name }} {{ project }}_codegen)
+    endif()
     set_target_properties({{ mod.lib_name }} PROPERTIES
         CXX_VISIBILITY_PRESET hidden
     )
