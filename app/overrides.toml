@@ -39,3 +39,23 @@
 "0x82CBFCC0" = { size = 0x8 }
 "0x82CBFCC8" = { size = 0x8 }
 "0x82CBFCD0" = { size = 0x14 }  # slwi/add/stfs/stw; blr
+
+# ----------------------------------------------------------------------------
+#  NATIVE XAPI / CRT FUNCTIONS
+#
+#  Each game function at these addresses is replaced by the SDK's native one
+#  (sdk/src/kernel/crt). Identified by reading the disassembly.
+# ----------------------------------------------------------------------------
+[rexcrt]
+
+# XAPI fibers (block 0x831D5D28-0x831D5F5C). The guest SwitchToFiber is a "b" into a hand-written
+# context switch at 0x831D75A0 (saves r14-r31, f14-f31, v64-v127, CR, LR into the fiber, mfcr/stvx128)
+# that a recompiled program cannot run, so all five go native. Their fiber layout matches the SDK's
+# X_FIBER_CONTEXT: 0xA50 bytes, lpParameter at +0, stack fields at +4/+8/+0xC copied from KTHREAD
+# +0xD0/+0x5C/+0x60, and the current fiber in KTHREAD+0x164. GetCurrentFiber (0x831D5D28) and
+# GetFiberData only read those fields, so they stay recompiled.
+ConvertThreadToFiber = 0x831D5D38  # fiber_ptr must be 0; allocates 0xA50 bytes
+ConvertFiberToThread = 0x831D5DC8  # clears fiber_ptr and frees it
+CreateFiber = 0x831D5E18           # (stack size, start address, parameter); initial LR 0x831D7590
+DeleteFiber = 0x831D5EF8           # self-delete ends the thread (0x831D5090)
+SwitchToFiber = 0x831D5F58         # b 0x831D75A0
