@@ -624,6 +624,11 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
     shm_unlink(full_path.c_str());
     return kFileMappingHandleInvalid;
   }
+  // The descriptor is all the views need, so drop the name now: the memory is then freed when the
+  // process ends however it ends. Unlinked only in CloseFileMappingHandle, every run stopped by a
+  // signal or a crash left its ~4.5 GB guest memory file in /dev/shm, and once /dev/shm was full
+  // the next run died with SIGBUS.
+  shm_unlink(full_path.c_str());
   return static_cast<FileMappingHandle>(ret);
 #endif
 }
