@@ -19,7 +19,11 @@ set(FH2_SOURCES
     src/fh2_captura.cpp
 )
 
-if(WIN32)
+if(ANDROID)
+    # SDLActivity loads SDL_main from libmain.so (android/app/src/main/cpp/CMakeLists.txt builds this).
+    add_library(fh2 SHARED ${FH2_SOURCES})
+    set_target_properties(fh2 PROPERTIES OUTPUT_NAME main)
+elseif(WIN32)
     add_executable(fh2 WIN32 ${FH2_SOURCES})
 else()
     add_executable(fh2 ${FH2_SOURCES})

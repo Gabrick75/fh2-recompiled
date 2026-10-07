@@ -1,0 +1,72 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(fh2_android LANGUAGES C CXX)
+
+# Gradle runs ninja without -j, so it would compile as many files as there are cores (12 here). A generated file
+# of the game takes up to ~1.4 GB to compile, so cap the compile jobs to fit the build machine's RAM.
+set(FH2_ANDROID_COMPILE_JOBS 6 CACHE STRING "Parallel compile jobs of the Android build")
+set_property(GLOBAL APPEND PROPERTY JOB_POOLS fh2_compile=${FH2_ANDROID_COMPILE_JOBS} fh2_link=1)
+set(CMAKE_JOB_POOL_COMPILE fh2_compile)
+set(CMAKE_JOB_POOL_LINK fh2_link)
+
+# GPU probe for the launcher's diagnostic report (Vulkan version, features), without the game.
+add_library(fh2_diagnostics SHARED android_diagnostico.cpp)
+target_include_directories(fh2_diagnostics PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../../../../../sdk/thirdparty/vulkan-headers/include")
+target_compile_options(fh2_diagnostics PRIVATE -march=armv8-a)
+target_link_libraries(fh2_diagnostics PRIVATE vulkan)
+target_link_options(fh2_diagnostics PRIVATE "-Wl,-z,max-page-size=16384")
+
+get_filename_component(FH2_REXSDK_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../../../sdk" ABSOLUTE)
+set(REXSDK_DIR "${FH2_REXSDK_DIR}" CACHE PATH "ReXGlue SDK source tree")
+set(REXGLUE_USE_VULKAN ON CACHE BOOL "Build ReXGlue's Vulkan backend" FORCE)
+set(REXGLUE_USE_D3D12 OFF CACHE BOOL "Android uses Vulkan" FORCE)
+set(REXGLUE_ENABLE_TRACY OFF CACHE BOOL "Disable Tracy on Android" FORCE)
+set(REXGLUE_VERSION_OVERRIDE "0.10.0-dev.android" CACHE STRING "ReXGlue SDK version for Android")
+# The generated guest code is ~330 MB of C++: no debug tables for it.
+set(REXGLUE_RECOMP_DEBUG_INFO "none" CACHE STRING "Omit debug tables for the large generated guest code")
+set(SDL_SHARED ON CACHE BOOL "SDL shared library loaded by SDLActivity" FORCE)
+set(SDL_STATIC OFF CACHE BOOL "Use SDL's shared Android library" FORCE)
+
+# The game (app/) as libmain.so, plus its two DLLs (libfh2_XMediaFacade_default.so and
+# libfh2_SpeechFacade_default.so, loaded at run time by XexLoadImage through the soname) and the Xenos
+# GPU plugin (librexgpu-xenos.so). The generated sources must already exist: rexglue is a host tool and is
+# not built here (run tools/codegen or rexglue codegen on the PC first).
+add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../../../../../app" "fh2-app")
+target_sources(fh2 PRIVATE "${CMAKE_CURRENT_LIST_DIR}/android_touch.cpp"
+                           "${CMAKE_CURRENT_LIST_DIR}/android_rendimiento.cpp")
+
+if(TARGET SDL3-shared)
+    set_target_properties(SDL3-shared PROPERTIES
+        OUTPUT_NAME "SDL3"
+        DEBUG_POSTFIX ""
+        RELEASE_POSTFIX ""
+        RELWITHDEBINFO_POSTFIX ""
+        MINSIZEREL_POSTFIX ""
+    )
+endif()
+
+# 16 KB pages (Android 15+ devices).
+foreach(target fh2 fh2_XMediaFacade_default fh2_SpeechFacade_default)
+    if(TARGET ${target})
+        target_link_options(${target} PRIVATE "-Wl,-z,max-page-size=16384")
+    endif()
+endforeach()
+foreach(target fh2 rexruntime)
+    target_link_options(${target} PRIVATE
+        "LINKER:--exclude-libs,liblibavcodec.a:liblibavutil.a")
+endforeach()
+
+# ThinLTO (as nfsmw-android uses) is off for now: the guest code is about twice NFSMW's and the build machine
+# has 14 GB of RAM. Turn it on once the plain build works.
+option(FH2_ANDROID_LTO "ThinLTO on the game code and the app (Android, Release)" OFF)
+if(FH2_ANDROID_LTO AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    foreach(target fh2_recomp fh2)
+        if(TARGET ${target})
+            target_compile_options(${target} PRIVATE -flto=thin)
+        endif()
+    endforeach()
+    cmake_host_system_information(RESULT FH2_CORES QUERY NUMBER_OF_LOGICAL_CORES)
+    target_link_options(fh2 PRIVATE -flto=thin "-Wl,--thinlto-jobs=${FH2_CORES}"
+                        "-Wl,--thinlto-cache-dir=${CMAKE_BINARY_DIR}/thinlto-cache")
+    target_link_options(fh2 PRIVATE -Wl,--gc-sections -Wl,--icf=safe)
+endif()

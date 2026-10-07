@@ -12,6 +12,11 @@
 #include "fh2_captura.h"
 #include "fh2_teste_entrada.h"
 
+#if REX_PLATFORM_ANDROID
+// android/app/src/main/cpp/android_rendimiento.cpp: keeps the game threads off the slow cores.
+extern "C" void fh2_android_nucleos_grandes_aplicar();
+#endif
+
 class Fh2App : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
@@ -29,6 +34,9 @@ class Fh2App : public rex::ReXApp {
     // cache:\replay_stream (rewind / replays), and without the partition it hangs on the loading
     // screen reading a null pointer. Mounted on user/cache_partition.
     rex::cvar::SetFlagByName("mount_cache", "true");
+#if REX_PLATFORM_ANDROID
+    fh2_android_nucleos_grandes_aplicar();
+#endif
     fh2::teste::EnvolverEntrada(config);
   }
   // void OnLoadXexImage(std::string& xex_image) override {}
