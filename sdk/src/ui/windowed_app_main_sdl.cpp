@@ -60,8 +60,9 @@ int RunWindowedApp(int argc, char** argv) {
 
 #if REX_PLATFORM_ANDROID
     // Android loads the app and its SDL entry point into the same shared
-    // library. App creators register themselves through REX_DEFINE_APP.
-    auto app_creator = rex::ui::WindowedApp::GetCreator("nfsmw");
+    // library. App creators register themselves through REX_DEFINE_APP; the
+    // library carries exactly one game.
+    auto app_creator = rex::ui::WindowedApp::GetOnlyCreator();
     if (!app_creator) {
       return EXIT_FAILURE;
     }

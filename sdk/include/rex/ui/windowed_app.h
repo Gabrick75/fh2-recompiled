@@ -158,6 +158,14 @@ class WindowedApp {
     return it != creators_->end() ? it->second : nullptr;
   }
 
+  // The creator of the only registered app, or nullptr if there are none or several.
+  static Creator GetOnlyCreator() {
+    if (!creators_ || creators_->size() != 1) {
+      return nullptr;
+    }
+    return creators_->begin()->second;
+  }
+
  private:
   static std::unordered_map<std::string, Creator>* creators_;
 #endif  // XE_UI_WINDOWED_APPS_IN_LIBRARY
