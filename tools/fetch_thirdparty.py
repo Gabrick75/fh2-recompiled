@@ -79,6 +79,9 @@ def main():
                 if name == '.git':
                     continue
                 src = os.path.join(dirpath, name)
+                # On Linux a symlink into an uninitialized submodule (e.g. moltenvk's vk_video) is dangling.
+                if os.path.islink(src) and not os.path.exists(src):
+                    continue
                 dst = os.path.join(target, os.path.relpath(src, source))
                 relative_path = os.path.normpath(os.path.relpath(src, source))
                 was_existing = os.path.exists(dst)
