@@ -8,7 +8,10 @@
  *              See LICENSE file in the project root for full license text.
  */
 
+#include <cstdlib>
+#include <fstream>
 #include <limits>
+#include <vector>
 
 #include <rex/codegen/binary_view.h>
 #include <rex/logging.h>
@@ -100,6 +103,20 @@ BinaryView BinaryView::fromModule(const runtime::Module& module) {
 
   REXCODEGEN_DEBUG("BinaryView: loaded {} sections, base=0x{:08X}, size=0x{:X}",
                    view.sections_.size(), view.baseAddress_, view.imageSize_);
+
+  // Debug aid: REXGLUE_DUMP_IMAGE=<folder> writes the loaded (decrypted, decompressed) image as
+  // image_<base>.bin, with every section at its offset from the base, for disassembling by address.
+  if (const char* dir = std::getenv("REXGLUE_DUMP_IMAGE"); dir && *dir) {
+    std::vector<uint8_t> image(view.imageSize_, 0);
+    for (const auto& section : view.sections_) {
+      const uint32_t offset = section.baseAddress - view.baseAddress_;
+      std::copy(section.data, section.data + section.size, image.begin() + offset);
+    }
+    const auto path = fmt::format("{}/image_{:08X}.bin", dir, view.baseAddress_);
+    std::ofstream(path, std::ios::binary)
+        .write(reinterpret_cast<const char*>(image.data()), std::streamsize(image.size()));
+    REXCODEGEN_INFO("BinaryView: image written to {}", path);
+  }
 
   return view;
 }
