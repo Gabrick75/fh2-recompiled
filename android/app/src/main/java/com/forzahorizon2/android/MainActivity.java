@@ -40,11 +40,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Launcher: finds the game files in Internal storage/ForzaHorizon2 (or copies them there from a folder the player
+ * Launcher: finds the game files in Internal storage/jogos/ForzaHorizon2 (or copies them there from a folder the player
  * picks), checks the edition of default.xex, and starts GameActivity. Adapted from nfsmw-android's launcher.
  *
  * The game folder is the extracted disc (tools/fase1_extraer.py on the PC): default.xex, the two DLLs and media/.
- * It can also be copied straight with adb: adb push assets/game_root/. /sdcard/ForzaHorizon2/
+ * It can also be copied straight with adb: adb push assets/game_root /sdcard/jogos/ForzaHorizon2
  */
 public final class MainActivity extends Activity {
     private static final int REQUEST_GAME_FOLDER = 41;
@@ -52,7 +52,8 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_LEGACY_STORAGE = 43;
     private static final int REQUEST_SAVE_REPORT = 44;
     private static final String TREE_URI = "tree_uri";
-    static final String GAME_FOLDER_NAME = "ForzaHorizon2";
+    // Relative to the internal storage root (the "jogos" folder holds the user's games).
+    static final String GAME_FOLDER_NAME = "jogos/ForzaHorizon2";
 
     private static final int ACCENT = 0xFFE6007E;
 
@@ -358,8 +359,8 @@ public final class MainActivity extends Activity {
         worker.execute(() -> {
             File root = gameRoot();
             File parent = root.getParentFile();
-            File staging = new File(parent, "." + GAME_FOLDER_NAME + ".importing");
-            File previous = new File(parent, "." + GAME_FOLDER_NAME + ".previous");
+            File staging = new File(parent, "." + root.getName() + ".importing");
+            File previous = new File(parent, "." + root.getName() + ".previous");
             try {
                 deleteRecursively(staging);
                 deleteRecursively(previous);
