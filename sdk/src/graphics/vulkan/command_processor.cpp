@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <iterator>
 #include <mutex>
@@ -20,6 +22,8 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include <filesystem>
+#include <fstream>
 
 #include <SPIRV/GlslangToSpv.h>
 #include <glslang/Public/ShaderLang.h>
@@ -76,6 +80,52 @@ REXCVAR_DEFINE_BOOL(vulkan_dynamic_rendering, true, "GPU/Vulkan",
                     "Use VK_KHR_dynamic_rendering for Vulkan GPU emulation when supported by the "
                     "device (falls back to render passes otherwise)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(gpu_traco_quadro_s, 0.0, "GPU/Vulkan",
+                      "Debug: seconds after start at which the draws and resolves of one or more "
+                      "frames are written to the log (0 = never)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_STRING(gpu_teste_constante, "", "GPU/Vulkan",
+                      "Debug: overrides one float constant of the draws that use a given shader, to "
+                      "test what a value does. \"<shader hash>:<v|p><index>.<x|y|z|w>=<value>\", for "
+                      "example \"20A41D46F34D238E:v38.w=8\" (v = vertex bank, p = pixel bank)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_STRING(gpu_traco_despejo_extra, "", "GPU/Vulkan",
+                      "Debug: extra guest memory written with the frame trace dumps, as "
+                      "\"<address hex>:<bytes>[,...]\" (for example a texture: \"1394E000:65536\")")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_INT32(gpu_traco_quadros, 1, "GPU/Vulkan",
+                     "Debug: number of frames traced by gpu_traco_quadro_s")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
+namespace {
+// Frame trace ("traço de quadro"): which draws and resolves make a frame, to find a broken pass
+// without a graphics debugger. Started at the first swap after gpu_traco_quadro_s seconds.
+struct FrameTrace {
+  std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+  bool active = false;
+  bool done = false;
+  int frames_left = 0;
+  uint32_t draw_index = 0;
+  // Guest memory regions to write to files once the traced frame's resolves have reached guest
+  // memory (with readback_resolve, one frame later): base, bytes, and a name for the file.
+  struct Dump {
+    uint32_t base;
+    uint32_t size;
+    std::string name;
+  };
+  std::vector<Dump> dumps;
+  int dump_in_swaps = -1;
+};
+FrameTrace g_frame_trace;
+
+float RegFloat(const rex::graphics::RegisterFile& regs, uint32_t index) {
+  uint32_t bits = regs[index];
+  float value;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+}  // namespace
 
 namespace rex::graphics::vulkan {
 
@@ -2290,6 +2340,53 @@ extern "C" bool RexSwitchPerfSkip(unsigned bit);
 void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                                        uint32_t frontbuffer_height) {
   SCOPE_profile_cpu_f("gpu");
+  if (g_frame_trace.dump_in_swaps > 0 && --g_frame_trace.dump_in_swaps == 0) {
+    // Raw (tiled, big-endian) guest memory of each resolve destination of the traced frame;
+    // tools/despejo_png.py turns them into images. Needs readback_resolve for the data to be there.
+    {
+      const std::string extra = REXCVAR_GET(gpu_traco_despejo_extra);
+      size_t pos = 0;
+      while (pos < extra.size()) {
+        size_t end = extra.find(',', pos);
+        if (end == std::string::npos) end = extra.size();
+        unsigned address = 0, size = 0;
+        if (std::sscanf(extra.substr(pos, end - pos).c_str(), "%x:%u", &address, &size) == 2) {
+          g_frame_trace.dumps.push_back({address, size, fmt::format("extra_{:08X}_{}", address, size)});
+        }
+        pos = end + 1;
+      }
+    }
+    std::filesystem::path folder = "traco_despejo";
+    std::error_code ec;
+    std::filesystem::create_directories(folder, ec);
+    for (const auto& dump : g_frame_trace.dumps) {
+      const auto* data = memory_->TranslatePhysical<const char*>(dump.base);
+      if (!data) {
+        continue;
+      }
+      std::ofstream(folder / (dump.name + ".bin"), std::ios::binary).write(data, dump.size);
+    }
+    REXGPU_INFO("[traco] {} resolve destinations written to {}", g_frame_trace.dumps.size(),
+                std::filesystem::absolute(folder).string());
+  }
+  if (REXCVAR_GET(gpu_traco_quadro_s) > 0.0 && !g_frame_trace.done) {
+    if (g_frame_trace.active) {
+      REXGPU_INFO("[traco] ---- swap {:08X} {}x{} ----", frontbuffer_ptr, frontbuffer_width,
+                  frontbuffer_height);
+      if (--g_frame_trace.frames_left <= 0) {
+        g_frame_trace.active = false;
+        g_frame_trace.done = true;
+        g_frame_trace.dump_in_swaps = 2;
+      }
+    } else if (std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                             g_frame_trace.start)
+                   .count() >= REXCVAR_GET(gpu_traco_quadro_s)) {
+      g_frame_trace.active = true;
+      g_frame_trace.frames_left = std::max(1, int(REXCVAR_GET(gpu_traco_quadros)));
+      g_frame_trace.draw_index = 0;
+      REXGPU_INFO("[traco] ---- start ----");
+    }
+  }
 #if REX_PLATFORM_SWITCH
   RexSwitchPerfCount(0);
   const bool tiene_video_nativo = RexNativeVideoBeginSwap && RexNativeVideoBeginSwap();
@@ -3652,6 +3749,34 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
 
   xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
   if (edram_mode == xenos::EdramMode::kCopy) {
+    if (g_frame_trace.active) {
+      auto copy_control = regs.Get<reg::RB_COPY_CONTROL>();
+      auto dest_info = regs.Get<reg::RB_COPY_DEST_INFO>();
+      auto dest_pitch = regs.Get<reg::RB_COPY_DEST_PITCH>();
+      uint32_t src = copy_control.copy_src_select;
+      uint32_t src_info = src < 4 ? regs[reg::RB_COLOR_INFO::rt_register_indices[src]]
+                                  : regs[XE_GPU_REG_RB_DEPTH_INFO];
+      REXGPU_INFO(
+          "[traco] {:4} RESOLVE src {} (info {:08X}: fmt {} base {}) cmd {} -> {:08X} fmt {} "
+          "exp_bias {} {}x{} clear c{} d{}",
+          g_frame_trace.draw_index++, src, src_info, (src_info >> 16) & 0xF, src_info & 0xFFF,
+          uint32_t(copy_control.copy_command), regs[XE_GPU_REG_RB_COPY_DEST_BASE],
+          uint32_t(dest_info.copy_dest_format), int32_t(dest_info.copy_dest_exp_bias),
+          uint32_t(dest_pitch.copy_dest_pitch), uint32_t(dest_pitch.copy_dest_height),
+          uint32_t(copy_control.color_clear_enable), uint32_t(copy_control.depth_clear_enable));
+      // 32 bpp destination formats (k_8_8_8_8, k_2_10_10_10, k_32_FLOAT and their variants).
+      uint32_t dest_format = uint32_t(dest_info.copy_dest_format);
+      if (dest_format == 6 || dest_format == 7 || dest_format == 36 || dest_format == 54) {
+        uint32_t pitch = (uint32_t(dest_pitch.copy_dest_pitch) + 31) & ~31u;
+        uint32_t height = (uint32_t(dest_pitch.copy_dest_height) + 31) & ~31u;
+        g_frame_trace.dumps.push_back(
+            {regs[XE_GPU_REG_RB_COPY_DEST_BASE], pitch * height * 4,
+             fmt::format("{:04}_{:08X}_fmt{}_{}x{}_p{}_e{}", g_frame_trace.draw_index - 1,
+                         regs[XE_GPU_REG_RB_COPY_DEST_BASE], dest_format,
+                         uint32_t(dest_pitch.copy_dest_pitch), uint32_t(dest_pitch.copy_dest_height),
+                         pitch, uint32_t(dest_info.copy_dest_endian))});
+      }
+    }
     // Special copy handling.
     return IssueCopy();
   }
@@ -3708,6 +3833,122 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
       // This draw has no effect.
       return true;
     }
+  }
+  {
+    // gpu_teste_constante: parsed once; applied before the constant buffers are written.
+    struct ConstantOverride {
+      uint64_t hash = 0;
+      uint32_t reg = 0;
+      float value = 0;
+      bool valid = false;
+    };
+    static const ConstantOverride override_spec = [] {
+      ConstantOverride o;
+      const std::string spec = REXCVAR_GET(gpu_teste_constante);
+      unsigned long long hash = 0;
+      char bank = 0, comp = 0;
+      unsigned index = 0;
+      float value = 0;
+      if (std::sscanf(spec.c_str(), "%llx:%c%u.%c=%f", &hash, &bank, &index, &comp, &value) == 5 &&
+          (bank == 'v' || bank == 'p') && index < 256 && std::strchr("xyzw", comp)) {
+        o.hash = hash;
+        o.reg = XE_GPU_REG_SHADER_CONSTANT_000_X + (bank == 'p' ? 256 * 4 : 0) + index * 4 +
+                uint32_t(std::strchr("xyzw", comp) - "xyzw");
+        o.value = value;
+        o.valid = true;
+        REXGPU_INFO("[teste] constant override: shader {:016X} register {:04X} = {}", hash, o.reg,
+                    value);
+      }
+      return o;
+    }();
+    if (override_spec.valid &&
+        (vertex_shader->ucode_data_hash() == override_spec.hash ||
+         (pixel_shader && pixel_shader->ucode_data_hash() == override_spec.hash))) {
+      uint32_t bits;
+      std::memcpy(&bits, &override_spec.value, sizeof(bits));
+      register_file_->values[override_spec.reg] = bits;
+      current_constant_buffers_up_to_date_ &=
+          ~((UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFloatVertex) |
+            (UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFloatPixel));
+    }
+  }
+  if (g_frame_trace.active) {
+    std::string textures;
+    if (pixel_shader) {
+      uint32_t seen = 0;
+      for (const auto& binding : pixel_shader->texture_bindings()) {
+        if (seen & (1u << binding.fetch_constant)) {
+          continue;
+        }
+        seen |= 1u << binding.fetch_constant;
+        xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(binding.fetch_constant);
+        textures += fmt::format(" t{}:fmt{} {:08X} {}x{} [{:08X} {:08X} {:08X} {:08X} {:08X} {:08X}]",
+                                binding.fetch_constant, uint32_t(fetch.format),
+                                uint32_t(fetch.base_address) << 12, (fetch.dword_2 & 0x1FFF) + 1,
+                                ((fetch.dword_2 >> 13) & 0x1FFF) + 1, fetch.dword_0, fetch.dword_1,
+                                fetch.dword_2, fetch.dword_3, fetch.dword_4, fetch.dword_5);
+      }
+    }
+    std::string rts;
+    uint32_t color_mask = regs[XE_GPU_REG_RB_COLOR_MASK];
+    for (uint32_t i = 0; i < 4; ++i) {
+      if ((color_mask >> (4 * i)) & 0xF) {
+        uint32_t info = regs[reg::RB_COLOR_INFO::rt_register_indices[i]];
+        rts += fmt::format(" rt{}:fmt{} base{} expb{}", i, (info >> 16) & 0xF, info & 0xFFF,
+                           int32_t(info << 6) >> 26);
+      }
+    }
+    const uint32_t c = XE_GPU_REG_SHADER_CONSTANT_256_X;
+    if (pixel_shader && prim_type == xenos::PrimitiveType::kRectangleList) {
+      // Full-screen passes: all the pixel shader float constants that matter for post-processing.
+      // The float constants the shader reads (constant_register_map), not a fixed range.
+      std::string constants;
+      const auto& map = pixel_shader->constant_register_map();
+      for (uint32_t i = 0; i < 256; ++i) {
+        if (!(map.float_bitmap[i >> 6] & (uint64_t(1) << (i & 63)))) {
+          continue;
+        }
+        constants += fmt::format(" c{}({:.6g} {:.6g} {:.6g} {:.6g})", i, RegFloat(regs, c + 4 * i),
+                                 RegFloat(regs, c + 4 * i + 1), RegFloat(regs, c + 4 * i + 2),
+                                 RegFloat(regs, c + 4 * i + 3));
+      }
+      // The vertex shader of a full-screen pass may compute values too (exposure from a
+      // vertex texture fetch): its constants (vertex bank, c0-c255 at SHADER_CONSTANT_000) and textures.
+      std::string vs_constants;
+      const auto& vs_map = vertex_shader->constant_register_map();
+      const uint32_t vc = XE_GPU_REG_SHADER_CONSTANT_000_X;
+      for (uint32_t i = 0; i < 256; ++i) {
+        if (vs_map.float_bitmap[i >> 6] & (uint64_t(1) << (i & 63))) {
+          vs_constants += fmt::format(" c{}({:.6g} {:.6g} {:.6g} {:.6g})", i,
+                                      RegFloat(regs, vc + 4 * i), RegFloat(regs, vc + 4 * i + 1),
+                                      RegFloat(regs, vc + 4 * i + 2), RegFloat(regs, vc + 4 * i + 3));
+        }
+      }
+      for (const auto& binding : vertex_shader->texture_bindings()) {
+        xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(binding.fetch_constant);
+        vs_constants += fmt::format(" vt{}:fmt{} {:08X} {}x{}", binding.fetch_constant,
+                                    uint32_t(fetch.format), uint32_t(fetch.base_address) << 12,
+                                    (fetch.dword_2 & 0x1FFF) + 1, ((fetch.dword_2 >> 13) & 0x1FFF) + 1);
+      }
+      REXGPU_INFO("[traco] {:4} VS {:016X}{}", g_frame_trace.draw_index,
+                  vertex_shader->ucode_data_hash(), vs_constants);
+      uint32_t loop31 = regs[XE_GPU_REG_SHADER_CONSTANT_LOOP_00 + 31];
+      REXGPU_INFO("[traco] {:4} PS {:016X} i31 {:08X} (count {} start {} step {}) constants{}",
+                  g_frame_trace.draw_index, pixel_shader->ucode_data_hash(), loop31, loop31 & 0xFF,
+                  (loop31 >> 8) & 0xFF, int8_t(loop31 >> 16), constants);
+    }
+    REXGPU_INFO(
+        "[traco] {:4} DRAW prim {} n {} VS {:016X} PS {:016X} pitch {} depth {:08X} blend0 {:08X} "
+        "colorctl {:08X}{} | c0 ({:.4g} {:.4g} {:.4g} {:.4g}) c1 ({:.4g} {:.4g} {:.4g} {:.4g}) c2 "
+        "({:.4g} {:.4g} {:.4g} {:.4g}) |{}",
+        g_frame_trace.draw_index++, uint32_t(prim_type), index_count,
+        vertex_shader->ucode_data_hash(), pixel_shader ? pixel_shader->ucode_data_hash() : 0,
+        regs.Get<reg::RB_SURFACE_INFO>().surface_pitch, regs[XE_GPU_REG_RB_DEPTHCONTROL],
+        regs[XE_GPU_REG_RB_BLENDCONTROL0], regs[XE_GPU_REG_RB_COLORCONTROL], rts,
+        RegFloat(regs, c + 0), RegFloat(regs, c + 1), RegFloat(regs, c + 2), RegFloat(regs, c + 3),
+        RegFloat(regs, c + 4), RegFloat(regs, c + 5), RegFloat(regs, c + 6), RegFloat(regs, c + 7),
+        RegFloat(regs, c + 8), RegFloat(regs, c + 9), RegFloat(regs, c + 10),
+        RegFloat(regs, c + 11), textures);
   }
   bool memexport_used_pixel = pixel_shader && (pixel_shader->memexport_eM_written() != 0);
   if (memexport_used_pixel) {
