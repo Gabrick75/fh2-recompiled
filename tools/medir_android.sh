@@ -26,20 +26,20 @@ echo "antes: $(termico)"
 ROTEIRO=""
 # The phone loads slower than the PC: keep skipping until 90 s.
 for t in $(seq 6 2 90); do
-  if [ $((t % 4)) -eq 2 ]; then ROTEIRO="$ROTEIRO$t:start,"; else ROTEIRO="$ROTEIRO$t:a,"; fi
+  if [ $((t % 4)) -eq 2 ]; then ROTEIRO="$ROTEIRO$t:start;"; else ROTEIRO="$ROTEIRO$t:a;"; fi
 done
-ROTEIRO="${ROTEIRO}92:b,94:b,96-$((SEGUNDOS - 5)):rt"
+ROTEIRO="${ROTEIRO}92:b;94:b;96-$((SEGUNDOS - 5)):rt"
 
 ARGS=("--fh2_teste_botoes=$ROTEIRO" "$@")
 "$ADB" shell am force-stop "$PKG"
 "$ADB" logcat -c
-# am splits --esa on commas, so the commas inside an option are escaped; the single quotes keep the backslashes
-# away from the phone's shell.
-JUNTOS=$(IFS=,; echo "${ARGS[*]//,/\\,}")
+# am splits --esa on commas (the button script separates its steps with ';' for that reason); the single
+# quotes keep the phone's shell away from the ';'.
+JUNTOS=$(IFS=,; echo "${ARGS[*]}")
 "$ADB" shell "am start -n $PKG/.MainActivity --ez fh2.banco true --esa fh2.args '$JUNTOS'" > /dev/null
 # Waits by reading the log for SEGUNDOS seconds (timeout ends it), keeping the lines that matter.
 timeout "$SEGUNDOS" "$ADB" logcat -v time 2>/dev/null |
-  grep --line-buffered -E "fps: |Unhandled guest|Fatal signal|\[FATAL\]|\[fh2\]|\[teste\] script pad with" > "$SAIDA" || true
+  grep --line-buffered -E "fps: |MSAA|Unhandled guest|Fatal signal|\[FATAL\]|\[fh2\]|\[teste\] script pad with" > "$SAIDA" || true
 "$ADB" shell am force-stop "$PKG"
 echo "depois: $(termico)"
 grep -E "Unhandled guest|Fatal signal|\[FATAL\]" "$SAIDA" | head -3 || true

@@ -80,6 +80,13 @@ REXCVAR_DEFINE_BOOL(async_shader_compilation, true, "GPU",
                     "pipelines are being prepared.")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// MSAA cap, ported from victorgbd/NFSMW-Recompiled-Mobile (tools/parche_msaa.py).
+REXCVAR_DEFINE_BOOL(gpu_sin_msaa, false, "GPU",
+                    "Draw with one sample even when the game asks for MSAA: much less GPU work (on a "
+                    "tiled mobile GPU every render pass moves all the samples to memory), more jaggies");
+REXCVAR_DEFINE_INT32(gpu_msaa_muestras, 4, "GPU",
+                     "Cap of MSAA samples: 1, 2 or 4 (the game's own). gpu_sin_msaa overrides it");
+
 namespace rex::graphics {
 
 using namespace rex::graphics::xenos;
@@ -363,6 +370,27 @@ void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
           index);
     }
     return;
+  }
+
+  // MSAA cap: the emulator is told at most the allowed samples, the game still believes it draws with
+  // its MSAA. RB_SURFACE_INFO bits 16-17: 0 = 1x, 1 = 2x, 2 = 4x. From here on render targets, pipelines,
+  // EDRAM dumps and resolves all see the capped count, consistently; fewer samples take less EDRAM, so the
+  // addresses the game computed for its MSAA still do not overlap.
+  if (index == XE_GPU_REG_RB_SURFACE_INFO) {
+    const uint32_t asked = (value >> 16) & 3u;
+    if (asked) {
+      static bool reported = false;
+      if (!reported) {
+        reported = true;
+        REXGPU_INFO("The game draws with MSAA {}x (gpu_sin_msaa={}, gpu_msaa_muestras={})",
+                    1u << asked, REXCVAR_GET(gpu_sin_msaa), REXCVAR_GET(gpu_msaa_muestras));
+      }
+      const int32_t samples = REXCVAR_GET(gpu_sin_msaa) ? 1 : REXCVAR_GET(gpu_msaa_muestras);
+      const uint32_t cap = samples >= 4 ? 2u : samples >= 2 ? 1u : 0u;
+      if (asked > cap) {
+        value = (value & ~(UINT32_C(3) << 16)) | (cap << 16);
+      }
+    }
   }
 
   // Volatile for the WAIT_REG_MEM loop.
