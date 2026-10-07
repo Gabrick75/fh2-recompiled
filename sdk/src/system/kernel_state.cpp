@@ -924,6 +924,16 @@ std::optional<KernelState::RecompiledModuleInfo> KernelState::FindRecompiledModu
     if (info.guest_path == normalized)
       return info;
   }
+  // A loaded module keeps the VFS path of its file (\Device\Harddisk0\Partition1\x.xex), which
+  // normalizes to "device/harddisk0/partition1/x.xex", while the registry holds the path relative to
+  // the game root ("x.xex"). Without this, unloading a DLL never released its recompiled library and
+  // loading it again was refused as a duplicate (Forza Horizon 2 unloads and reloads SpeechFacade).
+  for (const auto& info : recompiled_modules_) {
+    if (normalized.size() > info.guest_path.size() &&
+        normalized.ends_with(info.guest_path) &&
+        normalized[normalized.size() - info.guest_path.size() - 1] == '/')
+      return info;
+  }
   return std::nullopt;
 }
 
