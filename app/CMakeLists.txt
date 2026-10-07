@@ -13,6 +13,8 @@ include(generated/rexglue.cmake)
 # Sources
 set(FH2_SOURCES
     src/main.cpp
+    # Tests on the PC: virtual pad driven by a button script (cvar fh2_teste_botoes).
+    src/fh2_teste_entrada.cpp
 )
 
 if(WIN32)

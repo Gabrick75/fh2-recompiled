@@ -6,6 +6,8 @@
 
 #include <rex/rex_app.h>
 
+#include "fh2_teste_entrada.h"
+
 class Fh2App : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
@@ -18,7 +20,7 @@ class Fh2App : public rex::ReXApp {
 
   // Override virtual hooks for customization:
   // void OnPostInitLogging() override {}
-  // void OnPreSetup(rex::RuntimeConfig& config) override {}
+  void OnPreSetup(rex::RuntimeConfig& config) override { fh2::teste::EnvolverEntrada(config); }
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}
   // void OnPostSetup() override {}
