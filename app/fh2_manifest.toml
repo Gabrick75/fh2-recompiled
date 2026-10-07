@@ -8,7 +8,7 @@ game_root = "../assets/game_root"
 [entrypoint]
 file_path = "../assets/game_root/default.xex"
 out_directory_path = "generated/default"
-includes = []
+includes = ["overrides.toml"]
 
 [[modules]]
 guest_path = "xmediafacade_default.xex"

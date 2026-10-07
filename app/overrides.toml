@@ -1,0 +1,41 @@
+# ============================================================================
+#  Forza Horizon 2 (Xbox 360, USA) - manual declarations for the codegen
+#
+#  Included from fh2_manifest.toml via includes = ["overrides.toml"].
+#  Included files use the flat schema (sections at the root).
+#
+#  Valid address range of default.xex: 0x82000000 - 0x83700000
+#  (image base 0x82000000 + 24,117,248 bytes of image)
+#
+#  Each entry was checked against a disassembly of the loaded image
+#  (REXGLUE_DUMP_IMAGE=<folder> rexglue codegen ...).
+# ============================================================================
+
+[functions]
+
+# --- Validate: "target not in any function" (first codegen, 10 errors) -------
+
+# Leaf functions without a prologue (no mflr / stwu), right after the tail of the previous function,
+# so discovery did not see them start. Each one ends with a "b" back into its own "li r3, 0; blr".
+"0x8305E798" = { size = 0x88 }
+"0x8305E8B0" = { size = 0x88 }
+"0x83045378" = { size = 0x90 }
+
+# Adjustor thunk (multiple inheritance): addi r3, r3, 0x6C; b 0x82E839F8.
+# Reached from the thunk at 0x82E78AF8 (addi r3, r3, -0x7C; b here).
+"0x82E83A70" = { size = 0x8 }
+
+# Table of small accessor thunks reached by tail calls ("lis r11; lwz r3; b") from 0x82C97898-0x82C97990.
+"0x82C9EFD8" = { size = 0x10 }  # lis/ori r11 = 0x17164; lwzx r3, r3, r11; blr
+"0x82C9EFF0" = { size = 0x8 }   # addi r3, r3, 0x110; b ...
+"0x82C9EFF8" = { size = 0x8 }
+"0x82C9F000" = { size = 0x8 }
+"0x82C9F008" = { size = 0x8 }
+"0x82C9F010" = { size = 0xC }   # addis/addi r3 += 0x17190; blr
+
+# Second level of the same accessors: "lwz r3, 0(r3); b ..." thunks and one leaf setter,
+# reached from the 0x82C9EFxx thunks above.
+"0x82CBFCB8" = { size = 0x8 }
+"0x82CBFCC0" = { size = 0x8 }
+"0x82CBFCC8" = { size = 0x8 }
+"0x82CBFCD0" = { size = 0x14 }  # slwi/add/stfs/stw; blr
