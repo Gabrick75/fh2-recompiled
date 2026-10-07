@@ -21,7 +21,7 @@ else()
     add_executable(fh2 ${FH2_SOURCES})
 endif()
 
-rexglue_setup_target(fh2)
+rexglue_setup_target(fh2 GPU_PLUGINS xenos)
 
 # PC build with the SDK as a subdirectory: rex_app.cpp includes imgui.h and rexruntime links imgui
 # privately, so its include path does not reach the executable (same fix as nfsmw-android). The same

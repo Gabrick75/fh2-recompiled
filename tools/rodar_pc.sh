@@ -1,0 +1,20 @@
+#!/bin/bash
+# Runs the Linux PC build of fh2 ("rodar" means "run") with the game in assets/game_root and the
+# emulated Xenos GPU. Logs and saves go to app/out/run. Extra arguments go to the game (cvars):
+#   tools/rodar_pc.sh                       play until the window is closed
+#   SEGUNDOS=120 tools/rodar_pc.sh          stop after 120 s (SIGINT), for unattended tests
+set -e
+RAIZ=$(cd "$(dirname "$0")/.." && pwd)
+BUILD=${BUILD:-$RAIZ/app/out/linux}
+RUN=$RAIZ/app/out/run
+mkdir -p "$RUN/user"
+export LD_LIBRARY_PATH=$RAIZ/sdk/out/linux-amd64:$BUILD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+cd "$RUN"
+rm -f fh2.log
+CMD=("$BUILD/fh2" --game_data_root="$RAIZ/assets/game_root" --user_data_root="$RUN/user"
+     --log_file="$RUN/fh2.log" --gpu_plugin=xenos "$@")
+if [ -n "${SEGUNDOS:-}" ]; then
+  exec timeout -s INT "$SEGUNDOS" "${CMD[@]}" > "$RUN/stdout.txt" 2>&1
+else
+  exec "${CMD[@]}"
+fi
