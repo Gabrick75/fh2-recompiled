@@ -1444,14 +1444,23 @@ bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader, uint32
         auto vgt_output_path_cntl = register_file_->Get<reg::VGT_OUTPUT_PATH_CNTL>();
         auto vgt_hos_cntl = register_file_->Get<reg::VGT_HOS_CNTL>();
         auto rb_modecontrol = register_file_->Get<reg::RB_MODECONTROL>();
-        REXGPU_ERROR(
-            "{}({}, {}, {}): Failed in backend "
-            "(major_mode={}, explicit_major={}, path_select={}, tess_mode={}, edram_mode={})",
-            opcode_name, static_cast<uint32_t>(vgt_draw_initiator.num_indices),
-            uint32_t(vgt_draw_initiator.prim_type), uint32_t(vgt_draw_initiator.source_select),
-            uint32_t(vgt_draw_initiator.major_mode), uint32_t(major_mode_explicit),
-            uint32_t(vgt_output_path_cntl.path_select), uint32_t(vgt_hos_cntl.tess_mode),
-            uint32_t(rb_modecontrol.edram_mode));
+        // A copy (resolve) that does nothing, like the resolve of another predicated tile, fails
+        // here every frame; GetResolveInfo already logs the copies that fail for a real reason.
+        if (rb_modecontrol.edram_mode == xenos::EdramMode::kCopy) {
+          REXGPU_DEBUG("{}({}, {}, {}): copy not executed", opcode_name,
+                       static_cast<uint32_t>(vgt_draw_initiator.num_indices),
+                       uint32_t(vgt_draw_initiator.prim_type),
+                       uint32_t(vgt_draw_initiator.source_select));
+        } else {
+          REXGPU_ERROR(
+              "{}({}, {}, {}): Failed in backend "
+              "(major_mode={}, explicit_major={}, path_select={}, tess_mode={}, edram_mode={})",
+              opcode_name, static_cast<uint32_t>(vgt_draw_initiator.num_indices),
+              uint32_t(vgt_draw_initiator.prim_type), uint32_t(vgt_draw_initiator.source_select),
+              uint32_t(vgt_draw_initiator.major_mode), uint32_t(major_mode_explicit),
+              uint32_t(vgt_output_path_cntl.path_select), uint32_t(vgt_hos_cntl.tess_mode),
+              uint32_t(rb_modecontrol.edram_mode));
+        }
       }
     }
   }

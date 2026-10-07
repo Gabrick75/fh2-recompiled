@@ -10,6 +10,7 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 
 #include <rex/assert.h>
@@ -826,6 +827,8 @@ bool GetResolveInfo(const RegisterFile& regs, const memory::Memory& memory,
     y1 += pa_sc_window_offset.window_y_offset;
   }
 
+  const int32_t raw_x0 = x0, raw_y0 = y0, raw_x1 = x1, raw_y1 = y1;
+
   // Apply the scissor and prevent negative origin (behind the EDRAM base).
   Scissor scissor;
   // False because clamping to the surface pitch will be done later (it will be
@@ -884,7 +887,32 @@ bool GetResolveInfo(const RegisterFile& regs, const memory::Memory& memory,
 
   assert_true(x0 < x1 && y0 < y1);
   if (x0 >= x1 || y0 >= y1) {
-    REXGPU_ERROR("Resolve region is empty");
+    if (raw_x0 < raw_x1 && raw_y0 < raw_y1) {
+      // The rectangle is fine but lies outside the scissor / window offset of the current
+      // predicated tile. Direct3D 9 issues the resolve of every tile in every tile pass (Forza
+      // Horizon 2: 512 + 208 or 256 + 256 + 208 rows at 1280x720) and the console skips the
+      // others by predication, so there is nothing to copy. Not an error.
+      REXGPU_DEBUG("Resolve [{}, {}) x [{}, {}) is outside the current tile", raw_x0, raw_x1,
+                   raw_y0, raw_y1);
+      return false;
+    }
+    // Diagnostic for the first empty resolves: the vertices in vf0 (rectangle before the scissor)
+    // and the scissor.
+    static std::atomic<int> empty_reported{0};
+    if (empty_reported.fetch_add(1, std::memory_order_relaxed) < 20) {
+      REXGPU_ERROR(
+          "Resolve region is empty: vf0 address {:08X} endian {}, vertices ({}, {}) ({}, {}) ({}, {}) "
+          "-> [{}, {}) x [{}, {}), scissor offset ({}, {}) extent ({}, {}), window offset ({}, {}) "
+          "enabled {}, surface pitch {}",
+          fetch.address * 4, uint32_t(fetch.endian), xenos::GpuSwap(vertices_guest[0], fetch.endian),
+          xenos::GpuSwap(vertices_guest[1], fetch.endian), xenos::GpuSwap(vertices_guest[2], fetch.endian),
+          xenos::GpuSwap(vertices_guest[3], fetch.endian), xenos::GpuSwap(vertices_guest[4], fetch.endian),
+          xenos::GpuSwap(vertices_guest[5], fetch.endian), raw_x0, raw_x1, raw_y0, raw_y1,
+          scissor.offset[0], scissor.offset[1], scissor.extent[0], scissor.extent[1],
+          int32_t(pa_sc_window_offset.window_x_offset), int32_t(pa_sc_window_offset.window_y_offset),
+          bool(regs.Get<reg::PA_SU_SC_MODE_CNTL>().vtx_window_offset_enable),
+          uint32_t(rb_surface_info.surface_pitch));
+    }
     return false;
   }
 
