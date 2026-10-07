@@ -76,6 +76,26 @@ public final class MainActivity extends Activity {
                 View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
         setContentView(buildScreen());
         prepareGameFolder();
+        startBenchIfAsked(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        startBenchIfAsked(intent);
+    }
+
+    // Test bench from adb, without touching the screen (adapted from NFSMW-Recompiled-Mobile):
+    //   adb shell am start -n com.forzahorizon2.android/.MainActivity --ez fh2.banco true \
+    //       --esa fh2.args "--fh2_teste_botoes=8:start,10:a"
+    // starts the game at once with the saved options; each fh2.args option replaces the one of the same
+    // name (the cvar parser rejects an option given twice).
+    private void startBenchIfAsked(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra("fh2.banco", false)) return;
+        Intent game = new Intent(this, GameActivity.class);
+        String[] extra = intent.getStringArrayExtra("fh2.args");
+        if (extra != null) game.putExtra("fh2.args", extra);
+        startActivity(game);
     }
 
     @Override

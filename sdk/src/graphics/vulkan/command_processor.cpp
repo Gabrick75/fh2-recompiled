@@ -2340,6 +2340,37 @@ extern "C" bool RexSwitchPerfSkip(unsigned bit);
 void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                                        uint32_t frontbuffer_height) {
   SCOPE_profile_cpu_f("gpu");
+  {
+    // Frames the GAME presents: one info line every 5 s with the average and the worst frame time.
+    // A phone has no overlay to read and some ROMs cap logcat; one line every 5 s costs nothing.
+    // Ported from victorgbd/NFSMW-Recompiled-Mobile (tools/parche_fps.py). Always runs on the command
+    // processor thread, so the statics need no lock.
+    using FpsClock = std::chrono::steady_clock;
+    static FpsClock::time_point fps_since{};
+    static FpsClock::time_point fps_previous{};
+    static uint32_t fps_frames = 0;
+    static double fps_worst_ms = 0.0;
+    const auto fps_now = FpsClock::now();
+    if (fps_since == FpsClock::time_point{}) {
+      fps_since = fps_now;
+    } else {
+      ++fps_frames;
+      if (fps_previous != FpsClock::time_point{}) {
+        fps_worst_ms = std::max(
+            fps_worst_ms, std::chrono::duration<double, std::milli>(fps_now - fps_previous).count());
+      }
+      const double fps_seconds = std::chrono::duration<double>(fps_now - fps_since).count();
+      if (fps_seconds >= 5.0) {
+        REXGPU_INFO("fps: {:.1f} ({} frames in {:.1f} s, {:.1f} ms average, worst {:.1f} ms)",
+                    fps_frames / fps_seconds, fps_frames, fps_seconds,
+                    fps_seconds * 1000.0 / fps_frames, fps_worst_ms);
+        fps_frames = 0;
+        fps_worst_ms = 0.0;
+        fps_since = fps_now;
+      }
+    }
+    fps_previous = fps_now;
+  }
   if (g_frame_trace.dump_in_swaps > 0 && --g_frame_trace.dump_in_swaps == 0) {
     // Raw (tiled, big-endian) guest memory of each resolve destination of the traced frame;
     // tools/despejo_png.py turns them into images. Needs readback_resolve for the data to be there.

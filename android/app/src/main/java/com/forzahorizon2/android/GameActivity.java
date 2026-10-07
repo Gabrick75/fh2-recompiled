@@ -187,6 +187,16 @@ public final class GameActivity extends SDLActivity
             args.add("--present_safe_area_x=100");
             args.add("--present_safe_area_y=100");
         }
+        // Test bench (MainActivity.startBenchIfAsked): each option replaces the one of the same name.
+        String[] extra = getIntent() != null ? getIntent().getStringArrayExtra("fh2.args") : null;
+        if (extra != null) {
+            for (String option : extra) {
+                int eq = option.indexOf('=');
+                String name = eq > 0 ? option.substring(0, eq + 1) : option;
+                args.removeIf(a -> a.equals(option) || (eq > 0 && a.startsWith(name)));
+                args.add(option);
+            }
+        }
         return args.toArray(new String[0]);
     }
 
