@@ -10,7 +10,9 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include <rex/system/util/xex2_info.h>
 #include <rex/system/xex_module.h>
@@ -103,6 +105,13 @@ class UserModule : public XModule {
   bool is_dll_module_ = false;
   uint32_t entry_point_ = 0;
   uint32_t stack_size_ = 0;
+
+  // Thunks handed out by GetProcAddressByOrdinal, by (caller module base << 32 | export address).
+  // Without it every XexGetProcedureAddress call took a new thunk, and a game that resolves the
+  // exports of a DLL again and again (Forza Horizon 2 with XMediaFacade while a video plays)
+  // used up the 64 KB thunk reserve of its module in under a second.
+  std::mutex thunk_cache_mutex_;
+  std::unordered_map<uint64_t, uint32_t> thunk_cache_;
 };
 
 }  // namespace rex::system

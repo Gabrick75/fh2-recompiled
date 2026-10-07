@@ -248,7 +248,17 @@ uint32_t UserModule::GetProcAddressByOrdinal(uint16_t ordinal, uint32_t caller_a
     return guest_addr;
   }
 
-  return dispatcher->AllocateThunk(func, caller_address);
+  const uint64_t key =
+      (uint64_t(dispatcher->FindCallerModuleBase(caller_address)) << 32) | guest_addr;
+  std::lock_guard<std::mutex> lock(thunk_cache_mutex_);
+  if (auto it = thunk_cache_.find(key); it != thunk_cache_.end()) {
+    return it->second;
+  }
+  uint32_t thunk = dispatcher->AllocateThunk(func, caller_address);
+  if (thunk) {
+    thunk_cache_.emplace(key, thunk);
+  }
+  return thunk;
 }
 
 uint32_t UserModule::GetProcAddressByName(std::string_view name) {
