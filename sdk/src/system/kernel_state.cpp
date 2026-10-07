@@ -536,8 +536,12 @@ object_ref<XModule> KernelState::GetModule(const std::string_view name, bool use
   // Search user modules under lock
   {
     auto global_lock = global_critical_region_.Acquire();
+    // The resolved path is the VFS one (\Device\Harddisk0\Partition1\...), while a module keeps
+    // the path it was loaded with (game:\...), so also match by file name, as the console does.
+    // Without it a second XexLoadImage of a loaded DLL went on to load it again and was refused.
+    auto file_name = rex::string::utf8_find_name_from_guest_path(path);
     for (auto user_module : user_modules_) {
-      if (user_module->Matches(path)) {
+      if (user_module->Matches(path) || user_module->Matches(file_name)) {
         return retain_object(user_module.get());
       }
     }
@@ -710,7 +714,8 @@ object_ref<UserModule> KernelState::LoadUserModule(const std::string_view raw_na
   {
     auto global_lock = global_critical_region_.Acquire();
     for (auto& existing_module : user_modules_) {
-      if (existing_module->path() == path) {
+      if (rex::string::utf8_equal_case(existing_module->path(), path) ||
+          existing_module->Matches(name)) {
         return existing_module;
       }
     }
