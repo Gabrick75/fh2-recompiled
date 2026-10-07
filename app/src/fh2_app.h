@@ -6,6 +6,9 @@
 
 #include <rex/rex_app.h>
 
+#include <rex/ui/presenter.h>
+
+#include "fh2_captura.h"
 #include "fh2_teste_entrada.h"
 
 class Fh2App : public rex::ReXApp {
@@ -23,11 +26,18 @@ class Fh2App : public rex::ReXApp {
   void OnPreSetup(rex::RuntimeConfig& config) override { fh2::teste::EnvolverEntrada(config); }
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}
-  // void OnPostSetup() override {}
+  void OnPostSetup() override {
+    // PNG captures of the game image for unattended tests (fh2_captura_cada_s; off by default).
+    fh2::captura::Arrancar([this]() -> rex::ui::Presenter* {
+      const auto* rt = runtime();
+      const auto* graphics = rt ? rt->graphics_system() : nullptr;
+      return graphics ? graphics->presenter() : nullptr;
+    });
+  }
   // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>
   // CreateAchievementNotificationDialog() override;
-  // void OnShutdown() override {}
+  void OnShutdown() override { fh2::captura::Parar(); }
   // void OnConfigurePaths(rex::PathConfig& paths) override {}
 };

@@ -15,6 +15,8 @@ set(FH2_SOURCES
     src/main.cpp
     # Tests on the PC: virtual pad driven by a button script (cvar fh2_teste_botoes).
     src/fh2_teste_entrada.cpp
+    # PNG captures of the game image every N seconds (cvar fh2_captura_cada_s).
+    src/fh2_captura.cpp
 )
 
 if(WIN32)
