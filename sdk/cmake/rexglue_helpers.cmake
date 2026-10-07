@@ -167,12 +167,18 @@ function(rexglue_configure_target target_name)
                 "rexglue_configure_target: unknown GPU plugin '${_plugin}' "
                 "(no target rexgpu-${_plugin} or rex::gpu-${_plugin})")
         endif()
-        add_custom_command(TARGET ${target_name} POST_BUILD
+        # A target of its own, not a POST_BUILD step of the executable: POST_BUILD only runs when
+        # the executable relinks, so a rebuilt plugin was left stale next to it.
+        add_custom_target(${target_name}_stage_gpu_${_plugin} ALL
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 $<TARGET_FILE:${_plugin_target}>
                 $<TARGET_FILE_DIR:${target_name}>
             VERBATIM
         )
+        if(TARGET rexgpu-${_plugin})
+            add_dependencies(${target_name}_stage_gpu_${_plugin} rexgpu-${_plugin})
+        endif()
+        add_dependencies(${target_name}_stage_gpu_${_plugin} ${target_name})
         unset(_plugin_target)
     endforeach()
 
