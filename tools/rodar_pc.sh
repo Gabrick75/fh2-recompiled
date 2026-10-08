@@ -23,6 +23,10 @@ rm -f fh2.log
 CMD=("$BUILD/fh2" --game_data_root="$RAIZ/assets/game_root" --user_data_root="$USER_DIR"
      --log_file="$RUN/fh2.log" --gpu_plugin=xenos --mnk_mode=true
      --gpu_allow_invalid_fetch_constants=true --log_max_file_size_mb=200 "$@")
+# Muted unless SOM=1 ("som" means "sound"): the user asked for silent test runs.
+if [ "${SOM:-0}" != 1 ]; then
+  CMD+=(--audio_mute=true)
+fi
 if [ -n "${SEGUNDOS:-}" ]; then
   exec timeout -s INT "$SEGUNDOS" "${CMD[@]}" > "$RUN/stdout.txt" 2>&1
 else
