@@ -2780,8 +2780,18 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
   present_info.pResults = nullptr;
   VkResult present_result;
   {
+    // On the family's second queue when there is one (vulkan_device.cpp): the present may wait inside for the
+    // previous frame (queueBuffer on Android), and on queue 0 that blocked the command processor.
+    const uint32_t present_queue =
+        vulkan_device_->queue_families()[paint_context_.present_queue_family].queues.size() > 1 ? 1 : 0;
+    static bool present_queue_logged = false;
+    if (!present_queue_logged) {
+      present_queue_logged = true;
+      REXLOG_INFO("VulkanPresenter: presenting on queue {} of family {}", present_queue,
+                  paint_context_.present_queue_family);
+    }
     const VulkanDevice::Queue::Acquisition queue_acquisition =
-        vulkan_device_->AcquireQueue(paint_context_.present_queue_family, 0);
+        vulkan_device_->AcquireQueue(paint_context_.present_queue_family, present_queue);
     perfil = PintadoTramo(kTrozoCandadoPresentar, perfil);
     present_result = dfn.vkQueuePresentKHR(queue_acquisition.queue(), &present_info);
     perfil = PintadoTramo(kTrozoPresentar, perfil);

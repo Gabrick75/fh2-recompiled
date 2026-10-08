@@ -449,7 +449,12 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
       queue_family.may_support_presentation = true;
 #endif
       if (queue_family.may_support_presentation) {
-        queue_family.queues.resize(std::max(size_t(1), queue_family.queues.size()));
+        // A second queue, when the family has one, for vkQueuePresentKHR (vulkan_presenter.cpp): on Android the
+        // present waits there for the previous frame's fence, and on the only queue that wait held the queue lock
+        // the command processor submits through. Adapted from NFSMW-Recompiled-Mobile
+        // (tools/parche_cola_presentar.py), where the command processor spent 81 % of its time on that lock.
+        const size_t present_queues = queue_family_properties.queueCount >= 2 ? 2 : 1;
+        queue_family.queues.resize(std::max(present_queues, queue_family.queues.size()));
         has_presentation_queue_family = true;
       }
     }
