@@ -23,6 +23,7 @@
 
 #include <rex/assert.h>
 #include <rex/cvar.h>
+#include <rex/graphics/cp_times.h>
 #include <rex/graphics/flags.h>
 #include <rex/graphics/pipeline/shader/spirv_builder.h>
 #include <rex/graphics/pipeline/shader/spirv_translator.h>
@@ -71,6 +72,11 @@ extern "C" bool RexSwitchPerfSkip(unsigned bit);
 #endif
 
 REXCVAR_DECLARE(int32_t, gpu_sonda_faixas);
+
+REXCVAR_DEFINE_INT32(gpu_teste_sem_copia_apos_s, 0, "GPU",
+                     "Test only (wrong image): from this many seconds after the first resolve (0 = never), 10 s on, "
+                     "10 s off: no resolve copies to guest memory, to measure their cost in the same scene (the "
+                     "log marks each switch)");
 
 namespace rex::graphics::vulkan {
 
@@ -1154,6 +1160,9 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
   if (!resolve_info.coordinate_info.width_div_8 || !resolve_info.height_div_8) {
     return true;
   }
+  g_cp_times.resolve_pixels.fetch_add(
+      uint64_t(resolve_info.coordinate_info.width_div_8) * resolve_info.height_div_8 * 64,
+      std::memory_order_relaxed);
   {
     // Debug probe (gpu_sonda_faixas): resolve rectangles of the 1280-wide surfaces, in play.
     static uint32_t seen = 0;
@@ -1179,9 +1188,23 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
   const VkDevice device = vulkan_device->device();
   DeferredCommandBuffer& command_buffer = command_processor_.deferred_command_buffer();
 
-  // Copying.
+  // Copying. gpu_teste_sem_copia (test only, wrong image) skips it, to measure what the copies cost.
+  static const auto first_resolve = std::chrono::steady_clock::now();
+  bool skip_copies = false;
+  if (REXCVAR_GET(gpu_teste_sem_copia_apos_s) > 0) {
+    const int64_t since = std::chrono::duration_cast<std::chrono::seconds>(
+                              std::chrono::steady_clock::now() - first_resolve)
+                              .count() -
+                          REXCVAR_GET(gpu_teste_sem_copia_apos_s);
+    skip_copies = since >= 0 && (since / 10) % 2 == 0;
+    static bool was_on = false;
+    if (skip_copies != was_on) {
+      was_on = skip_copies;
+      REXGPU_INFO("[fh2] teste sem copia: {}", skip_copies ? "LIGADO" : "desligado");
+    }
+  }
   bool copied = false;
-  if (resolve_info.copy_dest_extent_length) {
+  if (resolve_info.copy_dest_extent_length && !skip_copies) {
     draw_util::ResolveCopyShaderConstants copy_shader_constants;
     uint32_t copy_group_count_x, copy_group_count_y;
     draw_util::ResolveCopyShaderIndex copy_shader =

@@ -28,6 +28,11 @@ struct CpTimes {
   // do not touch the selected tile.
   std::atomic<uint32_t> bin_selects{0};
   std::atomic<uint32_t> predicated_skipped{0};
+  // GPU work that does not shrink with gpu_escala_render: resolve copies (dump + copy compute at 1x), and
+  // textures loaded from guest memory (untiling compute).
+  std::atomic<uint64_t> resolve_pixels{0};
+  std::atomic<uint32_t> texture_loads{0};
+  std::atomic<uint64_t> texture_load_pixels{0};
 };
 
 extern CpTimes g_cp_times;

@@ -19,8 +19,11 @@
 #include <rex/bit.h>
 #include <rex/logging.h>
 #include <rex/math.h>
+#include <unordered_set>
+
 #include <rex/cvar.h>
 #include <rex/dbg.h>
+#include <rex/graphics/cp_times.h>
 #include <rex/graphics/flags.h>
 #include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/pipeline/texture/util.h>
@@ -34,6 +37,13 @@
 #include <rex/ui/vulkan/util.h>
 
 REXCVAR_DEFINE_BOOL(non_seamless_cube_map, false, "GPU", "Use non-seamless cube map sampling");
+REXCVAR_DEFINE_INT32(gpu_teste_sem_recarga_apos_s, 0, "GPU",
+                     "Test only (wrong image): from this many seconds after the first texture load (0 = never), "
+                     "10 s on, 10 s off: no reloads of textures already loaded once, to measure their cost in the "
+                     "same scene (the log marks each switch)");
+REXCVAR_DEFINE_INT32(gpu_log_cargas_texturas, 0, "GPU",
+                     "Debug: log this many texture loads from guest memory, after the first 20000 (so the game "
+                     "is in play), with address, size and format");
 
 #include <rex/platform.h>
 #if REX_PLATFORM_SWITCH
@@ -1234,6 +1244,39 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
 #if REX_PLATFORM_SWITCH
   RexSwitchPerfCount(14);
 #endif
+  if (REXCVAR_GET(gpu_teste_sem_recarga_apos_s) > 0) {
+    static const auto first_load = std::chrono::steady_clock::now();
+    static std::unordered_set<const void*> loaded_once;
+    const bool known = !loaded_once.insert(&texture).second;
+    const int64_t since = std::chrono::duration_cast<std::chrono::seconds>(
+                              std::chrono::steady_clock::now() - first_load)
+                              .count() -
+                          REXCVAR_GET(gpu_teste_sem_recarga_apos_s);
+    const bool on = since >= 0 && (since / 10) % 2 == 0;
+    static bool was_on = false;
+    if (on != was_on) {
+      was_on = on;
+      REXGPU_INFO("[fh2] teste sem recarga: {}", on ? "LIGADO" : "desligado");
+    }
+    if (known && on) {
+      return true;
+    }
+  }
+  g_cp_times.texture_loads.fetch_add(1, std::memory_order_relaxed);
+  if (REXCVAR_GET(gpu_log_cargas_texturas) > 0) {
+    static uint32_t seen = 0;
+    static int32_t logged = 0;
+    if (++seen > 20000 && logged < REXCVAR_GET(gpu_log_cargas_texturas)) {
+      ++logged;
+      REXGPU_INFO("[cargas] textura {:08X} {}x{}x{} formato {} tiled {} mips {:08X} scaled {}",
+                  texture_key.base_page << 12, texture_key.GetWidth(), texture_key.GetHeight(),
+                  texture_key.GetDepthOrArraySize(), uint32_t(texture_key.format), uint32_t(texture_key.tiled),
+                  texture_key.mip_page << 12, uint32_t(texture_key.scaled_resolve));
+    }
+  }
+  g_cp_times.texture_load_pixels.fetch_add(
+      uint64_t(texture_key.GetWidth()) * texture_key.GetHeight() * texture_key.GetDepthOrArraySize(),
+      std::memory_order_relaxed);
 
   // Get the pipeline.
   const HostFormatPair& host_format_pair = GetHostFormatPair(texture_key);
