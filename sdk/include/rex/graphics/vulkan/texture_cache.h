@@ -94,20 +94,23 @@ class VulkanTextureCache final : public TextureCache {
     uint32_t height = 0;
     xenos::TextureFormat format = xenos::TextureFormat(0);
     VkFormat vk_format = VK_FORMAT_UNDEFINED;
-    // The render target keeps 2:10:10:10 as 8:8:8:8 values: the blit converts them into the texture's
-    // A2B10G10R10 (both normalized, so the values carry over).
-    bool to_a2b10g10r10 = false;
     int32_t image = -1;  // atalho image pool index, -1 = only watching the readers
     uint32_t host_width = 0;  // of the region stored in the image
     uint32_t host_height = 0;
     uint64_t frame = 0;
   };
   AtalhoEstado GetAtalhoEstado(uint32_t dest_base) const;
+  // The host format of the unsigned image of textures of a guest format (what a shortcut must be converted to).
+  VkFormat GetAtalhoHostFormat(xenos::TextureFormat format) const {
+    return host_formats_[uint32_t(format) & 63].format_unsigned.format;
+  }
   // A pool image of this format and size, with a barrier into the transfer destination layout pushed (not
   // submitted); -1 if there is none (format without blit support, creation failure).
   int32_t AcquireAtalhoImage(VkFormat format, uint32_t width, uint32_t height, VkImage& image_out);
   // After writing the image: the barrier into the transfer source layout.
   void AtalhoImageWritten(int32_t index);
+  // Gives back an image acquired for a shortcut that could not be made.
+  void ReleaseAtalhoImage(int32_t index) { atalho_images_[index].in_use = false; }
   void AddAtalho(const Atalho& atalho);
   // A resolve copied to guest memory the usual way: shortcuts over that memory are stale.
   void AtalhoNormalWrite(uint32_t start, uint32_t length);

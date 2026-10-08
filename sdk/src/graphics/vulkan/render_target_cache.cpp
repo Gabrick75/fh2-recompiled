@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -90,6 +91,7 @@ namespace rex::graphics::vulkan {
 
 // Generated with `xb buildshaders`.
 namespace shaders {
+#include "../shaders/vulkan_spirv/atalho_conversao_cs.h"
 #include "../shaders/vulkan_spirv/host_depth_store_1xmsaa_cs.h"
 #include "../shaders/vulkan_spirv/host_depth_store_2xmsaa_cs.h"
 #include "../shaders/vulkan_spirv/host_depth_store_4xmsaa_cs.h"
@@ -637,6 +639,28 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
   create_direct_resolve_pipeline_layout(descriptor_set_layout_sampled_image_x2_,
                                         &direct_resolve_pipeline_layout_depth_);
 
+  // Resolve shortcut conversion; without it the shortcut stays off.
+  {
+    VkDescriptorSetLayout atalho_set_layouts[] = {
+        command_processor_.GetSingleTransientDescriptorLayout(
+            VulkanCommandProcessor::SingleTransientDescriptorLayout::kStorageBufferCompute),
+        descriptor_set_layout_sampled_image_,
+    };
+    VkPushConstantRange atalho_push_constants = {VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(AtalhoConstants)};
+    VkPipelineLayoutCreateInfo atalho_layout_info = {};
+    atalho_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    atalho_layout_info.setLayoutCount = uint32_t(rex::countof(atalho_set_layouts));
+    atalho_layout_info.pSetLayouts = atalho_set_layouts;
+    atalho_layout_info.pushConstantRangeCount = 1;
+    atalho_layout_info.pPushConstantRanges = &atalho_push_constants;
+    if (dfn.vkCreatePipelineLayout(device, &atalho_layout_info, nullptr, &atalho_pipeline_layout_) ==
+        VK_SUCCESS) {
+      atalho_pipeline_ = ui::vulkan::util::CreateComputePipeline(
+          vulkan_device, atalho_pipeline_layout_, shaders::atalho_conversao_cs,
+          sizeof(shaders::atalho_conversao_cs));
+    }
+  }
+
   // Resolve copy pipelines.
   for (size_t i = 0; i < size_t(draw_util::ResolveCopyShaderIndex::kCount); ++i) {
     const draw_util::ResolveCopyShaderInfo& resolve_copy_shader_info =
@@ -1035,6 +1059,8 @@ void VulkanRenderTargetCache::Shutdown(bool from_destructor) {
     }
   }
   direct_resolve_pipelines_.clear();
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, atalho_pipeline_);
+  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device, atalho_pipeline_layout_);
   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device,
                                          direct_resolve_pipeline_layout_depth_);
   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device,
@@ -1169,12 +1195,18 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
     return true;
   }
   if (g_cp_times.frames_to_log.load(std::memory_order_relaxed) > 0) {
-    REXGPU_INFO("[quadro] resolve {}x{} edram {} {} -> {:08X} escreve {:08X}+{} fmt {} copia {} limpa {}",
+    REXGPU_INFO("[quadro] resolve {}x{} edram {} {} -> {:08X} escreve {:08X}+{} fmt {} copia {} limpa {} "
+                "rt_fmt {} prof {} bias {} msaa {}",
                 resolve_info.coordinate_info.width_div_8 * 8, resolve_info.height_div_8 * 8,
                 resolve_info.coordinate_info.edram_offset_x_div_8 * 8,
                 resolve_info.coordinate_info.edram_offset_y_div_8 * 8, resolve_info.copy_dest_base,
                 resolve_info.copy_dest_extent_start, resolve_info.copy_dest_extent_length, uint32_t(resolve_info.copy_dest_info.copy_dest_format),
-                resolve_info.copy_dest_extent_length != 0, resolve_info.IsClearingDepth() || resolve_info.IsClearingColor());
+                resolve_info.copy_dest_extent_length != 0, resolve_info.IsClearingDepth() || resolve_info.IsClearingColor(),
+                uint32_t(resolve_info.IsCopyingDepth() ? resolve_info.depth_edram_info.format
+                                                        : resolve_info.color_edram_info.format),
+                resolve_info.IsCopyingDepth(), int32_t(resolve_info.copy_dest_info.copy_dest_exp_bias),
+                uint32_t(resolve_info.IsCopyingDepth() ? resolve_info.depth_edram_info.msaa_samples
+                                                        : resolve_info.color_edram_info.msaa_samples));
   }
   g_cp_times.resolve_pixels.fetch_add(
       uint64_t(resolve_info.coordinate_info.width_div_8) * resolve_info.height_div_8 * 64,
@@ -1220,25 +1252,50 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
     }
   }
   bool copied = false;
-  // Resolve shortcut (VulkanTextureCache::Atalho): which render target region this resolve copies, when it
-  // can be blitted as it is into a texture.
+  // Resolve shortcut (VulkanTextureCache::Atalho): which render target region this resolve copies, when it can
+  // be converted straight into the destination texture's host format instead of going through the EDRAM buffer
+  // and guest memory.
   VulkanTextureCache::Atalho atalho;
   VulkanRenderTarget* atalho_rt = nullptr;
   uint32_t atalho_rt_x = 0, atalho_rt_y = 0;
-  if (REXCVAR_GET(gpu_atalho_resolve) && resolve_info.copy_dest_extent_length && !skip_copies &&
-      GetPath() == Path::kHostRenderTargets && !draw_resolution_scaled && !resolve_info.IsCopyingDepth()) {
+  uint32_t atalho_mode = 0;
+  float atalho_exp_factor = 1.0f;
+  const char* atalho_motivo = nullptr;  // why not, for the debug log
+  if (REXCVAR_GET(gpu_atalho_resolve) && atalho_pipeline_ != VK_NULL_HANDLE &&
+      resolve_info.copy_dest_extent_length && !skip_copies && GetPath() == Path::kHostRenderTargets &&
+      !draw_resolution_scaled) {
     const draw_util::ResolveEdramInfo edram = resolve_info.color_edram_info;
     const auto dest_coordinates = resolve_info.copy_dest_coordinate_info;
-    const auto dest_format = xenos::ColorFormat(resolve_info.copy_dest_info.copy_dest_format);
-    if (edram.msaa_samples == xenos::MsaaSamples::k1X && !resolve_info.copy_dest_info.copy_dest_exp_bias &&
-        !resolve_info.copy_dest_info.copy_dest_array &&
-        xenos::IsSingleCopySampleSelected(dest_coordinates.copy_sample_select) &&
-        xenos::IsColorResolveFormatBitwiseEquivalent(xenos::ColorRenderTargetFormat(edram.format),
-                                                     dest_format) &&
-        !dest_coordinates.offset_x_div_8 && !dest_coordinates.offset_y_div_8) {
+    const auto dest_format = xenos::TextureFormat(resolve_info.copy_dest_info.copy_dest_format);
+    const auto rt_format = xenos::ColorRenderTargetFormat(edram.format);
+    const VkFormat dest_host_format = texture_cache.GetAtalhoHostFormat(dest_format);
+    bool rt_transfer_integer = true;
+    GetColorOwnershipTransferVulkanFormat(rt_format, xenos::MsaaSamples::k1X, &rt_transfer_integer);
+    if (resolve_info.IsCopyingDepth()) {
+      atalho_motivo = "profundidade";
+    } else if (edram.msaa_samples != xenos::MsaaSamples::k1X) {
+      atalho_motivo = "msaa";
+    } else if (resolve_info.copy_dest_info.copy_dest_array ||
+               !xenos::IsSingleCopySampleSelected(dest_coordinates.copy_sample_select) ||
+               dest_coordinates.offset_x_div_8 || dest_coordinates.offset_y_div_8) {
+      atalho_motivo = "destino";
+    } else if (rt_format == xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA || rt_transfer_integer) {
+      atalho_motivo = "formato do render target";
+    } else if (dest_host_format == VK_FORMAT_R8G8B8A8_UNORM) {
+      atalho_mode = 0;
+    } else if (dest_host_format == VK_FORMAT_A2B10G10R10_UNORM_PACK32) {
+      atalho_mode = 1;
+    } else if (dest_host_format == VK_FORMAT_R16G16B16A16_SFLOAT) {
+      atalho_mode = 2;
+    } else {
+      atalho_motivo = "formato da textura";
+    }
+    if (!atalho_motivo) {
+      atalho_exp_factor = std::ldexp(1.0f, int32_t(resolve_info.copy_dest_info.copy_dest_exp_bias));
       uint32_t span_base, span_row_length, span_rows, span_pitch;
       resolve_info.GetCopyEdramTileSpan(span_base, span_row_length, span_rows, span_pitch);
       GetResolveCopyRectanglesToDump(span_base, span_row_length, span_rows, span_pitch, dump_rectangles_);
+      atalho_motivo = "render target";
       if (dump_rectangles_.size() == 1 && span_pitch) {
         auto* rt = static_cast<VulkanRenderTarget*>(dump_rectangles_[0].render_target);
         const RenderTargetKey rt_key = rt->key();
@@ -1252,9 +1309,10 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
         const uint32_t rt_y = (tile_offset / span_pitch) * xenos::kEdramTileHeightSamples +
                               resolve_info.coordinate_info.edram_offset_y_div_8 * 8;
         if (!rt_key.is_depth && rt_key.msaa_samples == xenos::MsaaSamples::k1X &&
-            rt_key.pitch_tiles_at_32bpp == span_pitch && rt_key.Is64bpp() == bool(edram.format_is_64bpp) &&
-            rt_x + width <= rt_key.GetWidth() &&
+            rt_key.GetColorFormat() == rt_format && rt_key.pitch_tiles_at_32bpp == span_pitch &&
+            rt_key.Is64bpp() == bool(edram.format_is_64bpp) && rt_x + width <= rt_key.GetWidth() &&
             rt_y + height <= GetRenderTargetHeight(rt_key.pitch_tiles_at_32bpp, rt_key.msaa_samples)) {
+          atalho_motivo = nullptr;
           atalho_rt = rt;
           atalho_rt_x = rt_x;
           atalho_rt_y = rt_y;
@@ -1264,39 +1322,23 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
           atalho.pitch_div_32 = dest_coordinates.pitch_aligned_div_32;
           atalho.width = width;
           atalho.height = height;
-          atalho.format = xenos::TextureFormat(dest_format);
-          atalho.vk_format = GetColorVulkanFormat(rt_key.GetColorFormat());
-          // Not blitted into A2B10G10R10: the resolve packs blue into the low bits there (red and blue came
-          // out swapped on the PC), which a blit cannot do.
-          atalho.to_a2b10g10r10 = false;
-          atalho.host_width = HostScaleX(width);
-          atalho.host_height = HostScaleY(height);
+          atalho.format = dest_format;
+          atalho.vk_format = dest_host_format;
+          atalho.host_width = std::max(UINT32_C(1), HostScaleX(width));
+          atalho.host_height = std::max(UINT32_C(1), HostScaleY(height));
         }
       }
     }
   }
-  if (REXCVAR_GET(gpu_atalho_resolve) && resolve_info.copy_dest_extent_length && !atalho_rt) {
+  if (atalho_motivo) {
     static int logged = 0;
-    if (logged < 60) {
+    if (logged < 40) {
       ++logged;
-      const draw_util::ResolveEdramInfo edram = resolve_info.color_edram_info;
-      uint32_t span_base, span_row_length, span_rows, span_pitch;
-      resolve_info.GetCopyEdramTileSpan(span_base, span_row_length, span_rows, span_pitch);
-      GetResolveCopyRectanglesToDump(span_base, span_row_length, span_rows, span_pitch, dump_rectangles_);
-      const RenderTargetKey rt_key = dump_rectangles_.size() == 1
-                                         ? dump_rectangles_[0].render_target->key()
-                                         : RenderTargetKey();
-      REXGPU_INFO("[atalho] {}x{} -> {:08X} inelegivel: profundidade {} msaa {} expbias {} array {} amostra {} "
-                  "rt fmt {} dest fmt {} offset {} {} rts {} rt base {} edram base {} pitch rt {} span {}",
+      REXGPU_INFO("[atalho] {}x{} -> {:08X} fora do atalho: {} (rt fmt {}, dest fmt {}, bias {})",
                   resolve_info.coordinate_info.width_div_8 * 8, resolve_info.height_div_8 * 8,
-                  resolve_info.copy_dest_base, resolve_info.IsCopyingDepth(), uint32_t(edram.msaa_samples),
-                  uint32_t(resolve_info.copy_dest_info.copy_dest_exp_bias),
-                  uint32_t(resolve_info.copy_dest_info.copy_dest_array),
-                  uint32_t(resolve_info.copy_dest_coordinate_info.copy_sample_select), uint32_t(edram.format),
+                  resolve_info.copy_dest_base, atalho_motivo, uint32_t(resolve_info.color_edram_info.format),
                   uint32_t(resolve_info.copy_dest_info.copy_dest_format),
-                  uint32_t(resolve_info.copy_dest_coordinate_info.offset_x_div_8),
-                  uint32_t(resolve_info.copy_dest_coordinate_info.offset_y_div_8), dump_rectangles_.size(),
-                  rt_key.base_tiles, uint32_t(edram.base_tiles), rt_key.pitch_tiles_at_32bpp, span_pitch);
+                  int32_t(resolve_info.copy_dest_info.copy_dest_exp_bias));
     }
   }
   if (atalho_rt &&
@@ -1304,25 +1346,65 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
     VkImage atalho_image;
     atalho.image = texture_cache.AcquireAtalhoImage(atalho.vk_format, atalho.host_width,
                                                     atalho.host_height, atalho_image);
+    const uint32_t texel_bytes = atalho_mode == 2 ? 8 : 4;
+    VulkanCommandProcessor::ScratchBufferAcquisition atalho_buffer;
+    VkDescriptorSet atalho_dest_set = VK_NULL_HANDLE;
     if (atalho.image >= 0) {
+      atalho_buffer = command_processor_.AcquireScratchGpuBuffer(
+          VkDeviceSize(atalho.host_width) * atalho.host_height * texel_bytes,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+      if (atalho_buffer.buffer() != VK_NULL_HANDLE) {
+        atalho_dest_set = command_processor_.AllocateSingleTransientDescriptor(
+            VulkanCommandProcessor::SingleTransientDescriptorLayout::kStorageBufferCompute);
+      }
+    }
+    if (atalho_dest_set != VK_NULL_HANDLE) {
       command_processor_.MarcarGpu(VulkanCommandProcessor::GpuEtapa::kAtalho);
+      VkDescriptorBufferInfo atalho_buffer_info = {atalho_buffer.buffer(), 0, VK_WHOLE_SIZE};
+      VkWriteDescriptorSet atalho_write = {};
+      atalho_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      atalho_write.dstSet = atalho_dest_set;
+      atalho_write.descriptorCount = 1;
+      atalho_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      atalho_write.pBufferInfo = &atalho_buffer_info;
+      dfn.vkUpdateDescriptorSets(device, 1, &atalho_write, 0, nullptr);
+      // The render target, read by the compute shader.
       command_processor_.PushImageMemoryBarrier(
           atalho_rt->image(), ui::vulkan::util::InitializeSubresourceRange(),
-          atalho_rt->current_stage_mask(), VK_PIPELINE_STAGE_TRANSFER_BIT,
-          atalho_rt->current_access_mask(), VK_ACCESS_TRANSFER_READ_BIT, atalho_rt->current_layout(),
-          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-      atalho_rt->SetUsage(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT,
-                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+          atalho_rt->current_stage_mask(), VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          atalho_rt->current_access_mask(), VK_ACCESS_SHADER_READ_BIT, atalho_rt->current_layout(),
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      atalho_rt->SetUsage(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      command_processor_.BindExternalComputePipeline(atalho_pipeline_);
+      VkDescriptorSet atalho_sets[] = {atalho_dest_set, atalho_rt->GetDescriptorSetTransferSource()};
+      command_buffer.CmdVkBindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, atalho_pipeline_layout_, 0,
+                                             uint32_t(rex::countof(atalho_sets)), atalho_sets, 0, nullptr);
+      AtalhoConstants atalho_constants;
+      atalho_constants.source_origin[0] = int32_t(HostScaleX(atalho_rt_x));
+      atalho_constants.source_origin[1] = int32_t(HostScaleY(atalho_rt_y));
+      atalho_constants.size[0] = atalho.host_width;
+      atalho_constants.size[1] = atalho.host_height;
+      atalho_constants.exp_factor = atalho_exp_factor;
+      atalho_constants.mode = atalho_mode;
+      atalho_constants.pitch = atalho.host_width;
+      atalho_constants.swap = resolve_info.copy_dest_info.copy_dest_swap ? 1 : 0;
+      command_buffer.CmdVkPushConstants(atalho_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                        sizeof(atalho_constants), &atalho_constants);
       command_processor_.SubmitBarriers(true);
-      VkImageBlit region = {};
-      region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-      region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-      region.srcOffsets[0] = {int32_t(HostScaleX(atalho_rt_x)), int32_t(HostScaleY(atalho_rt_y)), 0};
-      region.srcOffsets[1] = {int32_t(HostScaleX(atalho_rt_x) + atalho.host_width),
-                              int32_t(HostScaleY(atalho_rt_y) + atalho.host_height), 1};
-      region.dstOffsets[1] = {int32_t(atalho.host_width), int32_t(atalho.host_height), 1};
-      command_buffer.CmdVkBlitImage(atalho_rt->image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, atalho_image,
-                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region, VK_FILTER_NEAREST);
+      command_buffer.CmdVkDispatch((atalho.host_width + 7) / 8, (atalho.host_height + 7) / 8, 1);
+      // The packed texels into the shortcut image.
+      command_processor_.PushBufferMemoryBarrier(
+          atalho_buffer.buffer(), 0, VK_WHOLE_SIZE, atalho_buffer.SetStageMask(VK_PIPELINE_STAGE_TRANSFER_BIT),
+          VK_PIPELINE_STAGE_TRANSFER_BIT, atalho_buffer.SetAccessMask(VK_ACCESS_TRANSFER_READ_BIT),
+          VK_ACCESS_TRANSFER_READ_BIT);
+      command_processor_.SubmitBarriers(true);
+      VkBufferImageCopy* atalho_region =
+          command_buffer.CmdCopyBufferToImageEmplace(atalho_buffer.buffer(), atalho_image,
+                                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1);
+      *atalho_region = {};
+      atalho_region->imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      atalho_region->imageExtent = {atalho.host_width, atalho.host_height, 1};
       texture_cache.AtalhoImageWritten(atalho.image);
       texture_cache.AddAtalho(atalho);
       // The guest memory is not written: the textures over it reload, from the shortcut.
@@ -1332,6 +1414,9 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
       written_address_out = resolve_info.copy_dest_extent_start;
       written_length_out = resolve_info.copy_dest_extent_length;
       copied = true;
+    } else if (atalho.image >= 0) {
+      texture_cache.ReleaseAtalhoImage(atalho.image);
+      atalho.image = -1;
     }
   }
   if (resolve_info.copy_dest_extent_length && !skip_copies && !copied) {

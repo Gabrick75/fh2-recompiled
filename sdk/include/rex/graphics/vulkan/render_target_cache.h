@@ -852,6 +852,18 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   // Compute pipelines for copying host render target contents to the EDRAM
   // buffer. VK_NULL_HANDLE if failed to create.
   std::unordered_map<DumpPipelineKey, VkPipeline, DumpPipelineKey::Hasher> dump_pipelines_;
+  // Resolve shortcut conversion (shaders/atalho_conversao.cs.glsl): render target region -> packed texels of
+  // the destination texture's host format.
+  struct AtalhoConstants {
+    int32_t source_origin[2];
+    uint32_t size[2];
+    float exp_factor;
+    uint32_t mode;
+    uint32_t pitch;
+    uint32_t swap;
+  };
+  VkPipelineLayout atalho_pipeline_layout_ = VK_NULL_HANDLE;
+  VkPipeline atalho_pipeline_ = VK_NULL_HANDLE;
   VkPipelineLayout direct_resolve_pipeline_layout_color_ = VK_NULL_HANDLE;
   VkPipelineLayout direct_resolve_pipeline_layout_depth_ = VK_NULL_HANDLE;
   std::unordered_map<DirectResolvePipelineKey, VkPipeline, DirectResolvePipelineKey::Hasher>

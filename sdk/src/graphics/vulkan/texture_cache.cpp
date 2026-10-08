@@ -3483,8 +3483,7 @@ bool VulkanTextureCache::LoadTextureFromAtalho(VulkanTexture& texture, bool load
                        !key.signed_separate && a.dest_base == start && a.format == key.format &&
                        a.pitch_div_32 == key.pitch && key.GetWidth() <= a.width &&
                        key.GetHeight() <= a.height &&
-                       (a.vk_format == image_format ||
-                        (a.to_a2b10g10r10 && image_format == VK_FORMAT_A2B10G10R10_UNORM_PACK32));
+                       a.vk_format == image_format;
     if (match && a.vk_format != image_format) {
       // The texture's format must take blits too.
       auto blit_it = atalho_format_blit_.find(image_format);
