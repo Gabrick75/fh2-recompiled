@@ -15,6 +15,7 @@
 #if REX_PLATFORM_ANDROID
 // android/app/src/main/cpp/android_rendimiento.cpp: keeps the game threads off the slow cores.
 extern "C" void fh2_android_nucleos_grandes_aplicar();
+extern "C" void fh2_android_afinidade_iniciar();
 #endif
 
 void Fh2PerfilStart();  // fh2_perfil.cpp
@@ -45,6 +46,9 @@ class Fh2App : public rex::ReXApp {
   // void OnPostLoadXexImage() override {}
   void OnPostSetup() override {
     Fh2PerfilStart();  // fh2_perfil.cpp, off unless fh2_perfil_s is set
+#if REX_PLATFORM_ANDROID
+    fh2_android_afinidade_iniciar();  // android_rendimiento.cpp, off unless fh2_android_afinidade is set
+#endif
     // PNG captures of the game image for unattended tests (fh2_captura_cada_s; off by default).
     fh2::captura::Arrancar([this]() -> rex::ui::Presenter* {
       const auto* rt = runtime();

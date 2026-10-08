@@ -18,8 +18,13 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 #include <vector>
+#include <pthread.h>
+#include <chrono>
+#include <thread>
+#include <map>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -114,4 +119,106 @@ extern "C" JNIEXPORT jfloat JNICALL Java_com_forzahorizon2_android_GameActivity_
   static std::atomic<float>* ms = nullptr;
   auto* value = PluginCounter("rex_frame_ms_guest", ms);
   return value ? value->load(std::memory_order_relaxed) : -1.0f;
+}
+
+// Per-thread core pinning by name (adapted from NFSMW-Recompiled-Mobile, android/app/src/main/cpp/afinidad.cpp,
+// where pinning the command processor and the game's main thread to the prime cores gave +17 %).
+//
+//   --fh2_android_afinidade="GPU Commands=7;*=3-6"
+//
+// Rules "name prefix=cores", first match wins, "*" for the rest; cores as "7", "3-6" or "3+5+6". A thread
+// ("fh2 afinidade") walks /proc/self/task every 2 s and sets each thread's mask, so threads created later, and masks
+// Android resets after a pause, are covered too. Empty (the default) leaves everything to fh2_android_nucleos_grandes.
+REXCVAR_DEFINE_STRING(fh2_android_afinidade, "", "FH2",
+                      "Android: pin threads to cores by name, 'GPU Commands=7;*=3-6' (empty = off)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
+namespace {
+
+struct AffinityRule {
+  std::string prefix;  // "" = any thread ("*")
+  cpu_set_t cores;
+};
+
+bool ParseCores(const std::string& text, cpu_set_t& cores) {
+  CPU_ZERO(&cores);
+  size_t start = 0;
+  bool any = false;
+  while (start < text.size()) {
+    size_t end = text.find('+', start);
+    const std::string part = text.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    const size_t dash = part.find('-');
+    const int from = std::atoi(part.c_str());
+    const int to = dash == std::string::npos ? from : std::atoi(part.c_str() + dash + 1);
+    for (int cpu = from; cpu <= to && cpu < CPU_SETSIZE; ++cpu) {
+      if (cpu >= 0) {
+        CPU_SET(cpu, &cores);
+        any = true;
+      }
+    }
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  return any;
+}
+
+std::vector<AffinityRule> ParseRules(const std::string& text) {
+  std::vector<AffinityRule> rules;
+  size_t start = 0;
+  while (start < text.size()) {
+    size_t end = text.find(';', start);
+    const std::string rule = text.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    const size_t eq = rule.rfind('=');
+    if (eq != std::string::npos) {
+      AffinityRule r;
+      r.prefix = rule.substr(0, eq);
+      if (r.prefix == "*") r.prefix.clear();
+      if (ParseCores(rule.substr(eq + 1), r.cores)) rules.push_back(r);
+    }
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  return rules;
+}
+
+void AffinityLoop(std::vector<AffinityRule> rules) {
+  pthread_setname_np(pthread_self(), "fh2 afinidade");
+  std::map<int, std::string> applied;  // tid -> rule prefix last applied
+  while (true) {
+    for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task")) {
+      const int tid = std::atoi(entry.path().filename().c_str());
+      std::ifstream comm(entry.path() / "comm");
+      std::string name;
+      std::getline(comm, name);
+      for (const auto& rule : rules) {
+        if (name.compare(0, rule.prefix.size(), rule.prefix) != 0) continue;
+        cpu_set_t current;
+        if (sched_getaffinity(tid, sizeof(current), &current) == 0 && !CPU_EQUAL(&current, &rule.cores)) {
+          sched_setaffinity(tid, sizeof(rule.cores), &rule.cores);
+          if (applied[tid] != rule.prefix || rule.prefix.size()) {
+            if (!rule.prefix.empty()) {
+              REXLOG_INFO("[afinidade] '{}' (tid {}) -> regra '{}'", name, tid, rule.prefix);
+            }
+            applied[tid] = rule.prefix;
+          }
+        }
+        break;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+  }
+}
+
+}  // namespace
+
+extern "C" void fh2_android_afinidade_iniciar() {
+  const std::string text = REXCVAR_GET(fh2_android_afinidade);
+  if (text.empty()) return;
+  auto rules = ParseRules(text);
+  if (rules.empty()) {
+    REXLOG_WARN("[afinidade] regras inválidas: '{}'", text);
+    return;
+  }
+  REXLOG_INFO("[afinidade] {} regras: {}", rules.size(), text);
+  std::thread(AffinityLoop, std::move(rules)).detach();
 }
