@@ -50,6 +50,12 @@ bool SDLWindowedAppContext::Initialize() {
   if (!requested_driver.empty()) {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, requested_driver.c_str());
   }
+#if REX_PLATFORM_ANDROID
+  // On Android, SDL_WaitEvent pumps with a poll sentinel on every turn of its loop, and pushing the sentinel
+  // wakes the Android wait it is about to sleep in: the UI thread (SDLThread) spun at 100% of a core, half of
+  // it in clock_gettime (profiled on the S23 Ultra and the Moto G9 Play). Nothing here relies on sentinels.
+  SDL_SetHint(SDL_HINT_POLL_SENTINEL, "0");
+#endif
   if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
     REXLOG_ERROR("SDL_InitSubSystem(SDL_INIT_VIDEO) failed: {}", SDL_GetError());
     return false;

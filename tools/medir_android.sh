@@ -41,6 +41,8 @@ ARGS=("--fh2_teste_botoes=$ROTEIRO" "$@")
 JUNTOS=$(IFS=,; echo "${ARGS[*]}")
 # RESOLUCAO=480p|720p|native overrides the display resolution for this run.
 EXTRA_RES=${RESOLUCAO:+--es fh2.resolucao $RESOLUCAO}
+# USO=1 shows the FPS and the GPU/CPU/RAM use on screen for this run.
+[ "${USO:-0}" = 1 ] && EXTRA_RES="$EXTRA_RES --ez fh2.uso true"
 "$ADB" shell "am start -n $PKG/.MainActivity --ez fh2.banco true $EXTRA_RES --esa fh2.args '$JUNTOS'" > /dev/null
 # Waits by reading the log for SEGUNDOS seconds (timeout ends it), keeping the lines that matter.
 timeout "$SEGUNDOS" "$ADB" logcat -v time 2>/dev/null |

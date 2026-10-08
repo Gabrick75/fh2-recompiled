@@ -105,9 +105,10 @@ public final class GameActivity extends SDLActivity
         root.addView(toolbar, barParams);
         stretched = controls.stretch;
         layoutSurface();
-        boolean showFps = GameOptions.flag(this, GameOptions.SHOW_FPS);
-        boolean showUsage = GameOptions.flag(this, GameOptions.SHOW_USAGE) ||
-                (getIntent() != null && getIntent().getBooleanExtra("fh2.uso", false));
+        // The bench's fh2.uso shows both lines for that run.
+        boolean benchUsage = getIntent() != null && getIntent().getBooleanExtra("fh2.uso", false);
+        boolean showFps = GameOptions.flag(this, GameOptions.SHOW_FPS) || benchUsage;
+        boolean showUsage = GameOptions.flag(this, GameOptions.SHOW_USAGE) || benchUsage;
         if (showFps || showUsage) {
             LinearLayout overlay = new LinearLayout(this);
             overlay.setOrientation(LinearLayout.VERTICAL);
