@@ -24,4 +24,4 @@ if [ -f "$OUT/${BASE%.log}_uso.log" ]; then
   cat "$OUT/${BASE%.log}_uso.log"
 fi
 echo "-- Errors"
-grep -E "\[error\]|\[critical\]|FATAL" "$OUT/$BASE" | grep -v "renderdoc\|ResolvePath\|XMsgStartIORequestEx\|Unimplemented XAM" | head -5 || true
+grep -E "\[error\]|\[critical\]|FATAL" "$OUT/$BASE" | grep -iv "renderdoc\|ResolvePath\|XMsgStartIORequestEx\|Unimplemented XAM" | head -5 || true
