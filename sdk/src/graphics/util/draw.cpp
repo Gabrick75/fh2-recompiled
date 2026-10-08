@@ -930,7 +930,8 @@ bool GetResolveInfo(const RegisterFile& regs, const memory::Memory& memory,
   xenos::CopySampleSelect sample_select = SanitizeCopySampleSelect(
       rb_copy_control.copy_sample_select, rb_surface_info.msaa_samples, is_depth);
   if (rb_copy_control.copy_sample_select != sample_select) {
-    REXGPU_WARN(
+    // Debug: with the MSAA cap (gpu_sin_msaa) every resolve of a capped surface lands here, several per frame.
+    REXGPU_DEBUG(
         "Incorrect resolve sample selected for {}-sample {}: {}, treating like "
         "{}",
         1 << uint32_t(rb_surface_info.msaa_samples), is_depth ? "depth" : "color",

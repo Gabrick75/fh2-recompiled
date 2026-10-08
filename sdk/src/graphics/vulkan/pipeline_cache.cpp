@@ -438,6 +438,11 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
         rex::path_to_utf8(pipeline_storage_file_path));
     return;
   }
+  // "a+" leaves the read position at the start with glibc, but at the END with bionic (Android's stdio comes
+  // from OpenBSD, whose fopen seeks to the end in append mode): the header read failed, the storage looked
+  // invalid and was truncated, so every launch recompiled every pipeline (Forza Horizon 2 on the S23 Ultra:
+  // ~270 pipelines at 100-150 ms each, 0 fps for half a minute after the title screen). Writes still append.
+  rex::filesystem::Seek(pipeline_storage_file_, 0, SEEK_SET);
   pipeline_storage_file_flush_needed_ = false;
   // 'XEPS'.
   const uint32_t pipeline_storage_magic = 0x53504558;
@@ -523,6 +528,8 @@ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& c
     pipeline_storage_file_ = nullptr;
     return;
   }
+  // Same as the pipeline storage above: read from the start, also with bionic.
+  rex::filesystem::Seek(shader_storage_file_, 0, SEEK_SET);
   ++shader_storage_index_;
   shader_storage_file_flush_needed_ = false;
   struct {
