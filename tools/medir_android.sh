@@ -42,7 +42,7 @@ JUNTOS=$(IFS=,; echo "${ARGS[*]}")
 "$ADB" shell "am start -n $PKG/.MainActivity --ez fh2.banco true --esa fh2.args '$JUNTOS'" > /dev/null
 # Waits by reading the log for SEGUNDOS seconds (timeout ends it), keeping the lines that matter.
 timeout "$SEGUNDOS" "$ADB" logcat -v time 2>/dev/null |
-  grep --line-buffered -E "fps: |MSAA|Unhandled guest|Fatal signal|\[FATAL\]|\[fh2\]|\[teste\] script pad with" > "$SAIDA" || true
+  grep --line-buffered -E "fps: |tempos por quadro|faixas \(|MSAA|Unhandled guest|Fatal signal|\[FATAL\]|\[fh2\]|\[teste\] script pad with" > "$SAIDA" || true
 # The last screen, to check what was measured (a video runs at 30 fps and looks like a good result).
 "$ADB" exec-out screencap -p > "${SAIDA%.log}.png"
 "$ADB" shell am force-stop "$PKG"
