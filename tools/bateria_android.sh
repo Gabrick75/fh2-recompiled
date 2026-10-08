@@ -30,4 +30,12 @@ rodar "buffer 720p" RESOLUCAO=720p
 rodar "afinidade CP no cpu7" -- "--fh2_android_afinidade=GPU Commands=7;*=3-6"
 rodar "sem vblank adaptativo" -- --vblank_adaptativo=false
 rodar "base (controle)"
+# The same build compiled for armv8-a (outline atomics), kept by the armv8.2-a commit, then the current APK again.
+ANTIGO=$RAIZ/app/out/app-release-armv8a.apk
+if [ -f "$ANTIGO" ]; then
+  "${ADB:-$HOME/Android/Sdk/platform-tools/adb}" install -r "$ANTIGO" > /dev/null
+  rodar "APK armv8-a (antigo)"
+  "${ADB:-$HOME/Android/Sdk/platform-tools/adb}" install -r "$RAIZ/android/app/build/outputs/apk/release/app-release.apk" > /dev/null
+  rodar "APK armv8.2-a (atual)"
+fi
 echo "resumo: $RESUMO"
