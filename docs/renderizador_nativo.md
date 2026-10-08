@@ -80,6 +80,28 @@ São as mesmas posições que o fork documentou no NFSMW (`docs/NATIVE_RENDERER.
 XDK, e o mapeamento dele vale para o FH2. O objeto com tipo `10` no primeiro campo (`lwz r11,0(r4)`, 4 bits) segue
 outro caminho (`sub_82B6EF10`).
 
+## Os buffers pré-gravados: estáticos ou refeitos?
+
+`--gpu_estudo_ib=true` registra, a cada 10 s, as execuções de `INDIRECT_BUFFER` com endereço, tamanho e hash do
+conteúdo (PC, corrida, 50 %):
+
+| Medida (por 10 s, na corrida) | Valor |
+|---|---|
+| Execuções | ~132 mil (~650 por quadro, ~930 dwords cada) |
+| Buffers distintos | ~6 mil (cada um roda ~22 vezes) |
+| Distintos que já existiam no período anterior | ~2,5 mil |
+| Execuções com conteúdo mudado desde a anterior | 3,5–4,6 mil (~3 %) |
+| Buffers conhecidos desde o início | sempre crescendo (73 mil em 2,5 min) |
+
+Conclusão: os buffers são **criados pelo jogo enquanto ele roda** (endereços novos o tempo todo, provavelmente ao
+carregar o cenário) e **reaproveitados por vários quadros**; uma parte pequena muda de conteúdo entre execuções
+(as correções que o XDK aplica aos buffers antes de executá-los, ou regravações no mesmo lugar).
+
+Para o renderizador nativo isso significa:
+- um buffer pode ser decodificado uma vez e reaproveitado enquanto o conteúdo (hash) não mudar;
+- o estado herdado do device no momento da execução (máscaras de `RunCommandBuffer`) entra em cada execução;
+- as mudanças de conteúdo precisam ser detectadas (hash por execução, ~930 dwords: barato).
+
 ## Próximos passos
 
 - Achar as funções de gravação e execução dos buffers pré-gravados (quem monta os `INDIRECT_BUFFER`) e medir

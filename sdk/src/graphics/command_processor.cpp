@@ -13,12 +13,15 @@
 #include <atomic>
 #include <cinttypes>
 #include <climits>
+#include <chrono>
 #include <map>
+#include <unordered_map>
 #include <cmath>
 #include <cstring>
 #include <string_view>
 
 #include <fmt/format.h>
+#include <rex/hash.h>
 
 #if defined(__linux__)
 #include <linux/futex.h>
@@ -105,6 +108,8 @@ REXCVAR_DEFINE_BOOL(gpu_ignorar_predicacao, false, "GPU",
 REXCVAR_DEFINE_INT32(gpu_sonda_faixas, 0, "GPU",
                      "Debug: log this many SET_BIN_SELECT/SET_BIN_MASK packets (with the draws since the last "
                      "one), starting after 1500 of them so the game is in play");
+REXCVAR_DEFINE_BOOL(gpu_estudo_ib, false, "GPU",
+                    "Debug: statistics of the indirect buffers (the game's command buffers) every 10 s");
 REXCVAR_DEFINE_INT32(gpu_msaa_muestras, 4, "GPU",
                      "Cap of MSAA samples: 1, 2 or 4 (the game's own). gpu_sin_msaa overrides it");
 
@@ -1290,6 +1295,45 @@ bool CommandProcessor::ExecutePacketType3_INDIRECT_BUFFER(memory::RingBuffer* re
   uint32_t list_length = reader->ReadAndSwap<uint32_t>();
   assert_zero(list_length & ~0xFFFFF);
   list_length &= 0xFFFFF;
+  if (REXCVAR_GET(gpu_estudo_ib)) {
+    // Native renderer study: are the game's command buffers recorded once and run every frame, or recorded
+    // again? Per 10 s: runs, distinct (address, size), those seen in an earlier period, and those whose
+    // contents changed since they were last seen.
+    struct Seen {
+      uint64_t hash;
+      uint32_t period;
+    };
+    static std::unordered_map<uint64_t, Seen> seen;
+    static uint32_t period = 0, runs = 0, distinct = 0, known = 0, changed = 0;
+    static uint64_t dwords = 0;
+    static auto period_start = std::chrono::steady_clock::now();
+    const uint64_t key = (uint64_t(list_ptr) << 20) | list_length;
+    const uint64_t hash =
+        XXH3_64bits(memory_->TranslatePhysical(GpuToCpu(list_ptr)), size_t(list_length) * 4);
+    ++runs;
+    dwords += list_length;
+    auto it = seen.find(key);
+    if (it == seen.end()) {
+      seen.emplace(key, Seen{hash, period});
+      ++distinct;
+    } else {
+      if (it->second.period != period) {
+        ++distinct;
+        if (it->second.period + 1 == period) ++known;
+      }
+      if (it->second.hash != hash) ++changed;
+      it->second = Seen{hash, period};
+    }
+    if (std::chrono::steady_clock::now() - period_start >= std::chrono::seconds(10)) {
+      REXGPU_INFO("[estudo ib] 10 s: {} execucoes, {} buffers distintos ({} vistos no periodo anterior), {} "
+                  "com conteudo mudado, {:.1f} dwords por execucao, {} buffers conhecidos",
+                  runs, distinct, known, changed, runs ? double(dwords) / runs : 0.0, seen.size());
+      runs = distinct = known = changed = 0;
+      dwords = 0;
+      ++period;
+      period_start = std::chrono::steady_clock::now();
+    }
+  }
   ExecuteIndirectBuffer(GpuToCpu(list_ptr), list_length);
   return true;
 }
