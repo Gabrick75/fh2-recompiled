@@ -129,6 +129,38 @@ O desempenho do Evolved também vem de cortes específicos do NFSMW (`assets/nat
 cada 4 quadros e só quando visível, sombras cortadas a 150 m num mapa só, PCF barato, sem desfoque, sem MSAA, Z
 antecipado, invisíveis pulados, 720p. No FH2 os equivalentes precisam ser achados no código do jogo.
 
+### Etapa 1, primeira medida: a biblioteca de shaders (`tools/xenos/biblioteca.sh`)
+
+Fontes dos contêineres:
+- `media/shaders/**/*.fxobj`, soltos;
+- 99 `.fxobj` distintos nos zips das pistas (`media/tracks`).
+
+Os zips das pistas (até 3 GB) não têm cabeçalhos locais: os dados de cada entrada começam no `header_offset`. O método
+21 é o LZX do XMemCompress, em quadros `[FF, descomprimido BE16, comprimido BE16]` ou `[comprimido BE16]`, que juntos
+formam um fluxo LZX com janela de 128 KB.
+
+| Medida | Valor |
+|---|---|
+| Contêineres | 3.587 |
+| Traduzidos para HLSL (XenosRecomp do nfsmw-nx) | 3.132 |
+| SPIR-V válido (DXC 1.9 + spirv-val) | 2.559 |
+| Recusados na tradução: busca de vértices sem elemento declarado | 455 vertex shaders |
+| Recusados pelo DXC: `oNormal0`/`iNormal0`/`oBinormal0`/`oTangent0` não declarados, `getWeights2D`, `cubeMapData` | 573 |
+
+Cobertura dos shaders que o jogo carregou no PC (armazenamento `.xsh` do emulador; vertex shaders comparados sem as
+instruções de busca, que o D3D modifica):
+
+| | Usados | Na biblioteca | Já em SPIR-V |
+|---|---|---|---|
+| Pixel shaders | 325 | 228 (70 %) | 154 (47 %) |
+| Vertex shaders | 288 | 170 (59 %) | 85 (30 %) |
+
+Falta:
+- corrigir o tradutor para os padrões do FH2 (normais, tangentes e binormais como entrada e saída, `getWeights2D`,
+  cubemaps, buscas de vértices sem elemento declarado);
+- achar os ~100 pixel e ~120 vertex shaders que não estão nos `.fxobj`. São pequenos (15–80 dwords): prováveis shaders
+  internos da biblioteca D3D (limpeza, resolve, cópia) e de efeitos dentro do executável ou de outros pacotes.
+
 ### Etapas
 
 1. Biblioteca de shaders do FH2: XenosRecomp + DXC no PC sobre os `.fxobj` (e o XEX); medir quantos traduzem e quantos
