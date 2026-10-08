@@ -21,6 +21,7 @@ set(FH2_SOURCES
     src/fh2_correcoes.cpp
     src/fh2_desempenho.cpp
     src/fh2_perfil.cpp
+    src/fh2_censo.cpp
 )
 
 if(ANDROID)
