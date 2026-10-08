@@ -22,7 +22,7 @@ final class GameOptions {
     static final String SHOW_FPS = "show_fps";
     static final String PRESENT_MODE = "present_mode";        // "fifo" (vsync) or "mailbox"
     // Graphics
-    static final String RENDER_RESOLUTION = "render_resolution";  // not applied yet
+    static final String RENDER_SCALE = "render_scale";        // gpu_escala_render: percent of 1280x720
     static final String FPS = "fps";                          // only picks the display refresh rate for now
     static final String ANTI_ALIASING = "anti_aliasing";      // "off", "msaa", "fxaa"
     static final String MSAA_SAMPLES = "msaa_samples";        // "2", "4"
@@ -56,7 +56,7 @@ final class GameOptions {
         switch (key) {
             case RESOLUTION: return RES_NATIVE;
             case PRESENT_MODE: return "fifo";
-            case RENDER_RESOLUTION: return "1280x720";
+            case RENDER_SCALE: return "100";
             case FPS: return "60";
             // Off: the GPU cost of the game's MSAA 4x nearly halves the frame rate on a phone (event menu on the
             // S23 Ultra: 6.8 fps 4x, 13.0 off), and the image is right without it (the MSAA cap leaves the game's
@@ -108,6 +108,30 @@ final class GameOptions {
         return new int[] {0, 0};
     }
 
+    /** The typed render scale, 1 to 100 percent (100 when the stored text is not a number). */
+    static int renderScalePercent(Context context) {
+        try {
+            return Math.max(1, Math.min(100, Integer.parseInt(get(context, RENDER_SCALE).trim())));
+        } catch (NumberFormatException e) {
+            return 100;
+        }
+    }
+
+    /**
+     * The scale the game really uses, in eighths of 1280x720 (8 = full): the render targets shrink in eighths so the
+     * emulated EDRAM tiles stay whole pixels, and in quarters with MSAA 4x. Same rounding as
+     * RenderTargetCache::GetConfigRenderEighths in the SDK.
+     */
+    static int renderScaleEighths(int percent, boolean msaa4x) {
+        int eighths = Math.max(1, Math.min(8, (percent * 8 + 50) / 100));
+        if (eighths < 8 && msaa4x) eighths = Math.max(eighths & ~1, 2);
+        return eighths;
+    }
+
+    static boolean msaa4x(Context context) {
+        return "msaa".equals(get(context, ANTI_ALIASING)) && "4".equals(get(context, MSAA_SAMPLES));
+    }
+
     static List<String> arguments(Context context) {
         List<String> args = new ArrayList<>();
         args.add("--audio_ganancia_pct=" + get(context, VOLUME));
@@ -124,6 +148,7 @@ final class GameOptions {
                 break;
         }
         args.add("--anisotropic_override=" + get(context, ANISOTROPIC));
+        args.add("--gpu_escala_render=" + renderScalePercent(context));
         args.add("--fh2_uma_faixa=" + flag(context, ONE_PASS));
         args.add("--vblank_adaptativo=" + flag(context, ADAPTIVE_VBLANK));
         args.add("--fh2_android_nucleos_grandes=" + flag(context, PIN_THREADS));

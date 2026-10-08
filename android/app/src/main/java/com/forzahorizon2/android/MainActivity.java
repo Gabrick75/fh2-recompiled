@@ -15,7 +15,9 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
 import android.view.View;
@@ -35,6 +37,7 @@ import com.google.android.material.card.MaterialCardView;
 import com.google.android.material.materialswitch.MaterialSwitch;
 import com.google.android.material.radiobutton.MaterialRadioButton;
 import com.google.android.material.textfield.MaterialAutoCompleteTextView;
+import com.google.android.material.textfield.TextInputEditText;
 import com.google.android.material.textfield.TextInputLayout;
 
 import java.io.File;
@@ -231,10 +234,7 @@ public final class MainActivity extends AppCompatActivity {
 
         // --- Graphics
         right.addView(card(section("Gráficos"),
-                notYet(selector(GameOptions.RENDER_RESOLUTION, "Resolução de renderização",
-                        "A que o jogo desenha antes de ir para a tela. 1280×720 é a do Xbox 360.",
-                        new String[] {"1024×576 · mais rápida", "1280×720 · Xbox 360", "1920×1080 · mais nítida"},
-                        new String[] {"1024x576", "1280x720", "1920x1080"}, false)),
+                renderScale(),
                 notYet(dropdown(GameOptions.FPS, "Limite de FPS",
                         "O teto do jogo. 90, 120 e Sem limite são experimentais e pedem uma tela com essa taxa. Por enquanto só escolhe a taxa de atualização da tela.",
                         new String[] {"30 fps", "60 fps", "90 fps (experimental)", "120 fps (experimental)", "Sem limite (experimental)"},
@@ -283,6 +283,51 @@ public final class MainActivity extends AppCompatActivity {
                         new String[] {"Normal", "Alto", "Muito alto", "Máximo"},
                         new String[] {"100", "125", "150", "200"}, false)));
         right.addView(space(12));
+    }
+
+    // Render resolution as a typed percentage of the Xbox 360's 1280x720, with the size it really becomes (eighths).
+    private View renderScale() {
+        LinearLayout box = column();
+        box.setPadding(0, dp(10), 0, dp(10));
+        box.addView(heading("Resolução de renderização"));
+        box.addView(summary("Porcentagem da resolução do Xbox 360 (1280×720) em que o jogo desenha. Abaixo de 100 " +
+                "a imagem fica menos nítida e a GPU trabalha bem menos: no S23 Ultra a GPU é quase metade do " +
+                "tempo de cada quadro. Digite de 12 a 100; vale em passos de 12,5 %."));
+        TextInputLayout field = new TextInputLayout(this, null,
+                com.google.android.material.R.attr.textInputOutlinedStyle);
+        field.setBoxStrokeColor(ACCENT);
+        field.setSuffixText("%");
+        field.setSuffixTextColor(ColorStateList.valueOf(Color.WHITE));
+        TextInputEditText input = new TextInputEditText(field.getContext());
+        input.setInputType(InputType.TYPE_CLASS_NUMBER);
+        input.setTextColor(Color.WHITE);
+        input.setText(String.valueOf(GameOptions.renderScalePercent(this)));
+        field.addView(input, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(140), LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(8);
+        box.addView(field, lp);
+        TextView result = summary("");
+        result.setPadding(0, dp(4), 0, 0);
+        box.addView(result);
+        Runnable show = () -> {
+            int eighths = GameOptions.renderScaleEighths(GameOptions.renderScalePercent(this), GameOptions.msaa4x(this));
+            String percent = eighths % 2 == 0 ? String.valueOf(eighths * 25 / 2) : (eighths * 25 / 2) + ",5";
+            result.setText("O jogo vai desenhar em " + (1280 * eighths / 8) + "×" + (720 * eighths / 8) +
+                    " (" + percent + " %)" + (eighths == 8 ? ", a resolução original." : "."));
+        };
+        show.run();
+        input.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence text, int start, int before, int count) {}
+            @Override public void afterTextChanged(Editable text) {
+                if (text.length() > 0) {
+                    GameOptions.set(MainActivity.this, GameOptions.RENDER_SCALE, text.toString());
+                    show.run();
+                }
+            }
+        });
+        return box;
     }
 
     // Display resolution: 480p and 720p only when the screen is bigger than them, plus the native one.
