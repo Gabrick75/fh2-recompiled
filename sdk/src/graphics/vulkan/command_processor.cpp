@@ -3861,9 +3861,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
       uint32_t src_info = src < 4 ? regs[reg::RB_COLOR_INFO::rt_register_indices[src]]
                                   : regs[XE_GPU_REG_RB_DEPTH_INFO];
       REXGPU_INFO(
-          "[traco] {:4} RESOLVE src {} (info {:08X}: fmt {} base {}) cmd {} -> {:08X} fmt {} "
-          "exp_bias {} {}x{} clear c{} d{}",
+          "[traco] {:4} RESOLVE src {} (info {:08X}: fmt {} base {}) msaa {} pitch {} sample {} cmd {} -> "
+          "{:08X} fmt {} exp_bias {} {}x{} clear c{} d{}",
           g_frame_trace.draw_index++, src, src_info, (src_info >> 16) & 0xF, src_info & 0xFFF,
+          (regs[XE_GPU_REG_RB_SURFACE_INFO] >> 16) & 3, regs[XE_GPU_REG_RB_SURFACE_INFO] & 0x3FFF,
+          uint32_t(copy_control.copy_sample_select),
           uint32_t(copy_control.copy_command), regs[XE_GPU_REG_RB_COPY_DEST_BASE],
           uint32_t(dest_info.copy_dest_format), int32_t(dest_info.copy_dest_exp_bias),
           uint32_t(dest_pitch.copy_dest_pitch), uint32_t(dest_pitch.copy_dest_height),
@@ -4042,12 +4044,14 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
                   (loop31 >> 8) & 0xFF, int8_t(loop31 >> 16), constants);
     }
     REXGPU_INFO(
-        "[traco] {:4} DRAW prim {} n {} VS {:016X} PS {:016X} pitch {} depth {:08X} blend0 {:08X} "
-        "colorctl {:08X}{} | c0 ({:.4g} {:.4g} {:.4g} {:.4g}) c1 ({:.4g} {:.4g} {:.4g} {:.4g}) c2 "
+        "[traco] {:4} DRAW prim {} n {} VS {:016X} PS {:016X} pitch {} msaa {} zbase {} zfmt {} depth {:08X} "
+        "blend0 {:08X} colorctl {:08X}{} | c0 ({:.4g} {:.4g} {:.4g} {:.4g}) c1 ({:.4g} {:.4g} {:.4g} {:.4g}) c2 "
         "({:.4g} {:.4g} {:.4g} {:.4g}) |{}",
         g_frame_trace.draw_index++, uint32_t(prim_type), index_count,
         vertex_shader->ucode_data_hash(), pixel_shader ? pixel_shader->ucode_data_hash() : 0,
-        regs.Get<reg::RB_SURFACE_INFO>().surface_pitch, regs[XE_GPU_REG_RB_DEPTHCONTROL],
+        regs.Get<reg::RB_SURFACE_INFO>().surface_pitch, (regs[XE_GPU_REG_RB_SURFACE_INFO] >> 16) & 3,
+        regs[XE_GPU_REG_RB_DEPTH_INFO] & 0xFFF, (regs[XE_GPU_REG_RB_DEPTH_INFO] >> 16) & 1,
+        regs[XE_GPU_REG_RB_DEPTHCONTROL],
         regs[XE_GPU_REG_RB_BLENDCONTROL0], regs[XE_GPU_REG_RB_COLORCONTROL], rts,
         RegFloat(regs, c + 0), RegFloat(regs, c + 1), RegFloat(regs, c + 2), RegFloat(regs, c + 3),
         RegFloat(regs, c + 4), RegFloat(regs, c + 5), RegFloat(regs, c + 6), RegFloat(regs, c + 7),

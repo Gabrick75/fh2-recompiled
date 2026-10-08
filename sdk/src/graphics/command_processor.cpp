@@ -413,7 +413,13 @@ void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
   // its MSAA. RB_SURFACE_INFO bits 16-17: 0 = 1x, 1 = 2x, 2 = 4x. From here on render targets, pipelines,
   // EDRAM dumps and resolves all see the capped count, consistently; fewer samples take less EDRAM, so the
   // addresses the game computed for its MSAA still do not overlap.
-  if (index == XE_GPU_REG_RB_SURFACE_INFO) {
+  //
+  // Only surfaces at least kMsaaCapMinPitch pixels wide: the game also clears EDRAM the Xbox 360 way, drawing a
+  // rectangle on a 4x MSAA surface of half the pitch (Forza Horizon 2: pitch 520 4x over the 1040-wide 1x shadow
+  // map, 640 4x over the 1280-wide 1x depth pre-pass), which covers the 1x surface's EDRAM four times faster.
+  // Capped to 1x those clears covered a quarter of it: dark shadows everywhere and garbage on the car.
+  constexpr uint32_t kMsaaCapMinPitch = 1024;
+  if (index == XE_GPU_REG_RB_SURFACE_INFO && (value & 0x3FFFu) >= kMsaaCapMinPitch) {
     const uint32_t asked = (value >> 16) & 3u;
     if (asked) {
       static bool reported = false;

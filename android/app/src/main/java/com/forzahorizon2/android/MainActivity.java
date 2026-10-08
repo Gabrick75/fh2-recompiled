@@ -311,9 +311,8 @@ public final class MainActivity extends AppCompatActivity {
             fxaa.setVisibility("fxaa".equals(mode) ? View.VISIBLE : View.GONE);
         };
         box.addView(selector(GameOptions.ANTI_ALIASING, "Suavização de bordas",
-                "Tira o serrilhado. O MSAA 4x é o do jogo e o mais caro para a GPU; sem ele (ou com 2x) sombras e " +
-                        "reflexos mostram defeitos por enquanto. No S23 Ultra, menu do evento: MSAA 4x 6,8 fps, 2x 9,3, " +
-                        "desligado 13,0. O FXAA é um filtro sobre a imagem final, barato, e vale com o MSAA desligado.",
+                "Tira o serrilhado. O MSAA 4x é o do jogo e o mais caro para a GPU. No S23 Ultra, menu do evento: " +
+                        "MSAA 4x 6,8 fps, 2x 9,3, desligado 13,0. O FXAA é um filtro sobre a imagem final, barato.",
                 new String[] {"Desligado", "MSAA", "FXAA"}, new String[] {"off", "msaa", "fxaa"}, true, v -> show.run()));
         box.addView(msaa);
         box.addView(fxaa);

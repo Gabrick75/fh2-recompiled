@@ -56,8 +56,10 @@ final class GameOptions {
             case PRESENT_MODE: return "fifo";
             case RENDER_RESOLUTION: return "1280x720";
             case FPS: return "60";
-            // The game's own MSAA 4x: without it shadows and reflections show artefacts.
-            case ANTI_ALIASING: return "msaa";
+            // Off: the GPU cost of the game's MSAA 4x nearly halves the frame rate on a phone (event menu on the
+            // S23 Ultra: 6.8 fps 4x, 13.0 off), and the image is right without it (the MSAA cap leaves the game's
+            // half-pitch 4x EDRAM clears alone, src/graphics/command_processor.cpp).
+            case ANTI_ALIASING: return "off";
             case MSAA_SAMPLES: return "4";
             case FXAA_QUALITY: return "normal";
             case SCALING: return "bilinear";
