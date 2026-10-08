@@ -154,13 +154,13 @@ public final class MainActivity extends AppCompatActivity {
         columns.addView(settingsScroll, rightParams);
 
         TextView title = new TextView(this);
-        title.setText("Forza Horizon 2");
+        title.setText("FH2 Recompiled");
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(Color.WHITE);
         title.setPadding(dp(8), dp(12), dp(8), dp(2));
         left.addView(title);
-        TextView subtitle = summary("Xbox 360 · recompilado para Android. Este APK contém o jogo: é só para os seus aparelhos.");
+        TextView subtitle = summary("Recompilação não oficial para Android. Use a sua própria cópia do jogo.");
         subtitle.setPadding(dp(8), 0, dp(8), dp(8));
         left.addView(subtitle);
 
@@ -234,7 +234,7 @@ public final class MainActivity extends AppCompatActivity {
                         GameOptions.flag(this, GameOptions.SHOW_USAGE),
                         v -> GameOptions.flag(this, GameOptions.SHOW_USAGE, v)),
                 selector(GameOptions.PRESENT_MODE, "Modo de apresentação",
-                        "FIFO espera o vsync da tela: é o mais rápido (no S23 Ultra, 11 fps contra 7 no menu) e esquenta " +
+                        "FIFO espera o vsync da tela: é o mais rápido (+57 % no menu) e esquenta " +
                                 "menos. MAILBOX repinta sem parar: um pouco menos de atraso, mas tira CPU e GPU do jogo.",
                         new String[] {"FIFO (vsync) · mais rápido", "MAILBOX"}, new String[] {"fifo", "mailbox"}, false)));
 
@@ -252,12 +252,12 @@ public final class MainActivity extends AppCompatActivity {
                         new String[] {"bilinear", "fsr", "cas"}, false)),
                 toggle("Cena em uma passada",
                         "O jogo desenha a cena em 3 faixas por causa do MSAA; sem MSAA ela cabe inteira e é desenhada " +
-                                "uma vez só: menos trabalho para a CPU (+25 % no S23 Ultra). Só vale com a suavização " +
+                                "uma vez só: menos trabalho para a CPU (+25 %). Só vale com a suavização " +
                                 "desligada ou FXAA.",
                         GameOptions.flag(this, GameOptions.ONE_PASS), v -> GameOptions.flag(this, GameOptions.ONE_PASS, v)),
                 toggle("Vblank adaptativo",
                         "Um quadro que perde o vsync por pouco é mostrado na hora, em vez de esperar o próximo. " +
-                                "Não mudou o fps medido no S23 Ultra; desligue se notar trepidação.",
+                                "Não muda o fps; desligue se notar trepidação.",
                         GameOptions.flag(this, GameOptions.ADAPTIVE_VBLANK),
                         v -> GameOptions.flag(this, GameOptions.ADAPTIVE_VBLANK, v)),
                 selector(GameOptions.ANISOTROPIC, "Filtro anisotrópico",
@@ -279,7 +279,7 @@ public final class MainActivity extends AppCompatActivity {
         right.addView(card(section("Desempenho"),
                 toggle("Fixar threads nos núcleos",
                         "Deixa o jogo só nos núcleos rápidos do processador e o processador de comandos da GPU sozinho no " +
-                                "mais rápido (+16 % no S23 Ultra).",
+                                "mais rápido (+16 %).",
                         GameOptions.flag(this, GameOptions.PIN_THREADS), v -> GameOptions.flag(this, GameOptions.PIN_THREADS, v)),
                 driverSection()));
 
@@ -297,8 +297,8 @@ public final class MainActivity extends AppCompatActivity {
         box.setPadding(0, dp(10), 0, dp(10));
         box.addView(heading("Resolução de renderização"));
         box.addView(summary("Porcentagem da resolução do Xbox 360 (1280×720) em que o jogo desenha. Abaixo de 100 " +
-                "a imagem fica menos nítida e a GPU trabalha bem menos: no S23 Ultra a GPU é quase metade do " +
-                "tempo de cada quadro. Digite de 12 a 100; vale em passos de 12,5 %."));
+                "a imagem fica menos nítida e a GPU trabalha bem menos. Digite de 12 a 100; vale em passos de " +
+                "12,5 %."));
         TextInputLayout field = new TextInputLayout(this, null,
                 com.google.android.material.R.attr.textInputOutlinedStyle);
         field.setBoxStrokeColor(ACCENT);
@@ -375,8 +375,8 @@ public final class MainActivity extends AppCompatActivity {
             fxaa.setVisibility("fxaa".equals(mode) ? View.VISIBLE : View.GONE);
         };
         box.addView(selector(GameOptions.ANTI_ALIASING, "Suavização de bordas",
-                "Tira o serrilhado. O MSAA 4x é o do jogo e o mais caro para a GPU. No S23 Ultra, menu do evento: " +
-                        "MSAA 4x 6,8 fps, 2x 9,3, desligado 13,0. O FXAA é um filtro sobre a imagem final, barato.",
+                "Tira o serrilhado. O MSAA 4x é o do jogo e o mais caro para a GPU: o 2x rende +37 % e desligado " +
+                        "+91 %. O FXAA é um filtro sobre a imagem final, barato.",
                 new String[] {"Desligado", "MSAA", "FXAA"}, new String[] {"off", "msaa", "fxaa"}, true, v -> show.run()));
         box.addView(msaa);
         box.addView(fxaa);
@@ -851,7 +851,7 @@ public final class MainActivity extends AppCompatActivity {
         if (setting instanceof LinearLayout) {
             LinearLayout box = (LinearLayout) setting;
             int at = Math.min(box.getChildCount(), 2);
-            box.addView(notYetNote("Ainda sem efeito no Forza Horizon 2."), at);
+            box.addView(notYetNote("Ainda sem efeito."), at);
         }
         return setting;
     }
