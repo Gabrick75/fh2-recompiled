@@ -10,8 +10,10 @@ Public License v3.0 (see [LICENSE](LICENSE)).
 |---|---|---|---|
 | [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) v0.10.0 | Tom Clay, with portions from [Xenia](https://xenia.jp) by Ben Vanik and the Xenia contributors | `sdk/`: the PowerPC to C++ code generator, the Xbox 360 kernel and runtime, the Xenos GPU command processing and the Vulkan backend | BSD-3-Clause ([sdk/LICENSE](sdk/LICENSE)) |
 | [NFSMW Recompiled](https://github.com/madelrandel-blip/NFSMW-Recompiled) | madelrandel-blip | The recompilation project layout this one started from: application setup, code generation setup and tools | GPL-3.0 |
-| [nfsmw-nx](https://github.com/StevensND/nfsmw-nx) | StevensND | Changes to the SDK and tools inherited through nfsmw-android | GPL-3.0 |
-| [nfsmw-android](https://github.com/codepdbh/nfsmw-android) | codepdbh | The Android application shell (launcher, SDL3 activity, touch controls, diagnostics) this one was adapted from | GPL-3.0 |
+| [nfsmw-nx](https://github.com/StevensND/nfsmw-nx) | StevensND | Changes to the SDK and tools inherited through nfsmw-android; the native renderer (through nfsmw-android) and the shader translator's changes (`tools/xenos/recomp`, from commit `4e3ffc2`) | GPL-3.0 |
+| [nfsmw-android](https://github.com/codepdbh/nfsmw-android) | codepdbh | The Android application shell (launcher, SDL3 activity, touch controls, diagnostics) this one was adapted from; the native renderer in `app/src/nativo` (from commit `a7e6e4c`) | GPL-3.0 |
+| [NFS-CARBON-360-ANDROID-RECOMP](https://github.com/codepdbh/NFS-CARBON-360-ANDROID-RECOMP) | codepdbh | The way the native renderer is built for another game (`NFSC_RECOMP`, game hooks and links) followed by `FH2_RECOMP`, and its NFS Carbon translator changes | GPL-3.0 |
+| [XenosRecomp](https://github.com/hedge-dev/XenosRecomp) | hedge-dev and contributors | The shader translator in `tools/xenos/recomp` | MIT ([tools/xenos/recomp/LICENSE.md](tools/xenos/recomp/LICENSE.md)) |
 | [NFSMW-Recompiled-Mobile](https://github.com/victorgbd/NFSMW-Recompiled-Mobile) | victorgbd | Performance changes ported to this project: MSAA cap, futex wait for the command ring, FPS counter, launcher menu layout | GPL-3.0 |
 
 Changes made by this project to files under `sdk/` are distributed under the SDK's BSD-3-Clause license, so

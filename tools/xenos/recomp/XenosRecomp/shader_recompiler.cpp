@@ -18,7 +18,11 @@ static constexpr const char* USAGE_TYPES[] =
 {
     "float4", // POSITION
     "float4", // BLENDWEIGHT
+#ifdef FH2_RECOMP
+    "float4", // BLENDINDICES: the native renderer's FH2/NFS Carbon path gives them as floats (USCALED for bytes)
+#else
     "uint4", // BLENDINDICES
+#endif
 #ifdef NFSMW_RECOMP
     "float4", // NORMAL: NFSMW stores them as 16-bit integers or as float
 #else

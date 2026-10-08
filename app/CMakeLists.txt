@@ -22,6 +22,20 @@ set(FH2_SOURCES
     src/fh2_desempenho.cpp
     src/fh2_perfil.cpp
     src/fh2_censo.cpp
+    # Native renderer (cvar fh2_renderizador = nativo): NFSMW Android Evolved's, built for FH2 with FH2_RECOMP
+    # (src/nativo/README.md, docs/renderizador_nativo.md), FH2's hooks and the answers it asks of NFSMW's modules.
+    src/nativo/nfsmw_nativo_sistema.cpp
+    src/nativo/nfsmw_nativo_destinos.cpp
+    src/nativo/nfsmw_nativo_dibujos.cpp
+    src/nativo/nfsmw_nativo_shaders.cpp
+    src/nativo/nfsmw_nativo_ganchos.cpp
+    src/nativo/nfsmw_nativo_texturas_pool.cpp
+    src/nativo/nfsmw_nativo_captura.cpp
+    src/nativo/nfsmw_shader_library.cpp
+    src/nativo/nfsmw_espera_anillo.cpp
+    src/nativo/nfsmw_ajustes_graficos.cpp
+    src/fh2_nativo_ganchos.cpp
+    src/fh2_nativo_enlaces.cpp
 )
 
 if(ANDROID)
@@ -44,4 +58,12 @@ if(TARGET imgui)
 endif()
 if(TARGET renderdoc)
     target_include_directories(fh2 PRIVATE $<TARGET_PROPERTY:renderdoc,INTERFACE_INCLUDE_DIRECTORIES>)
+endif()
+
+# Native renderer: FH2's branches, its folder, the SDK's xxHash (shader library fingerprints) and the SDK
+# presenter's precompiled SPIR-V (it draws the game image into the presenter output).
+target_compile_definitions(fh2 PRIVATE FH2_RECOMP=1)
+target_include_directories(fh2 PRIVATE src/nativo)
+if(REXSDK_DIR)
+    target_include_directories(fh2 PRIVATE "${REXSDK_DIR}/thirdparty/xxHash" "${REXSDK_DIR}/src/ui/shaders")
 endif()

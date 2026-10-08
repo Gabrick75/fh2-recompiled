@@ -108,7 +108,10 @@ struct NfsmwBloqueCompartidas { float4 v[FH2_COMPARTIDA_BYTES / 16]; };  // FH2:
 [[vk::binding(0, 4)]] ConstantBuffer<NfsmwBloqueVs> g_UboVertex;
 [[vk::binding(1, 4)]] ConstantBuffer<NfsmwBloquePs> g_UboPixel;
 [[vk::binding(2, 4)]] ConstantBuffer<NfsmwBloqueCompartidas> g_UboCompartidas;
-#define NFSMW_UBO ((g_SpecConstants & SPEC_CONSTANT_CONSTANTES_UBO) != 0)
+// FH2: constants only through the set 4 UBOs, as the native renderer reads them by default
+// (nfsmw_nativo_constantes_ubo). Without the 64-bit pointer path the SPIR-V is ~40 % smaller and needs neither
+// shaderInt64 nor buffer device address (Vulkan 1.1 drivers, the Moto G9 Play's).
+#define NFSMW_UBO true
 #define NFSMW_COMPARTIDA_UINT(B)  asuint(g_UboCompartidas.v[(B) / 16][((B) % 16) / 4])
 #define NFSMW_COMPARTIDA_FLOAT(B) g_UboCompartidas.v[(B) / 16][((B) % 16) / 4]
 #define FH2_BUCLE(ID) (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_BUCLES + (ID) * 4) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + FH2_COMPARTIDA_BUCLES + (ID) * 4))

@@ -29,10 +29,11 @@ CONSTRUCTORS = {"sub_82B70280": "pixel", "sub_82B70468": "vertex"}
 
 g = json.load(open(os.path.join(HERE, "callgraph.json")))
 hooked = set()
-for name in os.listdir(os.path.join(ROOT, "app", "src")):
-    if name.endswith(".cpp") and name != "fh2_censo.cpp":
-        text = open(os.path.join(ROOT, "app", "src", name), encoding="utf-8").read()
-        hooked |= set(re.findall(r"REX_HOOK_RAW\((sub_[0-9A-F]{8})\)", text))
+for folder, _, names in os.walk(os.path.join(ROOT, "app", "src")):
+    for name in names:
+        if name.endswith(".cpp") and name != "fh2_censo.cpp":
+            text = open(os.path.join(folder, name), encoding="utf-8", errors="replace").read()
+            hooked |= set(re.findall(r"REX_HOOK_RAW\((sub_[0-9A-F]{8})\)", text))
 
 
 def inside(f):

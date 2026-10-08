@@ -4,7 +4,8 @@
 #   1. unpacks the track .fxobj from the zips and extracts every shader container;
 #   2. translates them to HLSL with XenosRecomp as changed by nfsmw-nx and this project (tools/xenos/recomp);
 #   3. compiles to SPIR-V with DXC and validates with spirv-val;
-#   4. coverage (cobertura.py).
+#   4. packs the library the native renderer loads (fh2_shaders.nfsp, also copied next to the PC build);
+#   5. coverage (cobertura.py).
 # Output in app/out/shaders_fh2 (made from the game's data: never commit or share it).
 #
 #   tools/xenos/biblioteca.sh                       DXC from DXC=..., default ~/.local/share/fh2-tools/dxc-*/
@@ -44,4 +45,7 @@ for f in $S/hlsl/*.hlsl; do
 done
 echo "spirv ok=$ok falhou=$fail"
 grep -h "error:" $S/dxc.log | sed -E 's/.*error: //' | sort | uniq -c | sort -rn | head -6
+g++ -std=c++23 -O1 -I$RAIZ/app/src/nativo -I$TP/xxHash -I$TP/fmt/include -DFMT_HEADER_ONLY \
+  $RAIZ/tools/xenos/empaquetar.cpp $RAIZ/app/src/nativo/nfsmw_shader_library.cpp -o $B/empaquetar || exit 1
+$B/empaquetar $S/contenedores $S/spirv $S/fh2_shaders.nfsp && cp $S/fh2_shaders.nfsp $RAIZ/app/out/linux/
 python3 $RAIZ/tools/xenos/cobertura.py "$XSH" $S/contenedores $S/spirv

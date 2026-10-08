@@ -11,6 +11,7 @@
 
 #include "fh2_captura.h"
 #include "fh2_teste_entrada.h"
+#include "nfsmw_nativo_sistema.h"
 
 #if REX_PLATFORM_ANDROID
 // android/app/src/main/cpp/android_rendimiento.cpp: keeps the game threads off the slow cores.
@@ -40,6 +41,12 @@ class Fh2App : public rex::ReXApp {
 #if REX_PLATFORM_ANDROID
     fh2_android_nucleos_grandes_aplicar();
 #endif
+    // Native renderer (src/nativo, docs/renderizador_nativo.md): with nfsmw_renderizador = nativo the graphics
+    // system is its own and the GPU emulation plugin is not loaded (ReXApp only loads it when config.graphics is
+    // empty). The default is still the emulation.
+    if (nfsmw::nativo::Activo()) {
+      config.graphics = nfsmw::nativo::CrearSistemaGrafico();
+    }
     fh2::teste::EnvolverEntrada(config);
   }
   // void OnLoadXexImage(std::string& xex_image) override {}
