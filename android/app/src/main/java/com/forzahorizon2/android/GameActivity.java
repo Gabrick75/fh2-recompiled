@@ -122,7 +122,7 @@ public final class GameActivity extends SDLActivity
     /*
      * Safety copy of the player's progress before the game runs: the profile folders (16 hex digits, the XUID, with
      * the saves of every title inside) and achievements, about 8 MB. To Internal storage/jogos/ForzaHorizon2-saves/
-     * <date>, keeping the newest SAVE_BACKUPS. A failure only logs: it never stops the game.
+     * <date>, keeping the first one and the newest SAVE_BACKUPS. A failure only logs: it never stops the game.
      */
     private static final int SAVE_BACKUPS = 10;
 
@@ -141,9 +141,10 @@ public final class GameActivity extends SDLActivity
                 copyTree(entry, new File(target, entry.getName()));
             }
             File[] old = backups.listFiles(File::isDirectory);
-            if (old != null && old.length > SAVE_BACKUPS) {
+            if (old != null && old.length > SAVE_BACKUPS + 1) {
                 java.util.Arrays.sort(old);  // the names are dates, so they sort by age
-                for (int i = 0; i < old.length - SAVE_BACKUPS; i++) {
+                // The first copy is never deleted: it is the progress from before any of the later runs.
+                for (int i = 1; i < old.length - SAVE_BACKUPS; i++) {
                     deleteTree(old[i]);
                 }
             }

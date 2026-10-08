@@ -10,18 +10,27 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <cinttypes>
+#include <climits>
 #include <cmath>
 #include <cstring>
 #include <string_view>
 
 #include <fmt/format.h>
 
+#if defined(__linux__)
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
 #include <rex/cvar.h>
 #include <rex/dbg.h>
 #include <rex/perf/counter.h>
 #include <rex/chrono/clock.h>
 #include <rex/graphics/command_processor.h>
+#include <rex/graphics/cp_times.h>
 #include <rex/graphics/flags.h>
 #include <rex/graphics/graphics_system.h>
 #include <rex/graphics/pipeline/texture/info.h>
@@ -84,10 +93,36 @@ REXCVAR_DEFINE_BOOL(async_shader_compilation, true, "GPU",
 REXCVAR_DEFINE_BOOL(gpu_sin_msaa, false, "GPU",
                     "Draw with one sample even when the game asks for MSAA: much less GPU work (on a "
                     "tiled mobile GPU every render pass moves all the samples to memory), more jaggies");
+REXCVAR_DEFINE_BOOL(gpu_medir_pacotes, false, "GPU",
+                    "Log the command processor's time per PM4 packet kind every 5 s (costs a few clock reads "
+                    "per packet)");
 REXCVAR_DEFINE_INT32(gpu_msaa_muestras, 4, "GPU",
                      "Cap of MSAA samples: 1, 2 or 4 (the game's own). gpu_sin_msaa overrides it");
 
+// Read pointer publications, for whoever waits for room in the ring (the game's D3D spins on the read pointer
+// copy in guest memory; app/src/fh2_desempenho.cpp sleeps on this futex instead). Exported with C names so the
+// app finds them with dlsym; adapted from NFSMW-Recompiled-Mobile (tools/parche_espera_anillo.py).
+extern "C" __attribute__((visibility("default"))) std::atomic<uint32_t> rex_cp_rptr_seq{0};
+extern "C" __attribute__((visibility("default"))) std::atomic<uint32_t> rex_cp_rptr_waiters{0};
+
+namespace {
+// After each write of the read pointer copy: bumps the sequence and wakes the sleepers, with a system call
+// only when someone sleeps.
+void PublishReadPointer() {
+  rex_cp_rptr_seq.fetch_add(1, std::memory_order_seq_cst);
+#if defined(__linux__)
+  if (rex_cp_rptr_waiters.load(std::memory_order_seq_cst)) {
+    syscall(SYS_futex, &rex_cp_rptr_seq, FUTEX_WAKE_PRIVATE, INT_MAX, nullptr, nullptr, 0);
+  }
+#endif
+}
+}  // namespace
+
 namespace rex::graphics {
+
+CpTimes g_cp_times;
+uint64_t g_cp_packet_ns[kCpPacketKinds] = {};
+uint32_t g_cp_packet_count[kCpPacketKinds] = {};
 
 using namespace rex::graphics::xenos;
 
@@ -227,6 +262,7 @@ void CommandProcessor::WorkerThreadMain() {
       // We've run out of commands to execute.
       // We spin here waiting for new ones, as the overhead of waiting on our
       // event is too high.
+      CpTimer idle_timer(g_cp_times.idle_ns);
       PrepareForWait();
 #if !REX_PLATFORM_SWITCH
       uint32_t loop_count = 0;
@@ -265,6 +301,7 @@ void CommandProcessor::WorkerThreadMain() {
     if (read_ptr_writeback_ptr_) {
       memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(read_ptr_writeback_ptr_),
                                        read_ptr_index_);
+      PublishReadPointer();
     }
 
     // FIXME: We're supposed to process the WAIT_UNTIL register at this point,
@@ -711,6 +748,7 @@ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t wr
       if (avanzado >= paso) {
         memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(read_ptr_writeback_ptr_),
                                          ahora);
+        PublishReadPointer();
         publicado = ahora;
       }
     }
@@ -761,19 +799,55 @@ bool CommandProcessor::ExecutePacket(memory::RingBuffer* reader) {
     REXGPU_WARN("GPU packet is CDCDCDCD - probably read uninitialized memory!");
   }
 
+  // Exclusive time per packet kind (gpu_medir_pacotes): an INDIRECT_BUFFER runs packets inside, and its clock
+  // stops meanwhile so nothing is counted twice.
+  using PacketClock = std::chrono::steady_clock;
+  static int stack_kind[32];
+  static PacketClock::time_point stack_since[32];
+  static int depth = 0;
+  auto ns = [](PacketClock::duration d) {
+    return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(d).count());
+  };
+  const int kind = packet_type == 3 ? int((packet >> 8) & 0x7F) : 128 + int(packet_type != 0);
+  const bool timed = depth < 32 && REXCVAR_GET(gpu_medir_pacotes);
+  if (timed) {
+    const auto now = PacketClock::now();
+    if (depth > 0) {
+      g_cp_packet_ns[stack_kind[depth - 1]] += ns(now - stack_since[depth - 1]);
+    }
+    stack_kind[depth] = kind;
+    stack_since[depth] = now;
+    ++depth;
+  }
+  bool result;
   switch (packet_type) {
     case 0x00:
-      return ExecutePacketType0(reader, packet);
+      result = ExecutePacketType0(reader, packet);
+      break;
     case 0x01:
-      return ExecutePacketType1(reader, packet);
+      result = ExecutePacketType1(reader, packet);
+      break;
     case 0x02:
-      return ExecutePacketType2(reader, packet);
+      result = ExecutePacketType2(reader, packet);
+      break;
     case 0x03:
-      return ExecutePacketType3(reader, packet);
+      result = ExecutePacketType3(reader, packet);
+      break;
     default:
       assert_unhandled_case(packet_type);
-      return false;
+      result = false;
+      break;
   }
+  if (timed) {
+    const auto end = PacketClock::now();
+    --depth;
+    g_cp_packet_ns[kind] += ns(end - stack_since[depth]);
+    ++g_cp_packet_count[kind];
+    if (depth > 0) {
+      stack_since[depth - 1] = end;
+    }
+  }
+  return result;
 }
 
 bool CommandProcessor::ExecutePacketType0(memory::RingBuffer* reader, uint32_t packet) {
@@ -1077,6 +1151,8 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
 
   bool is_memory = (wait_info & 0x10) != 0;
 
+  // Timed from the first check that fails.
+  std::chrono::steady_clock::time_point wait_since{};
   bool matched = false;
   do {
     uint32_t value = 0;
@@ -1117,6 +1193,10 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
         matched = true;
         break;
     }
+    if (!matched && wait_since == std::chrono::steady_clock::time_point{}) {
+      wait_since = std::chrono::steady_clock::now();
+      g_cp_times.wait_regs.fetch_add(1, std::memory_order_relaxed);
+    }
     if (!matched) {
       // Wait.
       if (wait >= 0x100) {
@@ -1139,6 +1219,12 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
       }
     }
   } while (!matched);
+  if (wait_since != std::chrono::steady_clock::time_point{}) {
+    g_cp_times.wait_reg_ns.fetch_add(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                  std::chrono::steady_clock::now() - wait_since)
+                                                  .count()),
+                                     std::memory_order_relaxed);
+  }
 
   return true;
 }

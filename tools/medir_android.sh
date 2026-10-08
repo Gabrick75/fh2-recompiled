@@ -3,8 +3,9 @@
 # installs the APK, starts the game through the launcher's test bench and prints the "fps:" lines of the log.
 #
 # The measuring scene is the event menu the player's save opens on ("Festival Race / Horizon Heats", the 3D world
-# behind it): the button script only presses START on the title screen (three times, the later ones land on the
-# loading screen) and never A, so nothing is chosen and the save is never touched. The menu shows at about 45 s.
+# behind it): the button script only presses START on the title screen (twice; the second one lands on the
+# loading screen. A third one reached the event menu once, where START starts the race) and never A, so nothing
+# is chosen and the save is never touched. The menu shows at about 45 s.
 #
 #   tools/medir_android.sh                  install, run 120 s, print the fps lines and the menu average
 #   tools/medir_android.sh --gpu_sin_msaa=true          with extra game options
@@ -30,7 +31,7 @@ fi
 termico() { "$ADB" shell dumpsys thermalservice 2>/dev/null | grep -m1 "Thermal Status" | tr -d '\r'; }
 echo "antes: $(termico)"
 
-ROTEIRO=${ROTEIRO:-"10:start;16:start;22:start"}
+ROTEIRO=${ROTEIRO:-"14:start;20:start"}
 
 ARGS=("--fh2_teste_botoes=$ROTEIRO" "$@")
 "$ADB" shell am force-stop "$PKG"

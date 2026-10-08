@@ -19,6 +19,7 @@ set(FH2_SOURCES
     src/fh2_captura.cpp
     # Guards on game functions (null checks the console never needed).
     src/fh2_correcoes.cpp
+    src/fh2_desempenho.cpp
 )
 
 if(ANDROID)

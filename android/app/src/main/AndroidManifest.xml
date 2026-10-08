@@ -14,6 +14,8 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="false">
+        <!-- simpleperf from adb without root (tools/perfil_android.sh). -->
+        <profileable android:shell="true" />
         <provider
             android:name=".ReportFileProvider"
             android:authorities="${applicationId}.reports"

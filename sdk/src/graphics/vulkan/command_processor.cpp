@@ -38,6 +38,7 @@
 #include <rex/graphics/pipeline/shader/shader.h>
 #include <rex/graphics/pipeline/shader/spirv_translator.h>
 #include <rex/graphics/registers.h>
+#include <rex/graphics/cp_times.h>
 #include <rex/graphics/vulkan/command_processor.h>
 #include <rex/graphics/vulkan/pipeline_cache.h>
 #include <rex/graphics/vulkan/render_target_cache.h>
@@ -2346,6 +2347,7 @@ extern "C" bool RexSwitchPerfSkip(unsigned bit);
 void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                                        uint32_t frontbuffer_height) {
   SCOPE_profile_cpu_f("gpu");
+  CpTimer swap_timer(g_cp_times.swap_ns);
   {
     // Frames the GAME presents: one info line every 5 s with the average and the worst frame time.
     // A phone has no overlay to read and some ROMs cap logcat; one line every 5 s costs nothing.
@@ -2382,6 +2384,53 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
         REXGPU_INFO("fps: {:.1f} ({} frames in {:.1f} s, {:.1f} ms average, worst {:.1f} ms)",
                     fps_frames / fps_seconds, fps_frames, fps_seconds,
                     fps_seconds * 1000.0 / fps_frames, fps_worst_ms);
+        // Where the command processor's time went, per frame (include/rex/graphics/cp_times.h).
+        const double per_frame = 1.0 / fps_frames;
+        auto ms = [per_frame](std::atomic<uint64_t>& ns) {
+          return double(ns.exchange(0, std::memory_order_relaxed)) / 1e6 * per_frame;
+        };
+        auto count = [per_frame](std::atomic<uint32_t>& n) {
+          return double(n.exchange(0, std::memory_order_relaxed)) * per_frame;
+        };
+        const double frame_ms = fps_seconds * 1000.0 * per_frame;
+        const double idle = ms(g_cp_times.idle_ns);
+        const double wait_reg = ms(g_cp_times.wait_reg_ns);
+        const double draw = ms(g_cp_times.draw_ns);
+        const double copy = ms(g_cp_times.copy_ns);
+        const double swap = ms(g_cp_times.swap_ns);
+        const double gpu_wait = ms(g_cp_times.gpu_wait_ns);
+        const double submit = ms(g_cp_times.submit_ns);
+        const double draws = count(g_cp_times.draws);
+        const double copies = count(g_cp_times.copies);
+        const double wait_regs = count(g_cp_times.wait_regs);
+        const double gpu_waits = count(g_cp_times.gpu_waits);
+        const double submits = count(g_cp_times.submits);
+        REXGPU_INFO(
+            "tempos por quadro: {:.1f} ms = ocioso {:.1f} + WAIT_REG_MEM {:.1f} ({:.1f}) + draws {:.1f} "
+            "({:.0f}) + resolves {:.1f} ({:.0f}) + swap {:.1f} + resto {:.1f} | de ello: espera GPU {:.1f} "
+            "({:.1f}), vkQueueSubmit {:.1f} ({:.1f})",
+            frame_ms, idle, wait_reg, wait_regs, draw, draws, copy, copies, swap,
+            frame_ms - idle - wait_reg - draw - copy - swap, gpu_wait, gpu_waits, submit, submits);
+        if (REXCVAR_GET(gpu_medir_pacotes)) {
+          // The packet kinds with the most exclusive time.
+          int order[kCpPacketKinds];
+          for (int i = 0; i < kCpPacketKinds; ++i) {
+            order[i] = i;
+          }
+          std::sort(std::begin(order), std::end(order),
+                    [](int a, int b) { return g_cp_packet_ns[a] > g_cp_packet_ns[b]; });
+          std::string packets;
+          for (int k = 0; k < 10 && g_cp_packet_ns[order[k]]; ++k) {
+            const int i = order[k];
+            packets += fmt::format("  {}{:02X} {:.2f} ms ({:.0f})", i < 128 ? "op" : "tipo",
+                                   i < 128 ? i : (i == 128 ? 0 : 1),
+                                   double(g_cp_packet_ns[i]) / 1e6 * per_frame,
+                                   double(g_cp_packet_count[i]) * per_frame);
+          }
+          REXGPU_INFO("pacotes por quadro:{}", packets);
+          std::fill(std::begin(g_cp_packet_ns), std::end(g_cp_packet_ns), 0);
+          std::fill(std::begin(g_cp_packet_count), std::end(g_cp_packet_count), 0);
+        }
         fps_frames = 0;
         fps_worst_ms = 0.0;
         fps_since = fps_now;
@@ -3776,6 +3825,8 @@ Shader* VulkanCommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32
 bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t index_count,
                                        IndexBufferInfo* index_buffer_info,
                                        bool major_mode_explicit) {
+  CpTimer draw_timer(g_cp_times.draw_ns);
+  g_cp_times.draws.fetch_add(1, std::memory_order_relaxed);
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -4737,6 +4788,8 @@ bool VulkanCommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_
 }
 
 bool VulkanCommandProcessor::IssueCopy() {
+  CpTimer copy_timer(g_cp_times.copy_ns);
+  g_cp_times.copies.fetch_add(1, std::memory_order_relaxed);
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
@@ -5336,6 +5389,8 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
     // defined by vkQueueSubmit additionally include in the first
     // synchronization scope all commands that occur earlier in submission
     // order."
+    CpTimer gpu_wait_timer(g_cp_times.gpu_wait_ns);
+    g_cp_times.gpu_waits.fetch_add(1, std::memory_order_relaxed);
     VkResult wait_result =
         dfn.vkWaitForFences(device, uint32_t(await_submission - submission_completed_),
                             submissions_in_flight_fences_.data(), VK_TRUE, UINT64_MAX);
@@ -5786,7 +5841,11 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
 #if REX_PLATFORM_SWITCH
       RexSwitchPerfCount(7);
 #endif
-      submit_result = dfn.vkQueueSubmit(queue_acquisition.queue(), 1, &submit_info, fence);
+      {
+        CpTimer submit_timer(g_cp_times.submit_ns);
+        submit_result = dfn.vkQueueSubmit(queue_acquisition.queue(), 1, &submit_info, fence);
+      }
+      g_cp_times.submits.fetch_add(1, std::memory_order_relaxed);
     }
     if (submit_result != VK_SUCCESS) {
       REXGPU_ERROR("Failed to submit a Vulkan command buffer");
