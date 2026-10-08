@@ -102,6 +102,42 @@ Para o renderizador nativo isso significa:
 - o estado herdado do device no momento da execução (máscaras de `RunCommandBuffer`) entra em cada execução;
 - as mudanças de conteúdo precisam ser detectadas (hash por execução, ~930 dwords: barato).
 
+## A base escolhida: o renderizador nativo do nfsmw-nx (2026-10-08)
+
+O APK "NFSMW Android Evolved 0.6.2" (30–40 fps no NFSMW num Unisoc T618 com 4 GB) declara a licença GPL-3.0 e é
+construído sobre o **nfsmw-nx** (`github.com/StevensND/nfsmw-nx`, GPL-3.0, código aberto, porte do NFSMW para o
+Switch). O renderizador nativo dele está em `app/src/nfsmw_nativo_*` (~26 mil linhas) e explicado em
+`docs/native-renderer.md` daquele repositório. Como este projeto também é GPL-3.0, o código pode ser usado com crédito.
+
+Por que ele serve ao FH2 (e o renderizador do NFSMW_ff, que intercepta as chamadas Direct3D, não):
+
+- **Lê o anel PM4** (inclusive `INDIRECT_BUFFER`), em vez de interceptar as funções de draw: os buffers pré-gravados,
+  ~60 % dos draws do FH2, entram sem trabalho extra.
+- Não emula a EDRAM: render targets viram imagens Vulkan, resolves viram cópias (ou trocas de imagem quando o alvo vai
+  ser limpo em seguida); só imagens pequenas que a CPU lê (exposição 64×64) voltam à memória do jogo.
+- Shaders traduzidos **antes de jogar** pelo XenosRecomp (hedge-dev, MIT) a partir dos contêineres originais
+  (cabeçalho, tabela de constantes, declaração de vértices, microcódigo), compilados com DXC para SPIR-V e guardados
+  numa biblioteca (`.nfsp`) achada pelo hash do microcódigo. Vertex shaders são modificados pelo D3D ao serem usados, então
+  a identidade deles vem de ganchos nas funções que criam shaders.
+- Três slots de trabalho por quadro, constantes num uniform buffer dinâmico, cache de texturas por hash com checagem cada
+  vez mais rara, cache de pipelines em disco e pré-aquecido.
+
+O que o FH2 tem para isso: **174 `.fxobj` em `media/shaders` com 2.921 contêineres** no formato de 2008 (`10 2A 11 00/01`),
+o que o XenosRecomp lê sem o conversor de formato que o NFSMW (formato de 2005, `10 2A 0E`) precisou.
+
+O desempenho do Evolved também vem de cortes específicos do NFSMW (`assets/nativo/nfsmw.toml` do APK): reflexo atualizado a
+cada 4 quadros e só quando visível, sombras cortadas a 150 m num mapa só, PCF barato, sem desfoque, sem MSAA, Z
+antecipado, invisíveis pulados, 720p. No FH2 os equivalentes precisam ser achados no código do jogo.
+
+### Etapas
+
+1. Biblioteca de shaders do FH2: XenosRecomp + DXC no PC sobre os `.fxobj` (e o XEX); medir quantos traduzem e quantos
+   microcódigos do `IM_LOAD` da corrida são achados nela.
+2. Portar o leitor do anel e o caminho de draws (`nfsmw_nativo_sistema`, `_dibujos`, `_destinos`, `_texturas_pool`,
+   `_shaders`) para o FH2, ligado por cvar, desenhando a tela de título no PC.
+3. Identidade dos vertex shaders (ganchos na biblioteca D3D do FH2), corrida no PC, comparação com a emulação.
+4. Android (S23, Moto), depois cortes específicos do FH2.
+
 ## Próximos passos
 
 - Achar as funções de gravação e execução dos buffers pré-gravados (quem monta os `INDIRECT_BUFFER`) e medir
