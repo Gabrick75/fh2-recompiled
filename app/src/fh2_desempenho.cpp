@@ -253,3 +253,25 @@ REX_HOOK_RAW(sub_82417A20) {
   }
   __imp__sub_82417A20(ctx, base);
 }
+
+// RENDER MODE (investigation): the game's table of render setups at 0x833E9380 (0x4D0 bytes each: name, width,
+// height, MSAA level, tile count, tile rects): 0 "1280x720 4xMSAA Horizontal Split" (the default), 1 "1280x720
+// 2xMSAA Horizontal Split", 2 "1280x720 1xMSAA No Split", 3 "Largest 2xMSAA No Split" (1120x584). The index is at
+// +0x2438 of the structure sub_8247C2F8 gets in r3. fh2_modo_render >= 0 forces it.
+REXCVAR_DEFINE_INT32(fh2_modo_render, -1, "FH2",
+                     "Debug: force the game's render setup (0 4xMSAA 3 tiles, 1 2xMSAA 2 tiles, 2 no MSAA, 3 "
+                     "1120x584 2xMSAA); -1 = the game's choice");
+// The scene's setup index comes from sub_82482390 (called at 0x8246AE54 on the settings object at [0x83422068]); the
+// game also switches to setup 2 for other passes and back. The forced value replaces that return value.
+REX_EXTERN(__imp__sub_82482390);
+REX_HOOK_RAW(sub_82482390) {
+  __imp__sub_82482390(ctx, base);
+  static std::atomic<int> logged{0};
+  if (logged.fetch_add(1) < 2) {
+    REXLOG_INFO("[fh2] modo de render da cena: {} (de {:08X})", ctx.r3.u32, static_cast<uint32_t>(ctx.lr));
+  }
+  const int32_t forced = REXCVAR_GET(fh2_modo_render);
+  if (forced >= 0 && forced <= 3) {
+    ctx.r3.u64 = uint64_t(forced);
+  }
+}

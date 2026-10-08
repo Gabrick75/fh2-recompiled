@@ -2484,7 +2484,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
     std::error_code ec;
     std::filesystem::create_directories(folder, ec);
     for (const auto& dump : g_frame_trace.dumps) {
-      const auto* data = memory_->TranslatePhysical<const char*>(dump.base);
+      // Resolve destinations are physical; addresses of the game's own data (0x40000000-0x9FFFFFFF) are virtual.
+      const bool is_virtual = dump.base >= 0x40000000 && dump.base < 0xA0000000 && dump.name.rfind("extra_", 0) == 0;
+      const auto* data = is_virtual ? memory_->TranslateVirtual<const char*>(dump.base)
+                                    : memory_->TranslatePhysical<const char*>(dump.base);
       if (!data) {
         continue;
       }
