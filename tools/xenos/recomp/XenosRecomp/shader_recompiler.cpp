@@ -108,6 +108,14 @@ static constexpr DeclUsageLocation USAGE_LOCATIONS[] =
     { DeclUsage::TexCoord, 6, 14 },
     { DeclUsage::TexCoord, 7, 15 },
     { DeclUsage::Position, 1, 15 },
+#ifdef FH2_RECOMP
+    // FH2's executable has vertex shaders with POSITION1-4 in several streams (as NFS Carbon's NFSC_RECOMP does).
+    { DeclUsage::Position, 2, 16 },
+    { DeclUsage::Position, 3, 17 },
+    { DeclUsage::Position, 4, 18 },
+    { DeclUsage::Position, 5, 19 },
+    { DeclUsage::Position, 6, 20 },
+#endif
 };
 
 static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
@@ -129,15 +137,13 @@ static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
     { DeclUsage::TexCoord, 14 },
     { DeclUsage::TexCoord, 15 },
     { DeclUsage::Color, 0 }
+    , { DeclUsage::Color, 1 }
 #ifdef FH2_RECOMP
-    // FH2's shaders (3,587 containers) pass COLOR0, NORMAL0, TANGENT0, BINORMAL0 and POSITION1 besides the 16
-    // texture coordinates, never COLOR1..5. Fewer outputs fit the GPUs with 128 output components.
+    // FH2's shaders also pass NORMAL0, TANGENT0, BINORMAL0 and POSITION1, never COLOR2..5.
     , { DeclUsage::Normal, 0 }
     , { DeclUsage::Tangent, 0 }
     , { DeclUsage::Binormal, 0 }
     , { DeclUsage::Position, 1 }
-#else
-    , { DeclUsage::Color, 1 }
 #endif
 #if defined(NFSMW_RECOMP) && !defined(FH2_RECOMP)
     // NFSMW declares and consumes COLOR2..5 in the original 2005 shaders.
@@ -566,6 +572,16 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
                 {
                     if (relativa)
                         throw std::runtime_error("direccionamiento relativo sin constante declarada pendiente");
+                #ifdef FH2_RECOMP
+                    // FH2: a register without a name nor a literal value is read from the constants the game set.
+                    if (!fh2ConstantesLiterales.count(reg))
+                    {
+                        const char* nombreShader = isPixelShader ? "Pixel" : "Vertex";
+                        regFormatted = fmt::format("(NFSMW_UBO ? g_Ubo{}.v[{}] : vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + {}, 0x10))",
+                            nombreShader, reg, nombreShader, reg * 16);
+                    }
+                    else
+                #endif
                     regFormatted = fmt::format("c{}", reg);
                 }
             }
@@ -1205,6 +1221,17 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
     cerrarSiEscribePredicado(marcaPredicado);
 }
 
+// The iteration count of loop constant id: its literal (i<id>.x) or, without one, the value the game set (FH2: the
+// shared constants' loop area, FH2_COMPARTIDA_BUCLES; the count is the low byte of the Xenos loop constant).
+std::string ShaderRecompiler::fh2Bucle(uint32_t id)
+{
+#ifdef FH2_RECOMP
+    if (!fh2BuclesLiterales.count(id))
+        return fmt::format("int(FH2_BUCLE({}) & 0xFF)", id);
+#endif
+    return fmt::format("i{}.x", id);
+}
+
 void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_view& include)
 {
     const auto shaderContainer = reinterpret_cast<const ShaderContainer*>(shaderData);
@@ -1214,7 +1241,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
      * Both are accepted: only the two high bytes are compared.
      */
     assert((shaderContainer->flags & 0xFFFF0000) == 0x102A0000);
+#ifndef FH2_RECOMP
     assert(shaderContainer->constantTableOffset != NULL);
+#endif
 
 #ifdef FH2_RECOMP
     // FH2's vertex shaders sample textures: shader_common.h samples at level 0 there (Vulkan allows the implicit
@@ -1227,7 +1256,15 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
     isPixelShader = (shaderContainer->flags & 0x1) == 0;
 
+#ifdef FH2_RECOMP
+    // FH2's executable has containers without a constant table (the D3D library's own shaders): an empty one.
+    static const ConstantTableContainer tablaVacia{};
+    const auto constantTableContainer = shaderContainer->constantTableOffset
+        ? reinterpret_cast<const ConstantTableContainer*>(shaderData + shaderContainer->constantTableOffset)
+        : &tablaVacia;
+#else
     const auto constantTableContainer = reinterpret_cast<const ConstantTableContainer*>(shaderData + shaderContainer->constantTableOffset);
+#endif
     constantTableData = reinterpret_cast<const uint8_t*>(&constantTableContainer->constantTable);
 
     out += "#ifdef __spirv__\n\n";
@@ -1336,6 +1373,28 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
         }
     }
+
+#ifdef FH2_RECOMP
+    // FH2: fetches whose slot has no sampler in the constant table (the D3D library's own shaders have no table) are
+    // named s<slot>; they read the same per-slot words as the named ones.
+    for (uint32_t slot = 0; slot < 32; slot++)
+    {
+        if (samplers.count(slot))
+            continue;
+        for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
+        {
+            const uint32_t b = FH2_COMPARTIDA_TEXTURAS + uint32_t(j) * 128 + slot * 4;
+            println("#define s{}_Texture{}DescriptorIndex (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT({}) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {}))",
+                slot, TEXTURE_DIMENSIONS[j], b, b);
+        }
+        const uint32_t bs = FH2_COMPARTIDA_SAMPLERS + slot * 4;
+        println("#define s{}_SamplerDescriptorIndex (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT({}) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {}))",
+            slot, bs, bs);
+        const uint32_t bi = FH2_COMPARTIDA_INV_TAMANO + slot * 8;
+        println("#define s{}_InvTamano (NFSMW_UBO ? float2(NFSMW_COMPARTIDA_FLOAT({}), NFSMW_COMPARTIDA_FLOAT({})) : vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + {}))",
+            slot, bi, bi + 4, bi);
+    }
+#endif
 
     out += "\n#else\n\n";
 
@@ -1468,6 +1527,19 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
             value = vertexShader->vertexElementsAndInterpolators[vertexShader->field18 + i];
 
+        #ifdef FH2_RECOMP
+            // The same element declared again (another stream of the same data): one input, every fetch address
+            // maps to it.
+            bool repetido = false;
+            for (auto& [direccion, elemento] : vertexElements)
+                repetido |= elemento.usage == vertexElement.usage && elemento.usageIndex == vertexElement.usageIndex;
+            if (repetido)
+            {
+                vertexElements.emplace(uint32_t(vertexElement.address), vertexElement);
+                continue;
+            }
+        #endif
+
             const char* usageType = USAGE_TYPES[uint32_t(vertexElement.usage)];
 
         #ifdef UNLEASHED_RECOMP
@@ -1539,6 +1611,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             {
                 println("\tfloat4 c{} = asfloat(uint4(0x{:X}, 0x{:X}, 0x{:X}, 0x{:X}));",
                     definition->registerIndex + i - (isPixelShader ? 256 : 0), value[0].get(), value[1].get(), value[2].get(), value[3].get());
+            #ifdef FH2_RECOMP
+                fh2ConstantesLiterales.insert(definition->registerIndex + i - (isPixelShader ? 256 : 0));
+            #endif
 
                 value += 4;
             }
@@ -1564,6 +1639,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
                 println("\tint4 i{} = int4({}, {}, {}, {});",
                     (definition->registerIndex - 8992) / 4 + i, u.b.x, u.b.y, u.b.z, u.b.w);
+            #ifdef FH2_RECOMP
+                fh2BuclesLiterales.insert((definition->registerIndex - 8992) / 4 + i);
+            #endif
             }
             definitions += 2;
             definitions += definition->count;
@@ -1855,7 +1933,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 #ifdef UNLEASHED_RECOMP
                     print("[unroll] ");
                 #endif
-                    println("for (aL = 0; aL < i{}.x; aL++)", uint32_t(cfInstr.loopStart.loopId));
+                    println("for (aL = 0; aL < {}; aL++)", fh2Bucle(uint32_t(cfInstr.loopStart.loopId)));
                     indent();
                     out += "{\n";
                     ++indentation;
@@ -1876,7 +1954,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 else
                 {
                     out += "\t\t\t++aL;\n";
-                    println("\t\t\tif (aL < i{}.x)", uint32_t(cfInstr.loopEnd.loopId));
+                    println("\t\t\tif (aL < {})", fh2Bucle(uint32_t(cfInstr.loopEnd.loopId)));
                     out += "\t\t\t{\n";
                     println("\t\t\t\tpc = {};", uint32_t(cfInstr.loopEnd.address));
                     out += "\t\t\t\tcontinue;\n";

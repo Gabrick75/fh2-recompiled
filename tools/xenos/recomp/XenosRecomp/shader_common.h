@@ -70,7 +70,10 @@
 // FH2: the vertex fetches without a declared element (instance data, vertex fetch constants 88-95): per constant,
 // 16 bytes: where its buffer starts in g_Fh2Buscas (in dwords), its size in dwords and its xenos::Endian.
 #define FH2_COMPARTIDA_BUSCAS     1280
-#define FH2_COMPARTIDA_BYTES      1408
+// FH2: the 32 loop constants as the game set them (xenos: count in bits 0-7, start 8-15, step 16-23), for shaders
+// without literal ones.
+#define FH2_COMPARTIDA_BUCLES     1408
+#define FH2_COMPARTIDA_BYTES      1536
 #define SPEC_CONSTANT_ALPHA_FUNC_SHIFT  16
 #define SPEC_CONSTANT_ALPHA_FUNC_MASK   (7 << 16)
 
@@ -108,6 +111,7 @@ struct NfsmwBloqueCompartidas { float4 v[FH2_COMPARTIDA_BYTES / 16]; };  // FH2:
 #define NFSMW_UBO ((g_SpecConstants & SPEC_CONSTANT_CONSTANTES_UBO) != 0)
 #define NFSMW_COMPARTIDA_UINT(B)  asuint(g_UboCompartidas.v[(B) / 16][((B) % 16) / 4])
 #define NFSMW_COMPARTIDA_FLOAT(B) g_UboCompartidas.v[(B) / 16][((B) % 16) / 4]
+#define FH2_BUCLE(ID) (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_BUCLES + (ID) * 4) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + FH2_COMPARTIDA_BUCLES + (ID) * 4))
 
 #define g_Booleans                 (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT(256) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256))
 #define g_SwappedTexcoords         (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT(260) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 260))

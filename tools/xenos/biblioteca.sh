@@ -24,7 +24,9 @@ g++ -std=c++23 -O1 -I$R -I$R/XenosRecomp -I$TP/fmt/include -I$TP/xxHash -include
   -DXXH_INLINE_ALL -DNFSMW_RECOMP -DFH2_RECOMP $R/nfsmw_hlsl.cpp $R/XenosRecomp/shader_recompiler.cpp -o $B/xenos_hlsl || exit 1
 rm -rf $S; mkdir -p $S/spirv
 python3 $RAIZ/tools/xenos/extrair_fxobj_pistas.py $RAIZ/assets/game_root $S/fxobj_pistas $B/lzx_xmem
-python3 $RAIZ/tools/xenos/extrair_contenedores.py $RAIZ/assets/game_root $S/contenedores $S/fxobj_pistas
+# The executable's modules as loaded (tools/rodar_pc.sh --xex_despejar_imagem=$RAIZ/app/out/shaders_fh2_imagem).
+python3 $RAIZ/tools/xenos/extrair_contenedores.py $RAIZ/assets/game_root $S/contenedores $S/fxobj_pistas \
+  $(ls $RAIZ/app/out/shaders_fh2_imagem.* 2>/dev/null)
 $B/xenos_hlsl $S/contenedores $S/hlsl $COMUN > $S/traduccion.log 2>&1; tail -1 $S/traduccion.log
 grep "rechazada\|no produjo\|no pude\|firma" $S/traduccion.log | sed -E 's/^ *[pv]_[0-9]+(\.bin)?:? *//' |
   sort | uniq -c | sort -rn | head -5

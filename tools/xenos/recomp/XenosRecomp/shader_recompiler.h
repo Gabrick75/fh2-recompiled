@@ -1,5 +1,7 @@
 #pragma once
 
+#include <set>
+
 #include "shader.h"
 #include "shader_code.h"
 
@@ -31,6 +33,9 @@ struct ShaderRecompiler : StringBuffer
     // Vertex fetches without a declared element (FH2's instance data through vertex fetch constants 88-95): the
     // constants used, as a bit mask of (constant - 88), for the renderer.
     uint32_t fh2BuscasManuales = 0;
+    // Float and loop constants the container defines as literals (the rest are read from the constants the game
+    // sets: the D3D library's own shaders have no constant table).
+    std::set<uint32_t> fh2ConstantesLiterales, fh2BuclesLiterales;
 #endif
     std::unordered_map<uint32_t, std::string> interpolators;
     std::unordered_map<uint32_t, const ConstantInfo*> float4Constants;
@@ -227,6 +232,7 @@ struct ShaderRecompiler : StringBuffer
     }
 
     void printDstSwizzle(uint32_t dstSwizzle, bool operand);
+    std::string fh2Bucle(uint32_t id);
     void printDstSwizzle01(uint32_t dstRegister, uint32_t dstSwizzle);
 
     void recompile(const VertexFetchInstruction& instr, uint32_t address);

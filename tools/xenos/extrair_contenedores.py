@@ -2,7 +2,11 @@
 the loose ones in media/shaders and the track ones unpacked by extrair_fxobj_pistas.py. One .bin per container (virtual
 part followed by physical part), named p_/v_ + a counter in scan order, plus procedencia.tsv with where each came from.
 
-    python3 tools/xenos/extrair_contenedores.py <game_root> <new output folder> <folder of unpacked track .fxobj>"""
+    python3 tools/xenos/extrair_contenedores.py <game_root> <new output folder> <folder of unpacked track .fxobj>
+        [executable images...]
+
+The executable images (the game's modules as loaded, written with --xex_despejar_imagem) hold the shaders of the
+D3D library and of the effects the code builds itself."""
 import glob, os, struct, sys
 raiz, saida = sys.argv[1], sys.argv[2]
 os.makedirs(saida)
@@ -10,7 +14,7 @@ idx = open(os.path.join(saida, 'procedencia.tsv'), 'w')
 idx.write('archivo\torigen\tdesplazamiento\tvirtual\tfisico\n')
 total = rej = 0
 for f in (sorted(glob.glob(os.path.join(raiz, 'media/shaders/**/*.fxobj'), recursive=True)) +
-          sorted(glob.glob(os.path.join(sys.argv[3], '*.fxobj')))):
+          sorted(glob.glob(os.path.join(sys.argv[3], '*.fxobj'))) + sys.argv[4:]):
     d = open(f, 'rb').read(); n = len(d); i = 0
     while True:
         i = d.find(b'\x10\x2A\x11', i)

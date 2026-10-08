@@ -15,10 +15,12 @@
 #include "pe/pe_image.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <unordered_map>
 
 #include <fmt/format.h>
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/math.h>
 #include <rex/memory.h>
@@ -445,6 +447,10 @@ int XexModule::ApplyPatch(XexModule* module) {
   return result_code;
 }
 
+REXCVAR_DEFINE_STRING(xex_despejar_imagem, "", "Kernel",
+                      "Debug: write the decrypted, decompressed image of each executable module to <this path>.<base address> after loading")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
 int XexModule::ReadImage(const void* xex_addr, size_t xex_length, bool use_dev_key) {
   if (!opt_file_format_info()) {
     return 1;
@@ -487,6 +493,18 @@ int XexModule::ReadImage(const void* xex_addr, size_t xex_length, bool use_dev_k
   }
 
   if (is_patch() || is_valid_executable()) {
+    const std::string despejo = REXCVAR_GET(xex_despejar_imagem);
+    if (!is_patch() && !despejo.empty()) {
+      // The decrypted, decompressed image as the game sees it at its base address, for tools that look for
+      // data in it (tools/xenos: the shader containers inside the executable).
+      // One file per module (the game loads more than one XEX): <path>.<base address>.
+      const std::string arquivo = fmt::format("{}.{:08X}", despejo, base_address_);
+      if (FILE* f = std::fopen(arquivo.c_str(), "wb")) {
+        std::fwrite(memory()->TranslateVirtual(base_address_), 1, image_size(), f);
+        std::fclose(f);
+        REXLOG_INFO("Imagem do XEX ({:08X}, {} bytes) gravada em {}", base_address_, image_size(), arquivo);
+      }
+    }
     return 0;
   }
 
