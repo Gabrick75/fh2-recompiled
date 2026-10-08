@@ -97,6 +97,8 @@ REXCVAR_DEFINE_BOOL(gpu_sin_msaa, false, "GPU",
 REXCVAR_DEFINE_BOOL(gpu_medir_pacotes, false, "GPU",
                     "Log the command processor's time per PM4 packet kind every 5 s (costs a few clock reads "
                     "per packet)");
+REXCVAR_DEFINE_BOOL(gpu_log_registros_desconhecidos, false, "GPU",
+                    "Debug: log writes to registers the register table does not know");
 REXCVAR_DEFINE_BOOL(gpu_ignorar_predicacao, false, "GPU",
                     "Execute predicated draws whatever the bin select (predicated tiling played back in a single "
                     "pass: every draw the game marked for any tile runs once). Set by the game's one-tile hook");
@@ -491,10 +493,10 @@ void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
   // Volatile for the WAIT_REG_MEM loop.
   const_cast<volatile uint32_t&>(regs.values[index]) = value;
   // GetRegisterInfo is a large switch, and this runs for every register the game writes (about 100 000 per
-  // frame in Forza Horizon 2): only with the GPU debug log on.
-  if (spdlog::logger* gpu_log = ::rex::GetLoggerRaw(::rex::log::gpu());
-      gpu_log && gpu_log->should_log(spdlog::level::debug) && !regs.GetRegisterInfo(index)) {
-    REXGPU_DEBUG("GPU: Write to unknown register ({:04X} = {:08X})", index, value);
+  // frame in Forza Horizon 2; even asking the logger whether debug is on was 4.5 % of the command processor
+  // thread): only with gpu_log_registros_desconhecidos.
+  if (REXCVAR_GET(gpu_log_registros_desconhecidos) && !regs.GetRegisterInfo(index)) {
+    REXGPU_INFO("GPU: Write to unknown register ({:04X} = {:08X})", index, value);
   }
 
   // Scratch register writeback.
@@ -925,6 +927,11 @@ bool CommandProcessor::ExecutePacketType0(memory::RingBuffer* reader, uint32_t p
 
   uint32_t base_index = (packet & 0x7FFF);
   uint32_t write_one_reg = (packet >> 15) & 0x1;
+  if (!write_one_reg && count > 1) {
+    // A run of consecutive registers: the range path, which has fast paths for the shader constants.
+    WriteRegisterRangeFromRing(reader, base_index, count);
+    return true;
+  }
   for (uint32_t m = 0; m < count; m++) {
     uint32_t reg_data = reader->ReadAndSwap<uint32_t>();
     uint32_t target_index = write_one_reg ? base_index : base_index + m;

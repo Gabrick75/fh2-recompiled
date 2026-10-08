@@ -1,0 +1,142 @@
+// fh2 - in-process sampling profiler ("perfil" means "profile") for one thread, for machines where perf or
+// simpleperf cannot be used (perf_event_paranoid on the PC).
+//
+//   --fh2_perfil_s=70 --fh2_perfil_thread="GPU Commands" --fh2_perfil_duracao_s=10
+//
+// At fh2_perfil_s seconds after start it finds the thread whose name starts with fh2_perfil_thread, sends it SIGPROF
+// every millisecond (a POSIX timer aimed at that thread) and records the interrupted program counter. After
+// fh2_perfil_duracao_s seconds it writes fh2_perfil.txt next to the log: one line per address, "count library
+// offset", most frequent first. Symbolize with tools/perfil_simbolos.py (addr2line).
+
+#include <dlfcn.h>
+#include <signal.h>
+#include <sys/syscall.h>
+#include <time.h>
+#include <ucontext.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include <rex/cvar.h>
+#include <rex/logging.h>
+
+REXCVAR_DEFINE_DOUBLE(fh2_perfil_s, 0.0, "FH2",
+                      "Debug: start sampling one thread this many seconds after start (0 = off); app/src/fh2_perfil.cpp")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_DOUBLE(fh2_perfil_duracao_s, 10.0, "FH2", "Debug: how long the sampling profiler runs")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_STRING(fh2_perfil_thread, "GPU Commands", "FH2",
+                      "Debug: the sampled thread, by the start of its name")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
+namespace {
+
+constexpr size_t kMaxSamples = 1 << 20;
+uintptr_t g_samples[kMaxSamples];
+std::atomic<size_t> g_sample_count{0};
+
+void OnSample(int, siginfo_t*, void* context) {
+  auto* uc = static_cast<ucontext_t*>(context);
+#if defined(__x86_64__)
+  const uintptr_t pc = uintptr_t(uc->uc_mcontext.gregs[REG_RIP]);
+#elif defined(__aarch64__)
+  const uintptr_t pc = uintptr_t(uc->uc_mcontext.pc);
+#else
+  const uintptr_t pc = 0;
+#endif
+  const size_t i = g_sample_count.fetch_add(1, std::memory_order_relaxed);
+  if (i < kMaxSamples) {
+    g_samples[i] = pc;
+  }
+}
+
+pid_t FindThread(const std::string& prefix) {
+  for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task")) {
+    std::ifstream comm(entry.path() / "comm");
+    std::string name;
+    std::getline(comm, name);
+    if (name.compare(0, prefix.size(), prefix) == 0) {
+      return pid_t(std::stoi(entry.path().filename().string()));
+    }
+  }
+  return 0;
+}
+
+void Run() {
+  std::this_thread::sleep_for(std::chrono::duration<double>(REXCVAR_GET(fh2_perfil_s)));
+  const std::string prefix = REXCVAR_GET(fh2_perfil_thread);
+  const pid_t tid = FindThread(prefix);
+  if (!tid) {
+    REXLOG_WARN("[perfil] thread '{}' not found", prefix);
+    return;
+  }
+  struct sigaction action {};
+  action.sa_sigaction = OnSample;
+  action.sa_flags = SA_SIGINFO | SA_RESTART;
+  sigemptyset(&action.sa_mask);
+  sigaction(SIGPROF, &action, nullptr);
+
+  sigevent event{};
+  event.sigev_notify = SIGEV_THREAD_ID;
+  event.sigev_signo = SIGPROF;
+#if defined(__GLIBC__)
+  event._sigev_un._tid = tid;
+#else
+  event.sigev_notify_thread_id = tid;
+#endif
+  timer_t timer;
+  if (timer_create(CLOCK_MONOTONIC, &event, &timer) != 0) {
+    REXLOG_WARN("[perfil] timer_create failed");
+    return;
+  }
+  itimerspec period{{0, 1000000}, {0, 1000000}};
+  timer_settime(timer, 0, &period, nullptr);
+  REXLOG_INFO("[perfil] sampling thread {} ('{}') for {} s", tid, prefix, REXCVAR_GET(fh2_perfil_duracao_s));
+  std::this_thread::sleep_for(std::chrono::duration<double>(REXCVAR_GET(fh2_perfil_duracao_s)));
+  timer_delete(timer);
+
+  const size_t count = std::min(g_sample_count.load(), kMaxSamples);
+  std::map<uintptr_t, uint32_t> histogram;
+  for (size_t i = 0; i < count; ++i) {
+    ++histogram[g_samples[i]];
+  }
+  std::vector<std::pair<uint32_t, uintptr_t>> sorted;
+  for (const auto& [pc, n] : histogram) {
+    sorted.emplace_back(n, pc);
+  }
+  std::sort(sorted.rbegin(), sorted.rend());
+  FILE* out = fopen("fh2_perfil.txt", "w");
+  if (!out) {
+    return;
+  }
+  fprintf(out, "# %zu samples of thread '%s'\n", count, prefix.c_str());
+  for (const auto& [n, pc] : sorted) {
+    Dl_info info{};
+    if (dladdr(reinterpret_cast<void*>(pc), &info) && info.dli_fname) {
+      fprintf(out, "%u %s 0x%zx\n", n, info.dli_fname, size_t(pc - uintptr_t(info.dli_fbase)));
+    } else {
+      fprintf(out, "%u ? 0x%zx\n", n, size_t(pc));
+    }
+  }
+  fclose(out);
+  REXLOG_INFO("[perfil] {} samples written to fh2_perfil.txt", count);
+}
+
+}  // namespace
+
+// Called from OnPostSetup (fh2_app.h).
+void Fh2PerfilStart() {
+  if (REXCVAR_GET(fh2_perfil_s) > 0.0) {
+    std::thread(Run).detach();
+  }
+}
