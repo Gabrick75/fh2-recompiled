@@ -2,6 +2,16 @@ plugins {
     id 'com.android.application'
 }
 
+// Release signing key, kept outside the repository: FH2_KEYSTORE_PROPERTIES, or
+// ~/.android-keys/fh2-recompiled/keystore.properties (storeFile, storePassword, keyAlias, keyPassword).
+// Without it the release build is signed with the debug key, so anyone can build the project.
+def releaseKeyProperties = new Properties()
+def releaseKeyFile = file(System.getenv('FH2_KEYSTORE_PROPERTIES') ?:
+        "${System.getProperty('user.home')}/.android-keys/fh2-recompiled/keystore.properties")
+if (releaseKeyFile.exists()) {
+    releaseKeyFile.withInputStream { releaseKeyProperties.load(it) }
+}
+
 android {
     namespace 'com.forzahorizon2.android'
     compileSdk 35
@@ -27,10 +37,21 @@ android {
         }
     }
 
+    signingConfigs {
+        if (releaseKeyFile.exists()) {
+            release {
+                storeFile file(releaseKeyProperties['storeFile'])
+                storePassword releaseKeyProperties['storePassword']
+                keyAlias releaseKeyProperties['keyAlias']
+                keyPassword releaseKeyProperties['keyPassword']
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig signingConfigs.debug
+            signingConfig releaseKeyFile.exists() ? signingConfigs.release : signingConfigs.debug
             // AGP builds release natives as RelWithDebInfo (-O2 -g); the game wants the SDK's Release
             // flags (-O3, no asserts) (src/main/cpp/CMakeLists.txt).
             externalNativeBuild {

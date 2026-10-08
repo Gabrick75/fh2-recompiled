@@ -26,6 +26,11 @@ android/app/.cxx/
 *.a
 *.log
 
+# --- Signing keys (never committed) -------------------------------------------
+*.jks
+*.keystore
+keystore.properties
+
 # --- Tools --------------------------------------------------------------------
 __pycache__/
 *.pyc

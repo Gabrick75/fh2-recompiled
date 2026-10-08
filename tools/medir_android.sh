@@ -23,7 +23,12 @@ SEGUNDOS=${SEGUNDOS:-120}
 SAIDA=$RAIZ/app/out/medicao_android_$(date +%Y%m%d_%H%M%S).log
 
 if [ "${INSTALAR:-1}" = 1 ]; then
-  "$ADB" install -r "$APK" | tail -1
+  # An APK signed with another key (debug before the release key existed) cannot update the installed one:
+  # uninstall it first (this erases the app's data).
+  if ! "$ADB" install -r "$APK" 2>&1 | tee /dev/stderr | grep -q Success; then
+    "$ADB" uninstall "$PKG" > /dev/null 2>&1 || true
+    "$ADB" install "$APK" | tail -1
+  fi
 fi
 # Screen on while plugged in (a dozing screen pauses the game and ruins the measurement), and awake now.
 "$ADB" shell svc power stayon usb

@@ -11,8 +11,9 @@
 > [!IMPORTANT]
 > This is a non-commercial fan project for interoperability and preservation research. It is **not** affiliated
 > with, endorsed by or sponsored by Microsoft, Xbox Game Studios, Playground Games, Turn 10 Studios or any other
-> rights holder. **It contains no game files, no game code and no code generated from the game, and no builds are
-> distributed.** To use it you need your own legally obtained copy of the game. See [Legal](#legal).
+> rights holder. **This repository contains no game files and no game code. The APKs in Releases contain no game
+> data and do nothing without files extracted from your own legally obtained copy of the game.** See
+> [Legal](#legal).
 
 ## Table of contents
 
@@ -47,8 +48,9 @@ editor, gamepad support and an in-game performance overlay.
 | GPU (Xenos) | Emulated: the GPU command stream is interpreted, the EDRAM is reproduced with Vulkan render targets and the shaders are translated to SPIR-V. |
 | Audio, input, video | ReXGlue SDK, SDL3 and FFmpeg. |
 
-The code generated from the game is produced on your own machine from your own copy of the game, and it never
-leaves it: it is excluded from this repository by `.gitignore`.
+When you build from source, the code generated from the game is produced on your own machine from your own copy
+of the game; it is excluded from this repository by `.gitignore`. The APKs in Releases are built the same way and
+contain that translated code, but none of the game's data.
 
 ## Project status
 
@@ -121,12 +123,15 @@ Known issues:
    ./build_android.sh
    ```
 
-   The APK is written to `android/app/build/outputs/apk/release/app-release.apk`. It contains code generated
-   from your copy of the game: **it is for your own devices only and must not be shared.**
+   The APK is written to `android/app/build/outputs/apk/release/app-release.apk`. It is signed with your release
+   key if `~/.android-keys/fh2-recompiled/keystore.properties` (or the file named by `FH2_KEYSTORE_PROPERTIES`)
+   exists, with `storeFile`, `storePassword`, `keyAlias` and `keyPassword`; otherwise with the debug key.
 
 ## Running on Android
 
-1. Install your APK with `adb install -r android/app/build/outputs/apk/release/app-release.apk`.
+1. Download the APK from [Releases](../../releases) and install it, or install your own build with
+   `adb install -r android/app/build/outputs/apk/release/app-release.apk`. Builds signed with different keys
+   (Releases and your own) cannot update each other: uninstall one before installing the other.
 2. Copy the extracted game files to `Internal storage/jogos/ForzaHorizon2`, for example with
    `adb push assets/game_root /sdcard/jogos/ForzaHorizon2`, or pick the folder in the launcher.
 3. Grant the file access the launcher asks for and tap **Jogar** (play).
@@ -147,7 +152,7 @@ Starting points for the settings: render resolution 50 % or lower, anti-aliasing
 
 Bug reports and pull requests are welcome. Please:
 
-- never attach or link game files, dumps, generated code, APKs or other builds;
+- never attach or link game files, dumps, generated code, or builds other than the official Releases;
 - do not ask for game files or builds: such issues are closed;
 - describe your device (model, GPU, Android version) and attach the diagnostics file from the launcher when
   reporting a problem.
@@ -173,10 +178,14 @@ FH2 Recompiled is maintained by [Gabrick75](https://github.com/Gabrick75).
 
 ## Legal
 
-- **No game content.** This repository contains only original source code and open-source code under the
-  licenses listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). It does not contain, and will never
-  contain, the game's executable, data files, assets, audio, video, artwork, logos, the code generated from the
-  game, or builds that include that code. No binaries are distributed.
+- **No game content in the repository.** This repository contains only original source code and open-source
+  code under the licenses listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). It does not contain, and
+  will never contain, the game's executable, data files, assets, audio, video, artwork, logos or the code
+  generated from the game.
+- **Releases.** The APKs published in Releases contain the game's executable code translated into native code by
+  the recompiler, so that owners of the game can play the copy they own on their phones. They contain none of the
+  game's data, assets, audio, video, artwork or logos, and they do nothing without the files the user extracts
+  from their own copy. They are free of charge and are provided only for that purpose.
 - **Own copy required.** You must own a legitimate copy of the game and use your own dump of it. This project
   does not provide, and does not explain how to obtain, copies of the game: it works only from files the user
   extracts from a disc they own.
@@ -187,8 +196,9 @@ FH2 Recompiled is maintained by [Gabrick75](https://github.com/Gabrick75).
   platform this software is compatible with; no endorsement is implied.
 - **Not for commercial use or piracy.** Do not sell this project or builds of it, and do not use it to
   distribute or play unauthorized copies of the game.
-- **Takedown requests.** If you are a rights holder and believe something in this repository infringes your
-  rights, please open an issue or contact the maintainer, and it will be reviewed and removed promptly.
+- **Takedown requests.** If you are a rights holder and believe something in this repository or its Releases
+  infringes your rights, please open an issue or contact the maintainer, and it will be reviewed and removed
+  promptly.
 - **No warranty.** This software is provided "as is", without warranty of any kind, as stated in sections 15
   and 16 of the GPL-3.0. Use it at your own risk.
 
