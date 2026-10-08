@@ -34,6 +34,8 @@ final class GameOptions {
     static final String CAR_REFLECTIONS = "car_reflections";  // not applied yet
     // Performance
     static final String PIN_THREADS = "pin_threads";
+    static final String ONE_PASS = "one_pass";                // fh2_uma_faixa: the scene in one pass, not 3 tiles
+    static final String ADAPTIVE_VBLANK = "adaptive_vblank";  // vblank_adaptativo
     static final String DRIVER = "driver";                    // imported driver name, "" = system; not loaded yet
     static final String TURBO = "turbo";                      // not applied yet
     // Sound
@@ -82,7 +84,7 @@ final class GameOptions {
     }
 
     static boolean flag(Context context, String key) {
-        boolean byDefault = PIN_THREADS.equals(key);
+        boolean byDefault = PIN_THREADS.equals(key) || ONE_PASS.equals(key) || ADAPTIVE_VBLANK.equals(key);
         return prefs(context).getBoolean(key, byDefault);
     }
 
@@ -122,6 +124,8 @@ final class GameOptions {
                 break;
         }
         args.add("--anisotropic_override=" + get(context, ANISOTROPIC));
+        args.add("--fh2_uma_faixa=" + flag(context, ONE_PASS));
+        args.add("--vblank_adaptativo=" + flag(context, ADAPTIVE_VBLANK));
         args.add("--fh2_android_nucleos_grandes=" + flag(context, PIN_THREADS));
         // 'auto': the command processor alone on the fastest core (+16 % on the S23 Ultra), see android_rendimiento.cpp.
         args.add("--fh2_android_afinidade=" + (flag(context, PIN_THREADS) ? "auto" : "off"));  // never empty: the cvar parser aborts on it

@@ -16,10 +16,10 @@ target_compile_options(fh2_diagnostics PRIVATE -march=armv8-a)
 target_link_libraries(fh2_diagnostics PRIVATE vulkan)
 target_link_options(fh2_diagnostics PRIVATE "-Wl,-z,max-page-size=16384")
 
-# CPU target of all the native code (the game, the SDK, the GPU plugin). armv8.2-a: inline LSE atomics instead of
-# the outline helpers (__aarch64_ldadd4_acq_rel and friends showed up in simpleperf) and newer instructions;
-# Snapdragon 845 and newer. armv8-a for older phones.
-set(FH2_ANDROID_MARCH "armv8.2-a" CACHE STRING "-march of the Android native code")
+# CPU target of all the native code (the game, the SDK, the GPU plugin). armv8-a runs on every 64-bit phone;
+# armv8.2-a (inline LSE atomics instead of the outline helpers, Snapdragon 845 and newer) measured the same on the
+# S23 Ultra (event menu 19.0 vs 19.1 fps), so the compatible one is the default.
+set(FH2_ANDROID_MARCH "armv8-a" CACHE STRING "-march of the Android native code")
 set(REXGLUE_ANDROID_MARCH "${FH2_ANDROID_MARCH}" CACHE STRING "" FORCE)
 string(APPEND CMAKE_C_FLAGS " -march=${FH2_ANDROID_MARCH}")
 string(APPEND CMAKE_CXX_FLAGS " -march=${FH2_ANDROID_MARCH}")

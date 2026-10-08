@@ -244,6 +244,16 @@ public final class MainActivity extends AppCompatActivity {
                         "Como a imagem do jogo é levada ao tamanho da tela. O FSR rende mais quando o jogo desenha abaixo da resolução da tela.",
                         new String[] {"Bilinear (o de sempre)", "AMD FSR 1.0 · escala mais nítida", "AMD CAS · só nitidez"},
                         new String[] {"bilinear", "fsr", "cas"}, false)),
+                toggle("Cena em uma passada",
+                        "O jogo desenha a cena em 3 faixas por causa do MSAA; sem MSAA ela cabe inteira e é desenhada " +
+                                "uma vez só: menos trabalho para a CPU (+25 % no S23 Ultra). Só vale com a suavização " +
+                                "desligada ou FXAA.",
+                        GameOptions.flag(this, GameOptions.ONE_PASS), v -> GameOptions.flag(this, GameOptions.ONE_PASS, v)),
+                toggle("Vblank adaptativo",
+                        "Um quadro que perde o vsync por pouco é mostrado na hora, em vez de esperar o próximo. " +
+                                "Não mudou o fps medido no S23 Ultra; desligue se notar trepidação.",
+                        GameOptions.flag(this, GameOptions.ADAPTIVE_VBLANK),
+                        v -> GameOptions.flag(this, GameOptions.ADAPTIVE_VBLANK, v)),
                 selector(GameOptions.ANISOTROPIC, "Filtro anisotrópico",
                         "Texturas mais nítidas vistas em ângulo, como a estrada ao longe.",
                         new String[] {"Não", "2x", "4x", "16x"}, new String[] {"0", "2", "3", "5"}, true),
