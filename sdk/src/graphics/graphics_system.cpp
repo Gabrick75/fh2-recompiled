@@ -58,7 +58,15 @@ rex::graphics::CommandProcessor::SwapPostEffect ParseSwapPostEffect(
 }
 }  // namespace
 
+REXCVAR_DEFINE_BOOL(vblank_adaptativo, true, "GPU",
+                    "Adaptive vsync: a late frame flips at once instead of waiting for the next vblank of the 60 Hz "
+                    "grid, and the flip wait is woken by the vblank instead of polling every millisecond");
+
 namespace rex::graphics {
+
+// command_processor.cpp, VBLANK AND FLIP.
+void NotifyVblank();
+void WaitForSwap(int64_t nanoseconds);
 
 // Nvidia Optimus/AMD PowerXpress support.
 // These exports force the process to trigger the discrete GPU in multi-GPU
@@ -162,11 +170,32 @@ X_STATUS GraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dis
           uint64_t current_time = chrono::Clock::QueryGuestTickCount();
           uint64_t interval_ticks =
               REXCVAR_GET(vsync) ? vsync_interval_ticks : no_vsync_interval_ticks;
-          while (current_time - last_frame_time >= interval_ticks) {
-            MarkVblank();
-            last_frame_time += interval_ticks;
+          if (!REXCVAR_GET(vblank_adaptativo)) {
+            while (current_time - last_frame_time >= interval_ticks) {
+              MarkVblank();
+              last_frame_time += interval_ticks;
+            }
+            rex::thread::Sleep(std::chrono::milliseconds(1));
+            continue;
           }
-          rex::thread::Sleep(std::chrono::milliseconds(1));
+          // Adaptive vsync (command_processor.cpp, VBLANK AND FLIP): the grid follows the real time instead of
+          // catching up, the flip wait is woken as soon as the guest interrupt has run, and the thread sleeps until
+          // the exact next vblank or the next swap, whichever comes first. A frame that missed its vblank by a little
+          // flips at once instead of waiting for the next one of the grid (60 -> 30 fps, 20 -> 15), and the vblank
+          // still never comes early, so the 60 fps cap holds.
+          if (current_time - last_frame_time >= interval_ticks) {
+            MarkVblank();
+            last_frame_time = current_time;
+            NotifyVblank();
+          }
+          const uint64_t ticks_left = last_frame_time + interval_ticks - current_time;
+          const int64_t nanoseconds_left =
+              int64_t(double(ticks_left) * 1000000000.0 / double(guest_tick_frequency));
+          if (nanoseconds_left > 100000) {
+            WaitForSwap(nanoseconds_left);
+          } else {
+            rex::thread::MaybeYield();
+          }
         }
         return 0;
       }));

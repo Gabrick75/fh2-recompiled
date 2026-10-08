@@ -130,6 +130,48 @@ extern std::atomic<uint32_t> rex_frame_trace_draw;
 
 namespace rex::graphics {
 
+// VBLANK AND FLIP, adapted from NFSMW-Recompiled-Mobile (tools/parche_vblank.py). The game double-buffers with
+// vsync: a WAIT_REG_MEM waits for a memory word its own vblank interrupt clears, so each frame's flip waits for a
+// vblank. The command processor polled that with Sleep(1 ms) and the vblank thread looked at the clock every
+// millisecond: over a millisecond lost per frame. Now the vblank thread wakes the wait through a futex, and
+// sleeps until the exact next vblank or the next swap (adaptive vsync, graphics_system.cpp).
+namespace {
+std::atomic<uint32_t> vblank_seq{0};
+std::atomic<uint32_t> swap_seq{0};
+
+void FutexWake(std::atomic<uint32_t>& word) {
+#if defined(__linux__)
+  syscall(SYS_futex, reinterpret_cast<uint32_t*>(&word), FUTEX_WAKE_PRIVATE, INT_MAX, nullptr, nullptr, 0);
+#endif
+}
+
+void FutexWait(std::atomic<uint32_t>& word, uint32_t expected, int64_t nanoseconds) {
+#if defined(__linux__)
+  timespec limit{time_t(nanoseconds / 1000000000), long(nanoseconds % 1000000000)};
+  syscall(SYS_futex, reinterpret_cast<uint32_t*>(&word), FUTEX_WAIT_PRIVATE, expected, &limit, nullptr, 0);
+#else
+  (void)word;
+  (void)expected;
+  rex::thread::Sleep(std::chrono::nanoseconds(nanoseconds));
+#endif
+}
+}  // namespace
+
+void NotifyVblank() {
+  vblank_seq.fetch_add(1, std::memory_order_release);
+  FutexWake(vblank_seq);
+}
+
+void NotifySwap() {
+  swap_seq.fetch_add(1, std::memory_order_release);
+  FutexWake(swap_seq);
+}
+
+// Sleeps until the next swap, at most 'nanoseconds'.
+void WaitForSwap(int64_t nanoseconds) {
+  FutexWait(swap_seq, swap_seq.load(std::memory_order_acquire), nanoseconds);
+}
+
 CpTimes g_cp_times;
 uint64_t g_cp_packet_ns[kCpPacketKinds] = {};
 uint32_t g_cp_packet_count[kCpPacketKinds] = {};
@@ -1225,6 +1267,7 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
   reader->AdvanceRead((count - 4) * sizeof(uint32_t));
 
   IssueSwap(frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
+  NotifySwap();  // adaptive vsync (graphics_system.cpp)
 
   ++counter_;
   return true;
@@ -1309,7 +1352,9 @@ bool CommandProcessor::ExecutePacketType3_WAIT_REG_MEM(memory::RingBuffer* reade
           // User wants it fast and dangerous.
           rex::thread::MaybeYield();
         } else {
-          rex::thread::Sleep(std::chrono::milliseconds(wait / 0x100));
+          // Woken by the vblank, which is what usually ends this wait; otherwise it times out as the Sleep did.
+          FutexWait(vblank_seq, vblank_seq.load(std::memory_order_acquire),
+                    int64_t(wait / 0x100) * 1000000);
         }
         rex::thread::SyncMemory();
         ReturnFromWait();
