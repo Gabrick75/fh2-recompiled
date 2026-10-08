@@ -221,7 +221,12 @@ REX_HOOK_RAW(sub_82478390) {
 
 REX_EXTERN(__imp__sub_8247A868);
 
+REXCVAR_DEFINE_INT32(fh2_teste_r4_reproducao, -1, "FH2", "Debug: force r4 of sub_8247A868 (-1 = as is)");
+
 REX_HOOK_RAW(sub_8247A868) {
+  if (REXCVAR_GET(fh2_teste_r4_reproducao) >= 0) {
+    ctx.r4.u64 = uint64_t(REXCVAR_GET(fh2_teste_r4_reproducao));
+  }
   const uint32_t count = ctx.r5.u32;
   if (count < 2 || count > 15 || !OneTile()) {
     __imp__sub_8247A868(ctx, base);
