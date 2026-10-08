@@ -1221,6 +1221,18 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
     cerrarSiEscribePredicado(marcaPredicado);
 }
 
+#ifdef FH2_RECOMP
+// FH2 samples 1D textures (as NFS Carbon does, NFSC_RECOMP in nfsmw-android): they are bound as 2D images of height
+// 1, so a 1D fetch is a 2D one at the middle row.
+static void fh2Textura1D(std::string& out, const std::string& nombre)
+{
+    out += fmt::format("#define {0}_Texture1DDescriptorIndex {0}_Texture2DDescriptorIndex\n", nombre);
+    out += "#ifndef tfetch1D\n"
+           "#define tfetch1D(RES, SAMP, COORD) tfetch2D(RES, SAMP, float2(COORD, 0.5), float2(0.0, 0.0), float2(0.0, 0.0))\n"
+           "#endif\n";
+}
+#endif
+
 // The iteration count of loop constant id: its literal (i<id>.x) or, without one, the value the game set (FH2: the
 // shared constants' loop area, FH2_COMPARTIDA_BUCLES; the count is the low byte of the Xenos loop constant).
 std::string ShaderRecompiler::fh2Bucle(uint32_t id)
@@ -1346,6 +1358,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 const uint32_t bi = FH2_COMPARTIDA_INV_TAMANO + slot * 8;
                 println("#define {}_InvTamano (NFSMW_UBO ? float2(NFSMW_COMPARTIDA_FLOAT({}), NFSMW_COMPARTIDA_FLOAT({})) : vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + {}))",
                     constantName, bi, bi + 4, bi);
+                fh2Textura1D(out, constantName);
                 samplers.emplace(slot, constantName);
                 break;
             }
@@ -1393,6 +1406,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         const uint32_t bi = FH2_COMPARTIDA_INV_TAMANO + slot * 8;
         println("#define s{}_InvTamano (NFSMW_UBO ? float2(NFSMW_COMPARTIDA_FLOAT({}), NFSMW_COMPARTIDA_FLOAT({})) : vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + {}))",
             slot, bi, bi + 4, bi);
+        fh2Textura1D(out, fmt::format("s{}", slot));
     }
 #endif
 

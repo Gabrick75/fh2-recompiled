@@ -161,6 +161,39 @@ Falta:
 - achar os ~100 pixel e ~120 vertex shaders que não estão nos `.fxobj`. São pequenos (15–80 dwords): prováveis shaders
   internos da biblioteca D3D (limpeza, resolve, cópia) e de efeitos dentro do executável ou de outros pacotes.
 
+### Etapa 1, resultado (2026-10-08)
+
+Fontes extras de contêineres:
+- o executável já carregado (`--xex_despejar_imagem`): 482 contêineres no módulo principal e 68 no segundo;
+- shaders internos do D3D, sem tabela de constantes.
+
+Mudanças do tradutor do FH2 (`FH2_RECOMP` em `tools/xenos/recomp`):
+- **interpoladores:** `NORMAL0`, `TANGENT0`, `BINORMAL0` e `POSITION1`;
+- **samplers:** área própria por slot de busca, com os de vértice em 16–19;
+- **buscas de vértice sem elemento** (dados por instância, constantes 88–95): lidas direto de um storage buffer;
+- **constantes:** 256 de pixel; as sem nome lidas das constantes do jogo; constantes de laço numa área compartilhada;
+- **elementos repetidos** declarados uma vez só;
+- **texturas 1D** tratadas como 2D de altura 1.
+
+Cobertura dos shaders carregados no PC: **pixel 324 de 325 encontrados, todos compilam; vertex 235 de 288 encontrados,
+todos compilam.** Os vertex shaders que faltam devem ser os que a biblioteca D3D modifica além do que o mascaramento
+simples de `cobertura.py` reconhece. O renderizador os identifica pelos ganchos e pela comparação tolerante do Carbon.
+
+### Base do renderizador: nfsmw-android atual e o porte para o NFS Carbon
+
+O `codepdbh/nfsmw-android` atual (GPL-3.0; clone em `referencias/nfsmw-android-atual`) já traz o renderizador do
+nfsmw-nx adaptado ao Android. Na prática é o código do "Evolved". O `codepdbh/NFS-CARBON-360-ANDROID-RECOMP`
+(`referencias/nfs-carbon`, `docs/renderizador-nativo.md`) levou esse renderizador a outro jogo:
+- **Compilação:** a partir de `nfsmw-android/app/src`, com o define `NFSC_RECOMP`.
+- **Ganchos do jogo:** cerca de 95 linhas, cobrindo `CreateVertexShader` e `CreatePixelShader`, as funções `Draw*` e
+  os deslocamentos do VS e do PS no device.
+- **"Enlaces":** respostas neutras ao que o renderizador pede dos módulos próprios do NFSMW.
+- **Como acharam as funções:** comparando o código gerado dos dois jogos (impressão digital das instruções e grafo de
+  chamadas), porque a biblioteca D3D do XDK é a mesma.
+- **Resultado:** imagem completa a ~60 fps em 720p num S25.
+
+O FH2 segue o mesmo caminho, com `FH2_RECOMP`.
+
 ### Etapas
 
 1. Biblioteca de shaders do FH2: XenosRecomp + DXC no PC sobre os `.fxobj` (e o XEX); medir quantos traduzem e quantos
