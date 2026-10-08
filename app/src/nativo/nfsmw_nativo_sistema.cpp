@@ -2760,6 +2760,18 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
           carga->host[i] = rex::memory::load_and_swap<uint32_t>(copia + size_t(i) * 4);
         }
         carga->entrada = shaders_.cargada() ? shaders_.Identificar(tipo == 0, carga->host) : nullptr;
+#if defined(FH2_RECOMP)
+        if (!carga->entrada && tipo == 0 && shaders_.cargada()) {
+          // FH2: a vertex shader the microcode does not identify is one of the copies the fetch patcher wrote;
+          // its VS object, and so its library container, comes from the patcher hook (Fh2AnotarParcheVs).
+          carga->entrada = Fh2VsPorDireccion(direccion_tipo & ~3u);
+          static uint32_t avisos = 0;
+          if (!carga->entrada && avisos < 20) {
+            ++avisos;
+            REXLOG_INFO("[fh2 nativo] VS sin identificar cargado de {:08X}, {} palabras", direccion_tipo & ~3u, tamano);
+          }
+        }
+#endif
         carga->huella = XXH3_64bits(carga->host.data(), bytes);
         carga->generacion = ++generaciones_microcodigo_;
         carga->validada = false;
@@ -4451,6 +4463,13 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     }
     if (shaders_.cargada()) {
       const EstadisticasShaders e = shaders_.Estadisticas();
+#if defined(FH2_RECOMP)
+      {
+        uint64_t aciertos = 0, fallos = 0;
+        Fh2EstadisticasParches(aciertos, fallos);
+        REXLOG_INFO("[fh2 nativo] VS por la direccion de su copia parcheada: {} identificados, {} no", aciertos, fallos);
+      }
+#endif
       NFSMW_INFORME_SEGUN(diferir_informe, "[nativo] C5a: cargas={} distintos={} identificados={} sin_identificar={} "
                   "ambiguos={}; dibujos con VS y PS={} sin VS={} sin PS={}; pares VS/PS={}",
                   e.cargas + cargas_cacheadas_, e.distintos, e.identificados, e.sin_identificar, e.ambiguos,

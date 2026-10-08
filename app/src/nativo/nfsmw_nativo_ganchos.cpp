@@ -253,6 +253,43 @@ void RecordarCreacion(uint32_t objeto, const EntradaShader* entrada, bool vertic
 
 }  // namespace ganchos_detalle
 
+#if defined(FH2_RECOMP)
+namespace {
+std::mutex g_fh2_parches_mutex;
+std::unordered_map<uint32_t, uint32_t> g_fh2_parches;  // physical address of a patched copy -> VS object
+std::atomic<uint64_t> g_fh2_aciertos{0}, g_fh2_fallos{0};
+}  // namespace
+
+void Fh2AnotarParcheVs(uint32_t objeto, uint32_t destino) {
+  // Guest virtual -> physical, as the ring's IM_LOAD addresses are (the 0xE0000000 view is 4 KB ahead).
+  const uint32_t fisico = (destino & 0x1FFFFFFFu) + (destino >= 0xE0000000u ? 0x1000u : 0u);
+  std::lock_guard<std::mutex> cerrojo(g_fh2_parches_mutex);
+  g_fh2_parches.insert_or_assign(fisico, objeto);
+}
+
+const EntradaShader* Fh2VsPorDireccion(uint32_t fisico) {
+  uint32_t objeto = 0;
+  {
+    std::lock_guard<std::mutex> cerrojo(g_fh2_parches_mutex);
+    const auto it = g_fh2_parches.find(fisico);
+    if (it != g_fh2_parches.end()) objeto = it->second;
+  }
+  const EntradaShader* entrada = nullptr;
+  if (objeto) {
+    std::lock_guard<std::mutex> cerrojo(g_mutex);
+    const auto it = g_objetos.find(objeto);
+    if (it != g_objetos.end()) entrada = it->second;
+  }
+  (entrada ? g_fh2_aciertos : g_fh2_fallos).fetch_add(1, std::memory_order_relaxed);
+  return entrada;
+}
+
+void Fh2EstadisticasParches(uint64_t& aciertos, uint64_t& fallos) {
+  aciertos = g_fh2_aciertos.load(std::memory_order_relaxed);
+  fallos = g_fh2_fallos.load(std::memory_order_relaxed);
+}
+#endif
+
 // see nfsmw_nativo_ganchos.h.
 const ShadersNativos* BibliotecaActiva() {
   return g_shaders.load(std::memory_order_acquire);

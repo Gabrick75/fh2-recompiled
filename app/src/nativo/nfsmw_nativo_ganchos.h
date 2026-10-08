@@ -221,4 +221,14 @@ const EntradaShader* IdentificarCreacion(const uint8_t* base, uint32_t direccion
 void RecordarCreacion(uint32_t objeto, const EntradaShader* entrada, bool vertices);
 }  // namespace ganchos_detalle
 
+#if defined(FH2_RECOMP)
+// Forza Horizon 2: its D3D loads most vertex shaders from copies its fetch patcher (sub_8241ACA0) wrote for the
+// bound vertex declaration, which the microcode alone does not identify. The patcher hook reports each copy
+// (destination as the game passes it, VS object), and the ring looks up an IM_LOAD's physical address there.
+void Fh2AnotarParcheVs(uint32_t objeto, uint32_t destino);
+const EntradaShader* Fh2VsPorDireccion(uint32_t fisico);
+// Lookups since the start: found, and not found.
+void Fh2EstadisticasParches(uint64_t& aciertos, uint64_t& fallos);
+#endif
+
 }  // namespace nfsmw::nativo
