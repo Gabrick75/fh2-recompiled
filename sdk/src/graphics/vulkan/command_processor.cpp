@@ -4043,15 +4043,35 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
                   g_frame_trace.draw_index, pixel_shader->ucode_data_hash(), loop31, loop31 & 0xFF,
                   (loop31 >> 8) & 0xFF, int8_t(loop31 >> 16), constants);
     }
+    if (prim_type == xenos::PrimitiveType::kRectangleList && !vertex_shader->vertex_bindings().empty()) {
+      // The rectangle's vertices (first binding, as stored: big-endian words read as floats).
+      const auto& binding = vertex_shader->vertex_bindings().front();
+      xenos::xe_gpu_vertex_fetch_t fetch = regs.GetVertexFetch(binding.fetch_constant);
+      const auto* words = reinterpret_cast<const uint32_t*>(memory_->TranslatePhysical(fetch.address << 2));
+      std::string vertices;
+      for (uint32_t v = 0; v < 3 && words; ++v) {
+        vertices += " (";
+        for (uint32_t w = 0; w < std::min(binding.stride_words, 4u); ++w) {
+          uint32_t bits = rex::byte_swap(words[v * binding.stride_words + w]);
+          float value;
+          std::memcpy(&value, &bits, sizeof(value));
+          vertices += fmt::format("{}{:.6g}", w ? " " : "", value);
+        }
+        vertices += ")";
+      }
+      REXGPU_INFO("[traco] {:4} VERTICES{}", g_frame_trace.draw_index, vertices);
+    }
     REXGPU_INFO(
         "[traco] {:4} DRAW prim {} n {} VS {:016X} PS {:016X} pitch {} msaa {} zbase {} zfmt {} depth {:08X} "
-        "blend0 {:08X} colorctl {:08X}{} | c0 ({:.4g} {:.4g} {:.4g} {:.4g}) c1 ({:.4g} {:.4g} {:.4g} {:.4g}) c2 "
+        "woff {:08X} wsc {:08X}-{:08X} ssc {:08X}-{:08X} blend0 {:08X} colorctl {:08X}{} | c0 ({:.4g} {:.4g} {:.4g} {:.4g}) c1 ({:.4g} {:.4g} {:.4g} {:.4g}) c2 "
         "({:.4g} {:.4g} {:.4g} {:.4g}) |{}",
         g_frame_trace.draw_index++, uint32_t(prim_type), index_count,
         vertex_shader->ucode_data_hash(), pixel_shader ? pixel_shader->ucode_data_hash() : 0,
         regs.Get<reg::RB_SURFACE_INFO>().surface_pitch, (regs[XE_GPU_REG_RB_SURFACE_INFO] >> 16) & 3,
         regs[XE_GPU_REG_RB_DEPTH_INFO] & 0xFFF, (regs[XE_GPU_REG_RB_DEPTH_INFO] >> 16) & 1,
-        regs[XE_GPU_REG_RB_DEPTHCONTROL],
+        regs[XE_GPU_REG_RB_DEPTHCONTROL], regs[XE_GPU_REG_PA_SC_WINDOW_OFFSET],
+        regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL], regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR],
+        regs[XE_GPU_REG_PA_SC_SCREEN_SCISSOR_TL], regs[XE_GPU_REG_PA_SC_SCREEN_SCISSOR_BR],
         regs[XE_GPU_REG_RB_BLENDCONTROL0], regs[XE_GPU_REG_RB_COLORCONTROL], rts,
         RegFloat(regs, c + 0), RegFloat(regs, c + 1), RegFloat(regs, c + 2), RegFloat(regs, c + 3),
         RegFloat(regs, c + 4), RegFloat(regs, c + 5), RegFloat(regs, c + 6), RegFloat(regs, c + 7),

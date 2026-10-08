@@ -21,6 +21,7 @@
 
 #include <dlfcn.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 
@@ -112,4 +113,122 @@ REX_HOOK_RAW(sub_82B72A90) {
   }
 #endif
   __imp__sub_82B72A90(ctx, base);
+}
+
+// ONE TILE INSTEAD OF THREE (predicated tiling played back in one pass)
+//
+// With MSAA 4x the 1280x720 scene does not fit in the Xbox 360's 10 MB of EDRAM, so the game draws it in three
+// 1280x256 tiles (predicated tiling): the game records the scene once, marking each draw with the tiles it touches
+// (SET_BIN_MASK), and the D3D plays the recording back once per tile (SET_BIN_SELECT 0x3, 0xC, 0x30), resolving
+// each tile into its rows of the scene texture. Here the GPU command processor (CP) is the bottleneck, so that is
+// three times its work for one picture. With the MSAA cap at one sample (gpu_sin_msaa) the whole scene fits
+// (1280x720 x 4 bytes, color and depth, 7.4 MB), so the playback runs once over the union of the tiles, and the CP
+// ignores the predication (gpu_ignorar_predicacao): every draw marked for any tile runs in that single pass. Idea
+// from NFSMW-Recompiled-Mobile (ganchos.cpp, nfsmw_una_franja), which hooks its game's BeginTiling.
+//
+// The recording side is left alone (the game keeps culling and marking for three tiles): rewriting the tiling it
+// records with made it drop most of the world, which it culls per tile.
+//
+// sub_8247A868 is the BeginTiling of the playback (called by sub_8247C2F8): r5 tile count, r6 tile rects
+// { x1, y1, x2, y2 }, both from a global table of tiling setups at 0x833F9380 + index * 0x4D0 (count at +0x10,
+// rects at +0x20). The hook hands it one tile, the union, through that table entry, and restores the entry right
+// after the call.
+// STATUS: unfinished, off by default. Measured on the S23 Ultra (event menu, no MSAA): 8.4 -> 11.15 fps. The picture
+// is still wrong: the recording side keeps the first tile's window scissor and viewport (1280x256), and handing
+// the recording one tile too made the game drop most of the world (culled per tile). See the commit message.
+REXCVAR_DEFINE_BOOL(fh2_uma_faixa, false, "FH2",
+                    "Play the scene back in one tile instead of three when the MSAA cap leaves one sample "
+                    "(gpu_sin_msaa=true or gpu_msaa_muestras=1); app/src/fh2_desempenho.cpp");
+
+namespace {
+
+void StoreGuestU32(uint8_t* base, uint32_t address, uint32_t value) {
+  value = __builtin_bswap32(value);
+  __builtin_memcpy(base + address, &value, sizeof(value));
+}
+
+// The last tiling merged: its first tile as the game set it, and the union that replaced it (see the Clear hook).
+std::atomic<uint64_t> g_first_tile_xy2{0};  // first tile's x2 << 32 | y2 (x1 = y1 = 0 in this game)
+std::atomic<uint64_t> g_union_xy2{0};       // union's x2 << 32 | y2
+
+// Whether one tile is in use: the MSAA cap (a GPU plugin cvar) leaves one sample, the only case in which the
+// whole scene fits in the EDRAM. The first time it is, the CP is told to ignore the predication.
+bool OneTile() {
+  static const bool one = [] {
+    const bool one_sample = rex::cvar::GetFlagByName("gpu_sin_msaa") == "true" ||
+                            rex::cvar::GetFlagByName("gpu_msaa_muestras") == "1";
+    const bool result = REXCVAR_GET(fh2_uma_faixa) && one_sample;
+    if (result) {
+      rex::cvar::SetFlagByName("gpu_ignorar_predicacao", "true");
+    }
+    REXLOG_INFO("[fh2] uma faixa: {}", !REXCVAR_GET(fh2_uma_faixa) ? "desligada (fh2_uma_faixa=false)"
+                                       : result ? "a cena em uma passada em vez de três"
+                                                : "inativa, o MSAA não cabe na EDRAM em uma faixa");
+    return result;
+  }();
+  return one;
+}
+
+constexpr uint32_t kTilingSetupCount = 0x10;
+constexpr uint32_t kTilingSetupRects = 0x20;
+
+}  // namespace
+
+REX_EXTERN(__imp__sub_8247A868);
+
+REX_HOOK_RAW(sub_8247A868) {
+  const uint32_t count = ctx.r5.u32;
+  if (count < 2 || count > 15 || !OneTile()) {
+    __imp__sub_8247A868(ctx, base);
+    return;
+  }
+  const uint32_t rects = ctx.r6.u32;
+  const uint32_t count_field = rects - kTilingSetupRects + kTilingSetupCount;
+  uint32_t saved[4];
+  uint32_t x1 = UINT32_MAX, y1 = UINT32_MAX, x2 = 0, y2 = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t r = rects + 16 * i;
+    x1 = std::min(x1, LoadGuestU32(base, r));
+    y1 = std::min(y1, LoadGuestU32(base, r + 4));
+    x2 = std::max(x2, LoadGuestU32(base, r + 8));
+    y2 = std::max(y2, LoadGuestU32(base, r + 12));
+  }
+  for (uint32_t i = 0; i < 4; ++i) {
+    saved[i] = LoadGuestU32(base, rects + 4 * i);
+  }
+  const uint32_t saved_count = LoadGuestU32(base, count_field);
+  if (saved[0] == 0 && saved[1] == 0 && x1 == 0 && y1 == 0) {
+    g_first_tile_xy2.store(uint64_t(saved[2]) << 32 | saved[3], std::memory_order_relaxed);
+    g_union_xy2.store(uint64_t(x2) << 32 | y2, std::memory_order_relaxed);
+  }
+  StoreGuestU32(base, rects, x1);
+  StoreGuestU32(base, rects + 4, y1);
+  StoreGuestU32(base, rects + 8, x2);
+  StoreGuestU32(base, rects + 12, y2);
+  StoreGuestU32(base, count_field, 1);
+  ctx.r5.u64 = 1;
+  __imp__sub_8247A868(ctx, base);
+  for (uint32_t i = 0; i < 4; ++i) {
+    StoreGuestU32(base, rects + 4 * i, saved[i]);
+  }
+  StoreGuestU32(base, count_field, saved_count);
+}
+
+// The first-tile clear (sub_82417A20, the D3D Clear: r6..r9 the rect x1, y1, x2, y2). With tiling the D3D clears
+// only the first tile's area from sub_8241DF18 (0x8241E530): the other tiles were cleared by the resolve that ends
+// the tile before them. In one tile that left everything under the first 256 rows uncleared (stale EDRAM: a
+// blown-out band and black below). So while tiles are merged, a clear of exactly the original first tile covers
+// the union.
+REX_EXTERN(__imp__sub_82417A20);
+
+REX_HOOK_RAW(sub_82417A20) {
+  if (ctx.r6.u32 == 0 && ctx.r7.u32 == 0) {
+    const uint64_t first = g_first_tile_xy2.load(std::memory_order_relaxed);
+    const uint64_t merged = g_union_xy2.load(std::memory_order_relaxed);
+    if (first && merged && first != merged && (uint64_t(ctx.r8.u32) << 32 | ctx.r9.u32) == first) {
+      ctx.r8.u64 = merged >> 32;
+      ctx.r9.u64 = merged & 0xFFFFFFFFu;
+    }
+  }
+  __imp__sub_82417A20(ctx, base);
 }

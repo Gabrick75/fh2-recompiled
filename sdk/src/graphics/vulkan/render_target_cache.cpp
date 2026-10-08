@@ -70,6 +70,8 @@ extern "C" void RexSwitchPerfAdd(unsigned id, uint64_t value);
 extern "C" bool RexSwitchPerfSkip(unsigned bit);
 #endif
 
+REXCVAR_DECLARE(int32_t, gpu_sonda_faixas);
+
 namespace rex::graphics::vulkan {
 
 // Generated with `xb buildshaders`.
@@ -1151,6 +1153,20 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
   // Nothing to copy/clear.
   if (!resolve_info.coordinate_info.width_div_8 || !resolve_info.height_div_8) {
     return true;
+  }
+  {
+    // Debug probe (gpu_sonda_faixas): resolve rectangles of the 1280-wide surfaces, in play.
+    static uint32_t seen = 0;
+    static int logged = 0;
+    if (REXCVAR_GET(gpu_sonda_faixas) > 0 && ++seen > 3000 && logged < REXCVAR_GET(gpu_sonda_faixas)) {
+      ++logged;
+      REXGPU_INFO("[sonda] resolve {}x{} (edram offset {} {}) -> {:08X} offset {} {}",
+                  resolve_info.coordinate_info.width_div_8 * 8, resolve_info.height_div_8 * 8,
+                  resolve_info.coordinate_info.edram_offset_x_div_8 * 8,
+                  resolve_info.coordinate_info.edram_offset_y_div_8 * 8, resolve_info.copy_dest_base,
+                  resolve_info.copy_dest_coordinate_info.offset_x_div_8 * 8,
+                  resolve_info.copy_dest_coordinate_info.offset_y_div_8 * 8);
+    }
   }
 #if REX_PLATFORM_SWITCH
   RexSwitchPerfCount(9);

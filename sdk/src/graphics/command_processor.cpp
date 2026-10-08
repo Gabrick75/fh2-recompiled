@@ -96,6 +96,12 @@ REXCVAR_DEFINE_BOOL(gpu_sin_msaa, false, "GPU",
 REXCVAR_DEFINE_BOOL(gpu_medir_pacotes, false, "GPU",
                     "Log the command processor's time per PM4 packet kind every 5 s (costs a few clock reads "
                     "per packet)");
+REXCVAR_DEFINE_BOOL(gpu_ignorar_predicacao, false, "GPU",
+                    "Execute predicated draws whatever the bin select (predicated tiling played back in a single "
+                    "pass: every draw the game marked for any tile runs once). Set by the game's one-tile hook");
+REXCVAR_DEFINE_INT32(gpu_sonda_faixas, 0, "GPU",
+                     "Debug: log this many SET_BIN_SELECT/SET_BIN_MASK packets (with the draws since the last "
+                     "one), starting after 1500 of them so the game is in play");
 REXCVAR_DEFINE_INT32(gpu_msaa_muestras, 4, "GPU",
                      "Cap of MSAA samples: 1, 2 or 4 (the game's own). gpu_sin_msaa overrides it");
 
@@ -915,7 +921,10 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
   // & 1 == predicate - when set, we do bin check to see if we should execute
   // the packet. Only type 3 packets are affected.
   // We also skip predicated swaps, as they are never valid (probably?).
-  if (packet & 1) {
+  // gpu_ignorar_predicacao: draws run whatever the bin select; the other predicated packets (per-tile state the
+  // game recorded, such as window offsets) still follow it, so the single pass keeps the first tile's state.
+  if ((packet & 1) && !(REXCVAR_GET(gpu_ignorar_predicacao) &&
+                        (opcode == PM4_DRAW_INDX || opcode == PM4_DRAW_INDX_2))) {
     bool any_pass = (bin_select_ & bin_mask_) != 0;
     if (!any_pass || opcode == PM4_XE_SWAP) {
       g_cp_times.predicated_skipped.fetch_add(1, std::memory_order_relaxed);
@@ -1015,6 +1024,15 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
       uint32_t value = reader->ReadAndSwap<uint32_t>();
       bin_select_ = (bin_select_ & 0xFFFFFFFF00000000ull) | value;
       result = true;
+      {
+        static uint32_t seen_lo = 0;
+        static int logged_lo = 0;
+        if (REXCVAR_GET(gpu_sonda_faixas) > 0 && ++seen_lo > 1500 && logged_lo < REXCVAR_GET(gpu_sonda_faixas)) {
+          ++logged_lo;
+          REXGPU_INFO("[sonda] SELECT_LO {:016X} (draws total {})", bin_select_,
+                      g_cp_times.draws.load(std::memory_order_relaxed));
+        }
+      }
     } break;
     case PM4_SET_BIN_SELECT_HI: {
       uint32_t value = reader->ReadAndSwap<uint32_t>();
@@ -1035,6 +1053,20 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
       uint64_t val_lo = reader->ReadAndSwap<uint32_t>();
       bin_select_ = (val_hi << 32) | val_lo;
       result = true;
+      {
+        // Debug probe (gpu_sonda_faixas).
+        static uint32_t seen = 0;
+        static int logged = 0;
+        static uint32_t draws_before = 0;
+        if (REXCVAR_GET(gpu_sonda_faixas) > 0 && ++seen > 1500 && logged < REXCVAR_GET(gpu_sonda_faixas)) {
+          ++logged;
+          const uint32_t draws_now = g_cp_times.draws.load(std::memory_order_relaxed);
+          REXGPU_INFO("[sonda] {} {:016X} (draws desde o anterior: {})", "SELECT", bin_select_,
+                      draws_now - draws_before);
+          draws_before = draws_now;
+        }
+      }
+
     } break;
     case PM4_CONTEXT_UPDATE: {
       assert_true(count == 1);
