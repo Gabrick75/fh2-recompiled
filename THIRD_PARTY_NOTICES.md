@@ -1,31 +1,34 @@
 # Third-party notices
 
-NFSMW-NX is built on the work of other projects. Their licenses apply to their code and to the parts of this
-repository derived from it.
+FH2 Recompiled is built on the work of other open-source projects. Their licenses apply to their code and to
+the parts of this repository derived from it. The rest of this repository is licensed under the GNU General
+Public License v3.0 (see [LICENSE](LICENSE)).
 
-## Projects this port is derived from
+## Projects this one is derived from
 
-| Project | Used for | License |
-|---|---|---|
-| [NFSMW Recompiled](https://github.com/madelrandel-blip/NFSMW-Recompiled) by madelrandel-blip | The recompilation project this port started from: `app/` (hooks, configuration, codegen setup) and tools | GPL-3.0 |
-| [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) by Tom Clay, with portions from [Xenia](https://xenia.jp) (Ben Vanik and the Xenia contributors) | `sdk/`: code generator, Xbox 360 kernel and runtime, GPU command processing | BSD-3-Clause (`sdk/LICENSE`) |
-| [XenosRecomp](https://github.com/hedge-dev/XenosRecomp) by hedge-dev and contributors | `shaders/XenosRecomp`: Xenos microcode to HLSL translator | MIT (`shaders/LICENSE.md`) |
-| [mesa-switch](https://github.com/danfromtico/mesa-switch) by danfromtico, on top of [Mesa](https://mesa3d.org) | The Vulkan driver (NVK) and shader compiler (NAK) for Horizon, linked into the NRO; `mesa/` holds the changes | MIT (Mesa's licenses per file) |
+| Project | Authors | Used for | License |
+|---|---|---|---|
+| [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk) v0.10.0 | Tom Clay, with portions from [Xenia](https://xenia.jp) by Ben Vanik and the Xenia contributors | `sdk/`: the PowerPC to C++ code generator, the Xbox 360 kernel and runtime, the Xenos GPU command processing and the Vulkan backend | BSD-3-Clause ([sdk/LICENSE](sdk/LICENSE)) |
+| [NFSMW Recompiled](https://github.com/madelrandel-blip/NFSMW-Recompiled) | madelrandel-blip | The recompilation project layout this one started from: application setup, code generation setup and tools | GPL-3.0 |
+| [nfsmw-nx](https://github.com/StevensND/nfsmw-nx) | StevensND | Changes to the SDK and tools inherited through nfsmw-android | GPL-3.0 |
+| [nfsmw-android](https://github.com/codepdbh/nfsmw-android) | codepdbh | The Android application shell (launcher, SDL3 activity, touch controls, diagnostics) this one was adapted from | GPL-3.0 |
+| [NFSMW-Recompiled-Mobile](https://github.com/victorgbd/NFSMW-Recompiled-Mobile) | victorgbd | Performance changes ported to this project: MSAA cap, futex wait for the command ring, FPS counter, launcher menu layout | GPL-3.0 |
 
-The Horizon (Switch) layer added to `sdk/` is under the SDK's BSD-3-Clause license, and the changes in `shaders/`
-and `mesa/` under the licenses of those projects (MIT), so they can be reused by other ports. The rest of this
-repository is GPL-3.0 (`LICENSE`).
+Changes made by this project to files under `sdk/` are distributed under the SDK's BSD-3-Clause license, so
+they can be reused by other projects built on the ReXGlue SDK.
 
 ## Libraries
 
-Libraries used by the SDK, the NRO and the code generator, fetched from the submodules of ReXGlue SDK v0.10.0
-(`tools/fetch_thirdparty.py`):
+Libraries used by the SDK and the Android application. Except for the few files this project modified (listed
+below), they are not stored in this repository: `tools/fetch_thirdparty.py` fetches them from the submodules of
+ReXGlue SDK v0.10.0.
 
 | Library | License |
 |---|---|
-| [FFmpeg](https://ffmpeg.org) (libavcodec, libavutil: the WMV3 decoder for the cutscenes), from `wmarti/FFmpeg` at `0604b464c7cb` | LGPL-2.1-or-later (configured without GPL parts) |
-| [libmspack](https://www.cabextract.org.uk/libmspack/) by Stuart Caie (LZX decompression) | LGPL-2.1 |
-| [glslang](https://github.com/KhronosGroup/glslang) | BSD-3-Clause and others (see its LICENSE.txt) |
+| [SDL3](https://libsdl.org) | zlib |
+| [FFmpeg](https://ffmpeg.org) (libavcodec, libavutil), built without GPL-only parts | LGPL-2.1-or-later |
+| [libmspack](https://www.cabextract.org.uk/libmspack/) by Stuart Caie | LGPL-2.1 |
+| [glslang](https://github.com/KhronosGroup/glslang) | BSD-3-Clause and others (see its license file) |
 | [SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools) | Apache-2.0 |
 | [SPIRV-Headers](https://github.com/KhronosGroup/SPIRV-Headers), [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) | MIT, Apache-2.0 |
 | [Vulkan Memory Allocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) | MIT |
@@ -37,31 +40,23 @@ Libraries used by the SDK, the NRO and the code generator, fetched from the subm
 | [o1heap](https://github.com/pavel-kirienko/o1heap) | MIT |
 | [utfcpp](https://github.com/nemtrif/utfcpp) | BSL-1.0 |
 | [CLI11](https://github.com/CLIUtils/CLI11) | BSD-3-Clause |
-| AES-128 by LuoPeng (`thirdparty/aes_128`) | MIT |
-| [libnx](https://github.com/switchbrew/libnx) and the devkitA64 runtime (newlib, libstdc++) | ISC; newlib and GCC runtime licenses |
+| [inja](https://github.com/pantor/inja) | MIT |
+| [Tracy](https://github.com/wolfpld/tracy) | BSD-3-Clause |
+| AES-128 by LuoPeng | MIT |
+| [AndroidX](https://developer.android.com/jetpack/androidx) (core, documentfile, appcompat) | Apache-2.0 |
+| [Material Components for Android](https://github.com/material-components/material-components-android) | Apache-2.0 |
 
 ### FFmpeg and libmspack (LGPL)
 
-This port modifies these files of the SDK's third-party tree; the modified copies are in `sdk/thirdparty`:
+This project uses these files of the SDK's third-party tree in a modified form; the modified copies are in
+`sdk/thirdparty`:
 
 - `FFmpeg/libavcodec/fft_template.c` and `FFmpeg/libavcodec/mdct_template.c`
-- `FFmpeg/config.h`, plus `FFmpeg/config_switch_aarch64.h` and `FFmpeg/config_nfsmw_wmv3.h` (new): the configuration
-  for AArch64 Horizon and for a build limited to the WMV3 decoder
+- `FFmpeg/config.h`, `FFmpeg/config_nfsmw_wmv3.h` and `FFmpeg/config_switch_aarch64.h`: build configuration
+  limited to the WMV3 video decoder
 - `ffmpeg-overlay/codec_list.c`: registers the WMV3 decoder
-- `CMakeLists.txt`: builds the libraries for the Switch
+- `CMakeLists.txt`: builds the libraries
 
 The rest of FFmpeg and libmspack is the unmodified upstream source at the commits pinned by ReXGlue SDK v0.10.0.
-Everything needed to rebuild and relink the NRO with a modified version of either library is in this repository and
-in [docs/building.md](docs/building.md).
-
-## Installer page
-
-The [installer page](https://github.com/StevensND/nfsmw-nx-installer) runs WebAssembly builds of the shader translator
-and packer from `shaders/`, libmspack (LZX), and [DirectXShaderCompiler](https://github.com/microsoft/DirectXShaderCompiler)
-v2025.1 (University of Illinois/NCSA Open Source License, with LLVM's license terms). Its own notices are in that
-repository.
-
-## Trademarks
-
-Need for Speed and Need for Speed: Most Wanted are trademarks of Electronic Arts Inc. Nintendo Switch is a trademark of
-Nintendo. Xbox 360 is a trademark of Microsoft. This project is not affiliated with or endorsed by any of them.
+Everything needed to rebuild and relink the application with a modified version of either library is in this
+repository and its build instructions.
