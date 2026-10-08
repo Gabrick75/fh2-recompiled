@@ -10,6 +10,8 @@
  */
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 
 #include <rex/assert.h>
@@ -23,6 +25,13 @@
 
 REXCVAR_DEFINE_STRING(hid_mappings_file, "gamecontrollerdb.txt", "Input",
                       "Path to SDL gamecontroller mappings file");
+
+REXCVAR_DEFINE_INT32(entrada_bombeio_min_ms, 4, "Input",
+                     "Minimum time between two SDL event pumps asked by the game's controller reads (0 = one per "
+                     "read). Every XInputGetState queued a pump on the UI thread, which on Android kept it at 100% "
+                     "of a core");
+REXCVAR_DEFINE_BOOL(entrada_log_consultas, false, "Input",
+                    "Debug: log every 10 s how many controller reads the game made and how many pumps they queued");
 
 namespace rex::input::sdl {
 
@@ -754,10 +763,35 @@ void SDLInputDriver::UpdateXCapabilities(ControllerState& state) {
 }
 
 void SDLInputDriver::QueueControllerUpdate() {
+  // At most one pump per entrada_bombeio_min_ms: the game reads the controllers far more often than it
+  // draws frames, and each pump wakes the UI thread (SDLThread on Android, at 100% of a core without this).
+  static std::atomic<int64_t> last_pump_ns{0};
+  static std::atomic<uint32_t> reads{0}, pumps{0};
+  static std::atomic<int64_t> last_log_ns{0};
+  const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             std::chrono::steady_clock::now().time_since_epoch())
+                             .count();
+  if (REXCVAR_GET(entrada_log_consultas)) {
+    reads.fetch_add(1, std::memory_order_relaxed);
+    int64_t last_log = last_log_ns.load(std::memory_order_relaxed);
+    if (now_ns - last_log >= 10'000'000'000 &&
+        last_log_ns.compare_exchange_strong(last_log, now_ns, std::memory_order_relaxed)) {
+      REXLOG_INFO("[entrada] em 10 s: {} leituras do controle, {} bombeios de eventos",
+                  reads.exchange(0, std::memory_order_relaxed), pumps.exchange(0, std::memory_order_relaxed));
+    }
+  }
+  const int64_t min_ns = int64_t(REXCVAR_GET(entrada_bombeio_min_ms)) * 1'000'000;
+  if (min_ns > 0 && now_ns - last_pump_ns.load(std::memory_order_relaxed) < min_ns) {
+    return;
+  }
   // Pump SDL events to ensure controller state is up to date.
   bool is_queued = false;
   sdl_pumpevents_queued_.compare_exchange_strong(is_queued, true);
   if (!is_queued) {
+    last_pump_ns.store(now_ns, std::memory_order_relaxed);
+    if (REXCVAR_GET(entrada_log_consultas)) {
+      pumps.fetch_add(1, std::memory_order_relaxed);
+    }
     attached_window_->app_context().CallInUIThread([this]() {
       SDL_PumpEvents();
       sdl_pumpevents_queued_ = false;
