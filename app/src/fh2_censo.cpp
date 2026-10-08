@@ -5,7 +5,9 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <rex/cvar.h>
@@ -13,6 +15,9 @@
 #include <rex/logging.h>
 #include <rex/ppc/context.h>
 #include <rex/ppc/func.h>
+
+#include <sys/uio.h>
+#include <unistd.h>
 
 REXCVAR_DEFINE_BOOL(fh2_censo, false, "FH2",
                     "Debug: count calls into the game's D3D library and log them every 150 frames");
@@ -22,7 +27,25 @@ struct CensoEntry {
   const char* name;
   std::atomic<uint64_t> calls{0};
   std::atomic<uint32_t> r3{0}, r4{0}, r5{0}, r6{0}, r7{0}, lr{0};
+  // Calls with a shader container at r3/r4/r5 (bit 0/1/2 of where), and the last container's flags.
+  std::atomic<uint64_t> containers{0};
+  std::atomic<uint32_t> where{0}, flags{0};
+  std::atomic<uint64_t> objects{0};  // calls with a shader object at r4 or r5
+  std::atomic<uint32_t> object_where{0};
 };
+
+// The shader objects the constructors returned (bit 0: pixel, 1: vertex).
+std::mutex g_objects_mutex;
+std::unordered_map<uint32_t, uint32_t> g_objects;
+void RememberObject(uint32_t object, uint32_t kind) {
+  std::lock_guard<std::mutex> lock(g_objects_mutex);
+  g_objects[object] |= kind;
+}
+uint32_t ObjectKind(uint32_t object) {
+  std::lock_guard<std::mutex> lock(g_objects_mutex);
+  auto it = g_objects.find(object);
+  return it == g_objects.end() ? 0 : it->second;
+}
 
 constexpr int kEntries = 618;
 CensoEntry g_entries[kEntries] = {
@@ -646,8 +669,33 @@ CensoEntry g_entries[kEntries] = {
     {"sub_82B81F78"},
 };
 
-inline void Count(int i, PPCContext& ctx) {
+// Reads a big-endian guest word without faulting on unmapped memory (an argument is not always a pointer).
+bool ReadGuest(uint8_t* base, uint32_t address, uint32_t& value) {
+  if (address < 0x10000 || address >= 0xFFFF0000u) return false;
+  uint32_t raw;
+  iovec local{&raw, 4}, remote{base + address, 4};
+  if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) != 4) return false;
+  value = __builtin_bswap32(raw);
+  return true;
+}
+
+inline void Count(int i, PPCContext& ctx, uint8_t* base) {
   CensoEntry& e = g_entries[i];
+  const uint32_t args[3] = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32};
+  for (uint32_t k = 0; k < 3; ++k) {
+    uint32_t w;
+    if (ReadGuest(base, args[k], w) && (w & 0xFFFFFF00u) == 0x102A1100u) {
+      e.containers.fetch_add(1, std::memory_order_relaxed);
+      e.where.fetch_or(1u << k, std::memory_order_relaxed);
+      e.flags.store(w, std::memory_order_relaxed);
+    }
+  }
+  for (uint32_t k = 0; k < 2; ++k) {
+    if (const uint32_t kind = ObjectKind(k ? ctx.r5.u32 : ctx.r4.u32)) {
+      e.objects.fetch_add(1, std::memory_order_relaxed);
+      e.object_where.fetch_or(kind << (k * 2), std::memory_order_relaxed);
+    }
+  }
   e.calls.fetch_add(1, std::memory_order_relaxed);
   e.r3.store(ctx.r3.u32, std::memory_order_relaxed);
   e.r4.store(ctx.r4.u32, std::memory_order_relaxed);
@@ -671,4059 +719,4087 @@ void Report() {
   std::string s;
   for (const Row& r : rows) {
     const CensoEntry& e = g_entries[r.i];
-    char buf[220];
-    std::snprintf(buf, sizeof(buf), "\n  %s %10.2f/quadro  r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X lr=%08X",
+    char buf[300];
+    std::snprintf(buf, sizeof(buf), "\n  %s %10.2f/quadro  r3=%08X r4=%08X r5=%08X r6=%08X r7=%08X lr=%08X%s",
                   e.name, double(r.n) / kFrames, e.r3.load(), e.r4.load(), e.r5.load(), e.r6.load(),
-                  e.r7.load(), e.lr.load());
+                  e.r7.load(), e.lr.load(), "");
+    if (const uint64_t c = e.containers.load()) {
+      char extra[120];
+      std::snprintf(extra, sizeof(extra), "  CONTEINER %llu vezes em r%s, ultimo %08X", (unsigned long long)c,
+                    (e.where.load() & 1) ? "3" : (e.where.load() & 2) ? "4" : "5", e.flags.load());
+      s += buf;
+      s += extra;
+      continue;
+    }
     s += buf;
   }
   REXLOG_INFO("[censo] {} quadros, {} pontos de entrada usados:{}", kFrames, rows.size(), s);
+  // Since the start: the functions that received shader containers (the constructors run while loading).
+  std::string c;
+  for (int i = 0; i < kEntries; ++i) {
+    const CensoEntry& e = g_entries[i];
+    if (const uint64_t n = e.objects.load()) {
+      char buf[160];
+      std::snprintf(buf, sizeof(buf), "\n  %s %llu objetos de shader (r4 pixel/vertex = bits 0/1, r5 = 2/3: %u), lr=%08X",
+                    e.name, (unsigned long long)n, e.object_where.load(), e.lr.load());
+      c += buf;
+    }
+    if (const uint64_t n = e.containers.load()) {
+      char buf[160];
+      std::snprintf(buf, sizeof(buf), "\n  %s %llu conteineres (r3/r4/r5 = bits %u), ultimo %08X, lr=%08X", e.name,
+                    (unsigned long long)n, e.where.load(), e.flags.load(), e.lr.load());
+      c += buf;
+    }
+  }
+  if (!c.empty()) REXLOG_INFO("[censo] conteineres de shader recebidos desde o inicio:{}", c);
 }
 }  // namespace
 
 REX_EXTERN(__imp__sub_823F03A0);
 REX_HOOK_RAW(sub_823F03A0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(0, ctx);
+    Count(0, ctx, base);
   }
   __imp__sub_823F03A0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F07B0);
 REX_HOOK_RAW(sub_823F07B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(1, ctx);
+    Count(1, ctx, base);
   }
   __imp__sub_823F07B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F0910);
 REX_HOOK_RAW(sub_823F0910) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(2, ctx);
+    Count(2, ctx, base);
   }
   __imp__sub_823F0910(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F09E0);
 REX_HOOK_RAW(sub_823F09E0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(3, ctx);
+    Count(3, ctx, base);
   }
   __imp__sub_823F09E0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F0A80);
 REX_HOOK_RAW(sub_823F0A80) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(4, ctx);
+    Count(4, ctx, base);
   }
   __imp__sub_823F0A80(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F1820);
 REX_HOOK_RAW(sub_823F1820) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(5, ctx);
+    Count(5, ctx, base);
   }
   __imp__sub_823F1820(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F19B0);
 REX_HOOK_RAW(sub_823F19B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(6, ctx);
+    Count(6, ctx, base);
   }
   __imp__sub_823F19B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F1A00);
 REX_HOOK_RAW(sub_823F1A00) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(7, ctx);
+    Count(7, ctx, base);
   }
   __imp__sub_823F1A00(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F1AA8);
 REX_HOOK_RAW(sub_823F1AA8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(8, ctx);
+    Count(8, ctx, base);
   }
   __imp__sub_823F1AA8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F1B20);
 REX_HOOK_RAW(sub_823F1B20) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(9, ctx);
+    Count(9, ctx, base);
   }
   __imp__sub_823F1B20(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F1FC0);
 REX_HOOK_RAW(sub_823F1FC0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(10, ctx);
+    Count(10, ctx, base);
   }
   __imp__sub_823F1FC0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F2290);
 REX_HOOK_RAW(sub_823F2290) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(11, ctx);
+    Count(11, ctx, base);
   }
   __imp__sub_823F2290(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F23E8);
 REX_HOOK_RAW(sub_823F23E8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(12, ctx);
+    Count(12, ctx, base);
   }
   __imp__sub_823F23E8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F2788);
 REX_HOOK_RAW(sub_823F2788) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(13, ctx);
+    Count(13, ctx, base);
   }
   __imp__sub_823F2788(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F27D8);
 REX_HOOK_RAW(sub_823F27D8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(14, ctx);
+    Count(14, ctx, base);
   }
   __imp__sub_823F27D8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F2808);
 REX_HOOK_RAW(sub_823F2808) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(15, ctx);
+    Count(15, ctx, base);
   }
   __imp__sub_823F2808(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F2830);
 REX_HOOK_RAW(sub_823F2830) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(16, ctx);
+    Count(16, ctx, base);
   }
   __imp__sub_823F2830(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F28F0);
 REX_HOOK_RAW(sub_823F28F0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(17, ctx);
+    Count(17, ctx, base);
   }
   __imp__sub_823F28F0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F2CB0);
 REX_HOOK_RAW(sub_823F2CB0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(18, ctx);
+    Count(18, ctx, base);
   }
   __imp__sub_823F2CB0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F3050);
 REX_HOOK_RAW(sub_823F3050) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(19, ctx);
+    Count(19, ctx, base);
   }
   __imp__sub_823F3050(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F3080);
 REX_HOOK_RAW(sub_823F3080) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(20, ctx);
+    Count(20, ctx, base);
   }
   __imp__sub_823F3080(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F4658);
 REX_HOOK_RAW(sub_823F4658) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(21, ctx);
+    Count(21, ctx, base);
   }
   __imp__sub_823F4658(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F47C8);
 REX_HOOK_RAW(sub_823F47C8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(22, ctx);
+    Count(22, ctx, base);
   }
   __imp__sub_823F47C8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F4828);
 REX_HOOK_RAW(sub_823F4828) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(23, ctx);
+    Count(23, ctx, base);
   }
   __imp__sub_823F4828(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F4A28);
 REX_HOOK_RAW(sub_823F4A28) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(24, ctx);
+    Count(24, ctx, base);
   }
   __imp__sub_823F4A28(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F4A80);
 REX_HOOK_RAW(sub_823F4A80) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(25, ctx);
+    Count(25, ctx, base);
   }
   __imp__sub_823F4A80(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F4D48);
 REX_HOOK_RAW(sub_823F4D48) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(26, ctx);
+    Count(26, ctx, base);
   }
   __imp__sub_823F4D48(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F4E38);
 REX_HOOK_RAW(sub_823F4E38) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(27, ctx);
+    Count(27, ctx, base);
   }
   __imp__sub_823F4E38(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F4EE8);
 REX_HOOK_RAW(sub_823F4EE8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(28, ctx);
+    Count(28, ctx, base);
   }
   __imp__sub_823F4EE8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F52F0);
 REX_HOOK_RAW(sub_823F52F0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(29, ctx);
+    Count(29, ctx, base);
   }
   __imp__sub_823F52F0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F5350);
 REX_HOOK_RAW(sub_823F5350) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(30, ctx);
+    Count(30, ctx, base);
   }
   __imp__sub_823F5350(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F5390);
 REX_HOOK_RAW(sub_823F5390) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(31, ctx);
+    Count(31, ctx, base);
   }
   __imp__sub_823F5390(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F53F0);
 REX_HOOK_RAW(sub_823F53F0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(32, ctx);
+    Count(32, ctx, base);
   }
   __imp__sub_823F53F0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F5660);
 REX_HOOK_RAW(sub_823F5660) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(33, ctx);
+    Count(33, ctx, base);
   }
   __imp__sub_823F5660(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F5678);
 REX_HOOK_RAW(sub_823F5678) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(34, ctx);
+    Count(34, ctx, base);
   }
   __imp__sub_823F5678(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F5920);
 REX_HOOK_RAW(sub_823F5920) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(35, ctx);
+    Count(35, ctx, base);
   }
   __imp__sub_823F5920(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F59B8);
 REX_HOOK_RAW(sub_823F59B8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(36, ctx);
+    Count(36, ctx, base);
   }
   __imp__sub_823F59B8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F59D8);
 REX_HOOK_RAW(sub_823F59D8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(37, ctx);
+    Count(37, ctx, base);
   }
   __imp__sub_823F59D8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F62A8);
 REX_HOOK_RAW(sub_823F62A8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(38, ctx);
+    Count(38, ctx, base);
   }
   __imp__sub_823F62A8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F62F0);
 REX_HOOK_RAW(sub_823F62F0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(39, ctx);
+    Count(39, ctx, base);
   }
   __imp__sub_823F62F0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F6338);
 REX_HOOK_RAW(sub_823F6338) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(40, ctx);
+    Count(40, ctx, base);
   }
   __imp__sub_823F6338(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F6508);
 REX_HOOK_RAW(sub_823F6508) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(41, ctx);
+    Count(41, ctx, base);
   }
   __imp__sub_823F6508(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F6530);
 REX_HOOK_RAW(sub_823F6530) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(42, ctx);
+    Count(42, ctx, base);
   }
   __imp__sub_823F6530(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F6548);
 REX_HOOK_RAW(sub_823F6548) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(43, ctx);
+    Count(43, ctx, base);
   }
   __imp__sub_823F6548(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F6570);
 REX_HOOK_RAW(sub_823F6570) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(44, ctx);
+    Count(44, ctx, base);
   }
   __imp__sub_823F6570(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F6648);
 REX_HOOK_RAW(sub_823F6648) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(45, ctx);
+    Count(45, ctx, base);
   }
   __imp__sub_823F6648(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F6698);
 REX_HOOK_RAW(sub_823F6698) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(46, ctx);
+    Count(46, ctx, base);
   }
   __imp__sub_823F6698(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F6710);
 REX_HOOK_RAW(sub_823F6710) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(47, ctx);
+    Count(47, ctx, base);
   }
   __imp__sub_823F6710(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F6A10);
 REX_HOOK_RAW(sub_823F6A10) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(48, ctx);
+    Count(48, ctx, base);
   }
   __imp__sub_823F6A10(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F6A28);
 REX_HOOK_RAW(sub_823F6A28) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(49, ctx);
+    Count(49, ctx, base);
   }
   __imp__sub_823F6A28(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F6D48);
 REX_HOOK_RAW(sub_823F6D48) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(50, ctx);
+    Count(50, ctx, base);
   }
   __imp__sub_823F6D48(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F6D98);
 REX_HOOK_RAW(sub_823F6D98) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(51, ctx);
+    Count(51, ctx, base);
   }
   __imp__sub_823F6D98(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F7248);
 REX_HOOK_RAW(sub_823F7248) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(52, ctx);
+    Count(52, ctx, base);
   }
   __imp__sub_823F7248(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F7260);
 REX_HOOK_RAW(sub_823F7260) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(53, ctx);
+    Count(53, ctx, base);
   }
   __imp__sub_823F7260(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F8180);
 REX_HOOK_RAW(sub_823F8180) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(54, ctx);
+    Count(54, ctx, base);
   }
   __imp__sub_823F8180(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F84C0);
 REX_HOOK_RAW(sub_823F84C0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(55, ctx);
+    Count(55, ctx, base);
   }
   __imp__sub_823F84C0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F8670);
 REX_HOOK_RAW(sub_823F8670) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(56, ctx);
+    Count(56, ctx, base);
   }
   __imp__sub_823F8670(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F86E0);
 REX_HOOK_RAW(sub_823F86E0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(57, ctx);
+    Count(57, ctx, base);
   }
   __imp__sub_823F86E0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F8700);
 REX_HOOK_RAW(sub_823F8700) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(58, ctx);
+    Count(58, ctx, base);
   }
   __imp__sub_823F8700(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F8718);
 REX_HOOK_RAW(sub_823F8718) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(59, ctx);
+    Count(59, ctx, base);
   }
   __imp__sub_823F8718(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F8A68);
 REX_HOOK_RAW(sub_823F8A68) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(60, ctx);
+    Count(60, ctx, base);
   }
   __imp__sub_823F8A68(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F8B10);
 REX_HOOK_RAW(sub_823F8B10) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(61, ctx);
+    Count(61, ctx, base);
   }
   __imp__sub_823F8B10(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F8F38);
 REX_HOOK_RAW(sub_823F8F38) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(62, ctx);
+    Count(62, ctx, base);
   }
   __imp__sub_823F8F38(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F8FA8);
 REX_HOOK_RAW(sub_823F8FA8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(63, ctx);
+    Count(63, ctx, base);
   }
   __imp__sub_823F8FA8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F90C0);
 REX_HOOK_RAW(sub_823F90C0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(64, ctx);
+    Count(64, ctx, base);
   }
   __imp__sub_823F90C0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F9268);
 REX_HOOK_RAW(sub_823F9268) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(65, ctx);
+    Count(65, ctx, base);
   }
   __imp__sub_823F9268(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F9298);
 REX_HOOK_RAW(sub_823F9298) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(66, ctx);
+    Count(66, ctx, base);
   }
   __imp__sub_823F9298(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F9390);
 REX_HOOK_RAW(sub_823F9390) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(67, ctx);
+    Count(67, ctx, base);
   }
   __imp__sub_823F9390(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F93B8);
 REX_HOOK_RAW(sub_823F93B8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(68, ctx);
+    Count(68, ctx, base);
   }
   __imp__sub_823F93B8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F94A0);
 REX_HOOK_RAW(sub_823F94A0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(69, ctx);
+    Count(69, ctx, base);
   }
   __imp__sub_823F94A0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F9628);
 REX_HOOK_RAW(sub_823F9628) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(70, ctx);
+    Count(70, ctx, base);
   }
   __imp__sub_823F9628(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F97B8);
 REX_HOOK_RAW(sub_823F97B8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(71, ctx);
+    Count(71, ctx, base);
   }
   __imp__sub_823F97B8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F9DD8);
 REX_HOOK_RAW(sub_823F9DD8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(72, ctx);
+    Count(72, ctx, base);
   }
   __imp__sub_823F9DD8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F9E18);
 REX_HOOK_RAW(sub_823F9E18) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(73, ctx);
+    Count(73, ctx, base);
   }
   __imp__sub_823F9E18(ctx, base);
 }
 REX_EXTERN(__imp__sub_823F9EF8);
 REX_HOOK_RAW(sub_823F9EF8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(74, ctx);
+    Count(74, ctx, base);
   }
   __imp__sub_823F9EF8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FA018);
 REX_HOOK_RAW(sub_823FA018) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(75, ctx);
+    Count(75, ctx, base);
   }
   __imp__sub_823FA018(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FA058);
 REX_HOOK_RAW(sub_823FA058) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(76, ctx);
+    Count(76, ctx, base);
   }
   __imp__sub_823FA058(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FA208);
 REX_HOOK_RAW(sub_823FA208) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(77, ctx);
+    Count(77, ctx, base);
   }
   __imp__sub_823FA208(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FA568);
 REX_HOOK_RAW(sub_823FA568) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(78, ctx);
+    Count(78, ctx, base);
   }
   __imp__sub_823FA568(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FA6C0);
 REX_HOOK_RAW(sub_823FA6C0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(79, ctx);
+    Count(79, ctx, base);
   }
   __imp__sub_823FA6C0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FAAE0);
 REX_HOOK_RAW(sub_823FAAE0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(80, ctx);
+    Count(80, ctx, base);
   }
   __imp__sub_823FAAE0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FACC8);
 REX_HOOK_RAW(sub_823FACC8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(81, ctx);
+    Count(81, ctx, base);
   }
   __imp__sub_823FACC8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FB1B0);
 REX_HOOK_RAW(sub_823FB1B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(82, ctx);
+    Count(82, ctx, base);
   }
   __imp__sub_823FB1B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FB660);
 REX_HOOK_RAW(sub_823FB660) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(83, ctx);
+    Count(83, ctx, base);
   }
   __imp__sub_823FB660(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FBAF0);
 REX_HOOK_RAW(sub_823FBAF0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(84, ctx);
+    Count(84, ctx, base);
   }
   __imp__sub_823FBAF0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FBBC8);
 REX_HOOK_RAW(sub_823FBBC8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(85, ctx);
+    Count(85, ctx, base);
   }
   __imp__sub_823FBBC8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FC6F0);
 REX_HOOK_RAW(sub_823FC6F0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(86, ctx);
+    Count(86, ctx, base);
   }
   __imp__sub_823FC6F0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FCAB0);
 REX_HOOK_RAW(sub_823FCAB0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(87, ctx);
+    Count(87, ctx, base);
   }
   __imp__sub_823FCAB0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FCB58);
 REX_HOOK_RAW(sub_823FCB58) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(88, ctx);
+    Count(88, ctx, base);
   }
   __imp__sub_823FCB58(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FCB68);
 REX_HOOK_RAW(sub_823FCB68) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(89, ctx);
+    Count(89, ctx, base);
   }
   __imp__sub_823FCB68(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FCFD8);
 REX_HOOK_RAW(sub_823FCFD8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(90, ctx);
+    Count(90, ctx, base);
   }
   __imp__sub_823FCFD8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FD158);
 REX_HOOK_RAW(sub_823FD158) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(91, ctx);
+    Count(91, ctx, base);
   }
   __imp__sub_823FD158(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FD238);
 REX_HOOK_RAW(sub_823FD238) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(92, ctx);
+    Count(92, ctx, base);
   }
   __imp__sub_823FD238(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FD508);
 REX_HOOK_RAW(sub_823FD508) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(93, ctx);
+    Count(93, ctx, base);
   }
   __imp__sub_823FD508(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FDB68);
 REX_HOOK_RAW(sub_823FDB68) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(94, ctx);
+    Count(94, ctx, base);
   }
   __imp__sub_823FDB68(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FE7E0);
 REX_HOOK_RAW(sub_823FE7E0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(95, ctx);
+    Count(95, ctx, base);
   }
   __imp__sub_823FE7E0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FE828);
 REX_HOOK_RAW(sub_823FE828) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(96, ctx);
+    Count(96, ctx, base);
   }
   __imp__sub_823FE828(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FE8C0);
 REX_HOOK_RAW(sub_823FE8C0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(97, ctx);
+    Count(97, ctx, base);
   }
   __imp__sub_823FE8C0(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FF720);
 REX_HOOK_RAW(sub_823FF720) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(98, ctx);
+    Count(98, ctx, base);
   }
   __imp__sub_823FF720(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FF738);
 REX_HOOK_RAW(sub_823FF738) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(99, ctx);
+    Count(99, ctx, base);
   }
   __imp__sub_823FF738(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FF7A8);
 REX_HOOK_RAW(sub_823FF7A8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(100, ctx);
+    Count(100, ctx, base);
   }
   __imp__sub_823FF7A8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FF820);
 REX_HOOK_RAW(sub_823FF820) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(101, ctx);
+    Count(101, ctx, base);
   }
   __imp__sub_823FF820(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FF910);
 REX_HOOK_RAW(sub_823FF910) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(102, ctx);
+    Count(102, ctx, base);
   }
   __imp__sub_823FF910(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FF9A8);
 REX_HOOK_RAW(sub_823FF9A8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(103, ctx);
+    Count(103, ctx, base);
   }
   __imp__sub_823FF9A8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FFB68);
 REX_HOOK_RAW(sub_823FFB68) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(104, ctx);
+    Count(104, ctx, base);
   }
   __imp__sub_823FFB68(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FFBD8);
 REX_HOOK_RAW(sub_823FFBD8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(105, ctx);
+    Count(105, ctx, base);
   }
   __imp__sub_823FFBD8(ctx, base);
 }
 REX_EXTERN(__imp__sub_823FFC90);
 REX_HOOK_RAW(sub_823FFC90) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(106, ctx);
+    Count(106, ctx, base);
   }
   __imp__sub_823FFC90(ctx, base);
 }
 REX_EXTERN(__imp__sub_82400DE0);
 REX_HOOK_RAW(sub_82400DE0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(107, ctx);
+    Count(107, ctx, base);
   }
   __imp__sub_82400DE0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82400EB0);
 REX_HOOK_RAW(sub_82400EB0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(108, ctx);
+    Count(108, ctx, base);
   }
   __imp__sub_82400EB0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82400EC0);
 REX_HOOK_RAW(sub_82400EC0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(109, ctx);
+    Count(109, ctx, base);
   }
   __imp__sub_82400EC0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82401000);
 REX_HOOK_RAW(sub_82401000) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(110, ctx);
+    Count(110, ctx, base);
   }
   __imp__sub_82401000(ctx, base);
 }
 REX_EXTERN(__imp__sub_82401038);
 REX_HOOK_RAW(sub_82401038) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(111, ctx);
+    Count(111, ctx, base);
   }
   __imp__sub_82401038(ctx, base);
 }
 REX_EXTERN(__imp__sub_82401288);
 REX_HOOK_RAW(sub_82401288) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(112, ctx);
+    Count(112, ctx, base);
   }
   __imp__sub_82401288(ctx, base);
 }
 REX_EXTERN(__imp__sub_82401638);
 REX_HOOK_RAW(sub_82401638) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(113, ctx);
+    Count(113, ctx, base);
   }
   __imp__sub_82401638(ctx, base);
 }
 REX_EXTERN(__imp__sub_82401A60);
 REX_HOOK_RAW(sub_82401A60) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(114, ctx);
+    Count(114, ctx, base);
   }
   __imp__sub_82401A60(ctx, base);
 }
 REX_EXTERN(__imp__sub_82402808);
 REX_HOOK_RAW(sub_82402808) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(115, ctx);
+    Count(115, ctx, base);
   }
   __imp__sub_82402808(ctx, base);
 }
 REX_EXTERN(__imp__sub_82402C80);
 REX_HOOK_RAW(sub_82402C80) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(116, ctx);
+    Count(116, ctx, base);
   }
   __imp__sub_82402C80(ctx, base);
 }
 REX_EXTERN(__imp__sub_82402DF0);
 REX_HOOK_RAW(sub_82402DF0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(117, ctx);
+    Count(117, ctx, base);
   }
   __imp__sub_82402DF0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82402F60);
 REX_HOOK_RAW(sub_82402F60) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(118, ctx);
+    Count(118, ctx, base);
   }
   __imp__sub_82402F60(ctx, base);
 }
 REX_EXTERN(__imp__sub_824031F0);
 REX_HOOK_RAW(sub_824031F0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(119, ctx);
+    Count(119, ctx, base);
   }
   __imp__sub_824031F0(ctx, base);
 }
 REX_EXTERN(__imp__sub_824032E0);
 REX_HOOK_RAW(sub_824032E0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(120, ctx);
+    Count(120, ctx, base);
   }
   __imp__sub_824032E0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82403648);
 REX_HOOK_RAW(sub_82403648) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(121, ctx);
+    Count(121, ctx, base);
   }
   __imp__sub_82403648(ctx, base);
 }
 REX_EXTERN(__imp__sub_824036B0);
 REX_HOOK_RAW(sub_824036B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(122, ctx);
+    Count(122, ctx, base);
   }
   __imp__sub_824036B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_824037E0);
 REX_HOOK_RAW(sub_824037E0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(123, ctx);
+    Count(123, ctx, base);
   }
   __imp__sub_824037E0(ctx, base);
 }
 REX_EXTERN(__imp__sub_824038C0);
 REX_HOOK_RAW(sub_824038C0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(124, ctx);
+    Count(124, ctx, base);
   }
   __imp__sub_824038C0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82403970);
 REX_HOOK_RAW(sub_82403970) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(125, ctx);
+    Count(125, ctx, base);
   }
   __imp__sub_82403970(ctx, base);
 }
 REX_EXTERN(__imp__sub_82403FA8);
 REX_HOOK_RAW(sub_82403FA8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(126, ctx);
+    Count(126, ctx, base);
   }
   __imp__sub_82403FA8(ctx, base);
 }
 REX_EXTERN(__imp__sub_824040D8);
 REX_HOOK_RAW(sub_824040D8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(127, ctx);
+    Count(127, ctx, base);
   }
   __imp__sub_824040D8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82404170);
 REX_HOOK_RAW(sub_82404170) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(128, ctx);
+    Count(128, ctx, base);
   }
   __imp__sub_82404170(ctx, base);
 }
 REX_EXTERN(__imp__sub_82404290);
 REX_HOOK_RAW(sub_82404290) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(129, ctx);
+    Count(129, ctx, base);
   }
   __imp__sub_82404290(ctx, base);
 }
 REX_EXTERN(__imp__sub_82404CA0);
 REX_HOOK_RAW(sub_82404CA0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(130, ctx);
+    Count(130, ctx, base);
   }
   __imp__sub_82404CA0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82404CE8);
 REX_HOOK_RAW(sub_82404CE8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(131, ctx);
+    Count(131, ctx, base);
   }
   __imp__sub_82404CE8(ctx, base);
 }
 REX_EXTERN(__imp__sub_824051A0);
 REX_HOOK_RAW(sub_824051A0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(132, ctx);
+    Count(132, ctx, base);
   }
   __imp__sub_824051A0(ctx, base);
 }
 REX_EXTERN(__imp__sub_824051F8);
 REX_HOOK_RAW(sub_824051F8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(133, ctx);
+    Count(133, ctx, base);
   }
   __imp__sub_824051F8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82405868);
 REX_HOOK_RAW(sub_82405868) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(134, ctx);
+    Count(134, ctx, base);
   }
   __imp__sub_82405868(ctx, base);
 }
 REX_EXTERN(__imp__sub_82405BB0);
 REX_HOOK_RAW(sub_82405BB0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(135, ctx);
+    Count(135, ctx, base);
   }
   __imp__sub_82405BB0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82406578);
 REX_HOOK_RAW(sub_82406578) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(136, ctx);
+    Count(136, ctx, base);
   }
   __imp__sub_82406578(ctx, base);
 }
 REX_EXTERN(__imp__sub_824066F0);
 REX_HOOK_RAW(sub_824066F0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(137, ctx);
+    Count(137, ctx, base);
   }
   __imp__sub_824066F0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82406728);
 REX_HOOK_RAW(sub_82406728) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(138, ctx);
+    Count(138, ctx, base);
   }
   __imp__sub_82406728(ctx, base);
 }
 REX_EXTERN(__imp__sub_82406790);
 REX_HOOK_RAW(sub_82406790) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(139, ctx);
+    Count(139, ctx, base);
   }
   __imp__sub_82406790(ctx, base);
 }
 REX_EXTERN(__imp__sub_82407168);
 REX_HOOK_RAW(sub_82407168) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(140, ctx);
+    Count(140, ctx, base);
   }
   __imp__sub_82407168(ctx, base);
 }
 REX_EXTERN(__imp__sub_82407650);
 REX_HOOK_RAW(sub_82407650) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(141, ctx);
+    Count(141, ctx, base);
   }
   __imp__sub_82407650(ctx, base);
 }
 REX_EXTERN(__imp__sub_82407760);
 REX_HOOK_RAW(sub_82407760) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(142, ctx);
+    Count(142, ctx, base);
   }
   __imp__sub_82407760(ctx, base);
 }
 REX_EXTERN(__imp__sub_82407800);
 REX_HOOK_RAW(sub_82407800) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(143, ctx);
+    Count(143, ctx, base);
   }
   __imp__sub_82407800(ctx, base);
 }
 REX_EXTERN(__imp__sub_82407810);
 REX_HOOK_RAW(sub_82407810) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(144, ctx);
+    Count(144, ctx, base);
   }
   __imp__sub_82407810(ctx, base);
 }
 REX_EXTERN(__imp__sub_82407818);
 REX_HOOK_RAW(sub_82407818) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(145, ctx);
+    Count(145, ctx, base);
   }
   __imp__sub_82407818(ctx, base);
 }
 REX_EXTERN(__imp__sub_82407830);
 REX_HOOK_RAW(sub_82407830) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(146, ctx);
+    Count(146, ctx, base);
   }
   __imp__sub_82407830(ctx, base);
 }
 REX_EXTERN(__imp__sub_82407960);
 REX_HOOK_RAW(sub_82407960) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(147, ctx);
+    Count(147, ctx, base);
   }
   __imp__sub_82407960(ctx, base);
 }
 REX_EXTERN(__imp__sub_824079B8);
 REX_HOOK_RAW(sub_824079B8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(148, ctx);
+    Count(148, ctx, base);
   }
   __imp__sub_824079B8(ctx, base);
 }
 REX_EXTERN(__imp__sub_824080D0);
 REX_HOOK_RAW(sub_824080D0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(149, ctx);
+    Count(149, ctx, base);
   }
   __imp__sub_824080D0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82408108);
 REX_HOOK_RAW(sub_82408108) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(150, ctx);
+    Count(150, ctx, base);
   }
   __imp__sub_82408108(ctx, base);
 }
 REX_EXTERN(__imp__sub_82408170);
 REX_HOOK_RAW(sub_82408170) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(151, ctx);
+    Count(151, ctx, base);
   }
   __imp__sub_82408170(ctx, base);
 }
 REX_EXTERN(__imp__sub_824083A8);
 REX_HOOK_RAW(sub_824083A8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(152, ctx);
+    Count(152, ctx, base);
   }
   __imp__sub_824083A8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82408870);
 REX_HOOK_RAW(sub_82408870) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(153, ctx);
+    Count(153, ctx, base);
   }
   __imp__sub_82408870(ctx, base);
 }
 REX_EXTERN(__imp__sub_82408918);
 REX_HOOK_RAW(sub_82408918) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(154, ctx);
+    Count(154, ctx, base);
   }
   __imp__sub_82408918(ctx, base);
 }
 REX_EXTERN(__imp__sub_82408968);
 REX_HOOK_RAW(sub_82408968) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(155, ctx);
+    Count(155, ctx, base);
   }
   __imp__sub_82408968(ctx, base);
 }
 REX_EXTERN(__imp__sub_82408998);
 REX_HOOK_RAW(sub_82408998) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(156, ctx);
+    Count(156, ctx, base);
   }
   __imp__sub_82408998(ctx, base);
 }
 REX_EXTERN(__imp__sub_824095C8);
 REX_HOOK_RAW(sub_824095C8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(157, ctx);
+    Count(157, ctx, base);
   }
   __imp__sub_824095C8(ctx, base);
 }
 REX_EXTERN(__imp__sub_824099F8);
 REX_HOOK_RAW(sub_824099F8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(158, ctx);
+    Count(158, ctx, base);
   }
   __imp__sub_824099F8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82409A70);
 REX_HOOK_RAW(sub_82409A70) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(159, ctx);
+    Count(159, ctx, base);
   }
   __imp__sub_82409A70(ctx, base);
 }
 REX_EXTERN(__imp__sub_82409C38);
 REX_HOOK_RAW(sub_82409C38) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(160, ctx);
+    Count(160, ctx, base);
   }
   __imp__sub_82409C38(ctx, base);
 }
 REX_EXTERN(__imp__sub_82409C48);
 REX_HOOK_RAW(sub_82409C48) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(161, ctx);
+    Count(161, ctx, base);
   }
   __imp__sub_82409C48(ctx, base);
 }
 REX_EXTERN(__imp__sub_82409D08);
 REX_HOOK_RAW(sub_82409D08) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(162, ctx);
+    Count(162, ctx, base);
   }
   __imp__sub_82409D08(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240A150);
 REX_HOOK_RAW(sub_8240A150) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(163, ctx);
+    Count(163, ctx, base);
   }
   __imp__sub_8240A150(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240A738);
 REX_HOOK_RAW(sub_8240A738) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(164, ctx);
+    Count(164, ctx, base);
   }
   __imp__sub_8240A738(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240AA48);
 REX_HOOK_RAW(sub_8240AA48) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(165, ctx);
+    Count(165, ctx, base);
   }
   __imp__sub_8240AA48(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240AE78);
 REX_HOOK_RAW(sub_8240AE78) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(166, ctx);
+    Count(166, ctx, base);
   }
   __imp__sub_8240AE78(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240B320);
 REX_HOOK_RAW(sub_8240B320) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(167, ctx);
+    Count(167, ctx, base);
   }
   __imp__sub_8240B320(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240B420);
 REX_HOOK_RAW(sub_8240B420) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(168, ctx);
+    Count(168, ctx, base);
   }
   __imp__sub_8240B420(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240B588);
 REX_HOOK_RAW(sub_8240B588) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(169, ctx);
+    Count(169, ctx, base);
   }
   __imp__sub_8240B588(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240BEE0);
 REX_HOOK_RAW(sub_8240BEE0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(170, ctx);
+    Count(170, ctx, base);
   }
   __imp__sub_8240BEE0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240C608);
 REX_HOOK_RAW(sub_8240C608) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(171, ctx);
+    Count(171, ctx, base);
   }
   __imp__sub_8240C608(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240C6C8);
 REX_HOOK_RAW(sub_8240C6C8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(172, ctx);
+    Count(172, ctx, base);
   }
   __imp__sub_8240C6C8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240C7C0);
 REX_HOOK_RAW(sub_8240C7C0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(173, ctx);
+    Count(173, ctx, base);
   }
   __imp__sub_8240C7C0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240C818);
 REX_HOOK_RAW(sub_8240C818) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(174, ctx);
+    Count(174, ctx, base);
   }
   __imp__sub_8240C818(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240C968);
 REX_HOOK_RAW(sub_8240C968) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(175, ctx);
+    Count(175, ctx, base);
   }
   __imp__sub_8240C968(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240CEF8);
 REX_HOOK_RAW(sub_8240CEF8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(176, ctx);
+    Count(176, ctx, base);
   }
   __imp__sub_8240CEF8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240D210);
 REX_HOOK_RAW(sub_8240D210) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(177, ctx);
+    Count(177, ctx, base);
   }
   __imp__sub_8240D210(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240D2C8);
 REX_HOOK_RAW(sub_8240D2C8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(178, ctx);
+    Count(178, ctx, base);
   }
   __imp__sub_8240D2C8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240D2D8);
 REX_HOOK_RAW(sub_8240D2D8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(179, ctx);
+    Count(179, ctx, base);
   }
   __imp__sub_8240D2D8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240D410);
 REX_HOOK_RAW(sub_8240D410) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(180, ctx);
+    Count(180, ctx, base);
   }
   __imp__sub_8240D410(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240D7C8);
 REX_HOOK_RAW(sub_8240D7C8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(181, ctx);
+    Count(181, ctx, base);
   }
   __imp__sub_8240D7C8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240EA50);
 REX_HOOK_RAW(sub_8240EA50) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(182, ctx);
+    Count(182, ctx, base);
   }
   __imp__sub_8240EA50(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240EE60);
 REX_HOOK_RAW(sub_8240EE60) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(183, ctx);
+    Count(183, ctx, base);
   }
   __imp__sub_8240EE60(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240F208);
 REX_HOOK_RAW(sub_8240F208) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(184, ctx);
+    Count(184, ctx, base);
   }
   __imp__sub_8240F208(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240F268);
 REX_HOOK_RAW(sub_8240F268) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(185, ctx);
+    Count(185, ctx, base);
   }
   __imp__sub_8240F268(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240F2D8);
 REX_HOOK_RAW(sub_8240F2D8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(186, ctx);
+    Count(186, ctx, base);
   }
   __imp__sub_8240F2D8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240F380);
 REX_HOOK_RAW(sub_8240F380) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(187, ctx);
+    Count(187, ctx, base);
   }
   __imp__sub_8240F380(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240F3E0);
 REX_HOOK_RAW(sub_8240F3E0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(188, ctx);
+    Count(188, ctx, base);
   }
   __imp__sub_8240F3E0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240F828);
 REX_HOOK_RAW(sub_8240F828) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(189, ctx);
+    Count(189, ctx, base);
   }
   __imp__sub_8240F828(ctx, base);
 }
 REX_EXTERN(__imp__sub_8240FF40);
 REX_HOOK_RAW(sub_8240FF40) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(190, ctx);
+    Count(190, ctx, base);
   }
   __imp__sub_8240FF40(ctx, base);
 }
 REX_EXTERN(__imp__sub_82410360);
 REX_HOOK_RAW(sub_82410360) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(191, ctx);
+    Count(191, ctx, base);
   }
   __imp__sub_82410360(ctx, base);
 }
 REX_EXTERN(__imp__sub_82410820);
 REX_HOOK_RAW(sub_82410820) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(192, ctx);
+    Count(192, ctx, base);
   }
   __imp__sub_82410820(ctx, base);
 }
 REX_EXTERN(__imp__sub_82410898);
 REX_HOOK_RAW(sub_82410898) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(193, ctx);
+    Count(193, ctx, base);
   }
   __imp__sub_82410898(ctx, base);
 }
 REX_EXTERN(__imp__sub_82410908);
 REX_HOOK_RAW(sub_82410908) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(194, ctx);
+    Count(194, ctx, base);
   }
   __imp__sub_82410908(ctx, base);
 }
 REX_EXTERN(__imp__sub_82411290);
 REX_HOOK_RAW(sub_82411290) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(195, ctx);
+    Count(195, ctx, base);
   }
   __imp__sub_82411290(ctx, base);
 }
 REX_EXTERN(__imp__sub_82411390);
 REX_HOOK_RAW(sub_82411390) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(196, ctx);
+    Count(196, ctx, base);
   }
   __imp__sub_82411390(ctx, base);
 }
 REX_EXTERN(__imp__sub_824113B8);
 REX_HOOK_RAW(sub_824113B8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(197, ctx);
+    Count(197, ctx, base);
   }
   __imp__sub_824113B8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82411450);
 REX_HOOK_RAW(sub_82411450) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(198, ctx);
+    Count(198, ctx, base);
   }
   __imp__sub_82411450(ctx, base);
 }
 REX_EXTERN(__imp__sub_82411520);
 REX_HOOK_RAW(sub_82411520) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(199, ctx);
+    Count(199, ctx, base);
   }
   __imp__sub_82411520(ctx, base);
 }
 REX_EXTERN(__imp__sub_824115D8);
 REX_HOOK_RAW(sub_824115D8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(200, ctx);
+    Count(200, ctx, base);
   }
   __imp__sub_824115D8(ctx, base);
 }
 REX_EXTERN(__imp__sub_824116C8);
 REX_HOOK_RAW(sub_824116C8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(201, ctx);
+    Count(201, ctx, base);
   }
   __imp__sub_824116C8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82411800);
 REX_HOOK_RAW(sub_82411800) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(202, ctx);
+    Count(202, ctx, base);
   }
   __imp__sub_82411800(ctx, base);
 }
 REX_EXTERN(__imp__sub_824119D0);
 REX_HOOK_RAW(sub_824119D0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(203, ctx);
+    Count(203, ctx, base);
   }
   __imp__sub_824119D0(ctx, base);
 }
 REX_EXTERN(__imp__sub_824139F0);
 REX_HOOK_RAW(sub_824139F0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(204, ctx);
+    Count(204, ctx, base);
   }
   __imp__sub_824139F0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82415030);
 REX_HOOK_RAW(sub_82415030) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(205, ctx);
+    Count(205, ctx, base);
   }
   __imp__sub_82415030(ctx, base);
 }
 REX_EXTERN(__imp__sub_82415040);
 REX_HOOK_RAW(sub_82415040) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(206, ctx);
+    Count(206, ctx, base);
   }
   __imp__sub_82415040(ctx, base);
 }
 REX_EXTERN(__imp__sub_82415340);
 REX_HOOK_RAW(sub_82415340) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(207, ctx);
+    Count(207, ctx, base);
   }
   __imp__sub_82415340(ctx, base);
 }
 REX_EXTERN(__imp__sub_824153F8);
 REX_HOOK_RAW(sub_824153F8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(208, ctx);
+    Count(208, ctx, base);
   }
   __imp__sub_824153F8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82415E48);
 REX_HOOK_RAW(sub_82415E48) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(209, ctx);
+    Count(209, ctx, base);
   }
   __imp__sub_82415E48(ctx, base);
 }
 REX_EXTERN(__imp__sub_824167C0);
 REX_HOOK_RAW(sub_824167C0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(210, ctx);
+    Count(210, ctx, base);
   }
   __imp__sub_824167C0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82416C68);
 REX_HOOK_RAW(sub_82416C68) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(211, ctx);
+    Count(211, ctx, base);
   }
   __imp__sub_82416C68(ctx, base);
 }
 REX_EXTERN(__imp__sub_824177D0);
 REX_HOOK_RAW(sub_824177D0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(212, ctx);
+    Count(212, ctx, base);
   }
   __imp__sub_824177D0(ctx, base);
 }
 REX_EXTERN(__imp__sub_824178E0);
 REX_HOOK_RAW(sub_824178E0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(213, ctx);
+    Count(213, ctx, base);
   }
   __imp__sub_824178E0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82417938);
 REX_HOOK_RAW(sub_82417938) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(214, ctx);
+    Count(214, ctx, base);
   }
   __imp__sub_82417938(ctx, base);
 }
 REX_EXTERN(__imp__sub_82417FC0);
 REX_HOOK_RAW(sub_82417FC0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(215, ctx);
+    Count(215, ctx, base);
   }
   __imp__sub_82417FC0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82418048);
 REX_HOOK_RAW(sub_82418048) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(216, ctx);
+    Count(216, ctx, base);
   }
   __imp__sub_82418048(ctx, base);
 }
 REX_EXTERN(__imp__sub_824185B0);
 REX_HOOK_RAW(sub_824185B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(217, ctx);
+    Count(217, ctx, base);
   }
   __imp__sub_824185B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82418988);
 REX_HOOK_RAW(sub_82418988) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(218, ctx);
+    Count(218, ctx, base);
   }
   __imp__sub_82418988(ctx, base);
 }
 REX_EXTERN(__imp__sub_82418EC8);
 REX_HOOK_RAW(sub_82418EC8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(219, ctx);
+    Count(219, ctx, base);
   }
   __imp__sub_82418EC8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82419080);
 REX_HOOK_RAW(sub_82419080) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(220, ctx);
+    Count(220, ctx, base);
   }
   __imp__sub_82419080(ctx, base);
 }
 REX_EXTERN(__imp__sub_82419870);
 REX_HOOK_RAW(sub_82419870) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(221, ctx);
+    Count(221, ctx, base);
   }
   __imp__sub_82419870(ctx, base);
 }
 REX_EXTERN(__imp__sub_824198C8);
 REX_HOOK_RAW(sub_824198C8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(222, ctx);
+    Count(222, ctx, base);
   }
   __imp__sub_824198C8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82419CE8);
 REX_HOOK_RAW(sub_82419CE8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(223, ctx);
+    Count(223, ctx, base);
   }
   __imp__sub_82419CE8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241A0A0);
 REX_HOOK_RAW(sub_8241A0A0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(224, ctx);
+    Count(224, ctx, base);
   }
   __imp__sub_8241A0A0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241A108);
 REX_HOOK_RAW(sub_8241A108) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(225, ctx);
+    Count(225, ctx, base);
   }
   __imp__sub_8241A108(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241A2B0);
 REX_HOOK_RAW(sub_8241A2B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(226, ctx);
+    Count(226, ctx, base);
   }
   __imp__sub_8241A2B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241A5D0);
 REX_HOOK_RAW(sub_8241A5D0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(227, ctx);
+    Count(227, ctx, base);
   }
   __imp__sub_8241A5D0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241A7C0);
 REX_HOOK_RAW(sub_8241A7C0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(228, ctx);
+    Count(228, ctx, base);
   }
   __imp__sub_8241A7C0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241A9E8);
 REX_HOOK_RAW(sub_8241A9E8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(229, ctx);
+    Count(229, ctx, base);
   }
   __imp__sub_8241A9E8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241AB08);
 REX_HOOK_RAW(sub_8241AB08) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(230, ctx);
+    Count(230, ctx, base);
   }
   __imp__sub_8241AB08(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241AC98);
 REX_HOOK_RAW(sub_8241AC98) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(231, ctx);
+    Count(231, ctx, base);
   }
   __imp__sub_8241AC98(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241B2F8);
 REX_HOOK_RAW(sub_8241B2F8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(232, ctx);
+    Count(232, ctx, base);
   }
   __imp__sub_8241B2F8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241B390);
 REX_HOOK_RAW(sub_8241B390) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(233, ctx);
+    Count(233, ctx, base);
   }
   __imp__sub_8241B390(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241B4B0);
 REX_HOOK_RAW(sub_8241B4B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(234, ctx);
+    Count(234, ctx, base);
   }
   __imp__sub_8241B4B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241B8B0);
 REX_HOOK_RAW(sub_8241B8B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(235, ctx);
+    Count(235, ctx, base);
   }
   __imp__sub_8241B8B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241B928);
 REX_HOOK_RAW(sub_8241B928) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(236, ctx);
+    Count(236, ctx, base);
   }
   __imp__sub_8241B928(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241CD50);
 REX_HOOK_RAW(sub_8241CD50) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(237, ctx);
+    Count(237, ctx, base);
   }
   __imp__sub_8241CD50(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241D1B0);
 REX_HOOK_RAW(sub_8241D1B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(238, ctx);
+    Count(238, ctx, base);
   }
   __imp__sub_8241D1B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241D210);
 REX_HOOK_RAW(sub_8241D210) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(239, ctx);
+    Count(239, ctx, base);
   }
   __imp__sub_8241D210(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241D258);
 REX_HOOK_RAW(sub_8241D258) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(240, ctx);
+    Count(240, ctx, base);
   }
   __imp__sub_8241D258(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241D310);
 REX_HOOK_RAW(sub_8241D310) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(241, ctx);
+    Count(241, ctx, base);
   }
   __imp__sub_8241D310(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241D3D0);
 REX_HOOK_RAW(sub_8241D3D0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(242, ctx);
+    Count(242, ctx, base);
   }
   __imp__sub_8241D3D0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241DA58);
 REX_HOOK_RAW(sub_8241DA58) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(243, ctx);
+    Count(243, ctx, base);
   }
   __imp__sub_8241DA58(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241EE20);
 REX_HOOK_RAW(sub_8241EE20) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(244, ctx);
+    Count(244, ctx, base);
   }
   __imp__sub_8241EE20(ctx, base);
 }
 REX_EXTERN(__imp__sub_8241F2C0);
 REX_HOOK_RAW(sub_8241F2C0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(245, ctx);
+    Count(245, ctx, base);
   }
   __imp__sub_8241F2C0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82420840);
 REX_HOOK_RAW(sub_82420840) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(246, ctx);
+    Count(246, ctx, base);
   }
   __imp__sub_82420840(ctx, base);
 }
 REX_EXTERN(__imp__sub_82420858);
 REX_HOOK_RAW(sub_82420858) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(247, ctx);
+    Count(247, ctx, base);
   }
   __imp__sub_82420858(ctx, base);
 }
 REX_EXTERN(__imp__sub_82420A00);
 REX_HOOK_RAW(sub_82420A00) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(248, ctx);
+    Count(248, ctx, base);
   }
   __imp__sub_82420A00(ctx, base);
 }
 REX_EXTERN(__imp__sub_82421248);
 REX_HOOK_RAW(sub_82421248) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(249, ctx);
+    Count(249, ctx, base);
   }
   __imp__sub_82421248(ctx, base);
 }
 REX_EXTERN(__imp__sub_824223D0);
 REX_HOOK_RAW(sub_824223D0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(250, ctx);
+    Count(250, ctx, base);
   }
   __imp__sub_824223D0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82422458);
 REX_HOOK_RAW(sub_82422458) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(251, ctx);
+    Count(251, ctx, base);
   }
   __imp__sub_82422458(ctx, base);
 }
 REX_EXTERN(__imp__sub_82422730);
 REX_HOOK_RAW(sub_82422730) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(252, ctx);
+    Count(252, ctx, base);
   }
   __imp__sub_82422730(ctx, base);
 }
 REX_EXTERN(__imp__sub_82422D80);
 REX_HOOK_RAW(sub_82422D80) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(253, ctx);
+    Count(253, ctx, base);
   }
   __imp__sub_82422D80(ctx, base);
 }
 REX_EXTERN(__imp__sub_82423020);
 REX_HOOK_RAW(sub_82423020) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(254, ctx);
+    Count(254, ctx, base);
   }
   __imp__sub_82423020(ctx, base);
 }
 REX_EXTERN(__imp__sub_82423070);
 REX_HOOK_RAW(sub_82423070) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(255, ctx);
+    Count(255, ctx, base);
   }
   __imp__sub_82423070(ctx, base);
 }
 REX_EXTERN(__imp__sub_82423100);
 REX_HOOK_RAW(sub_82423100) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(256, ctx);
+    Count(256, ctx, base);
   }
   __imp__sub_82423100(ctx, base);
 }
 REX_EXTERN(__imp__sub_82423B90);
 REX_HOOK_RAW(sub_82423B90) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(257, ctx);
+    Count(257, ctx, base);
   }
   __imp__sub_82423B90(ctx, base);
 }
 REX_EXTERN(__imp__sub_824259F8);
 REX_HOOK_RAW(sub_824259F8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(258, ctx);
+    Count(258, ctx, base);
   }
   __imp__sub_824259F8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82425D68);
 REX_HOOK_RAW(sub_82425D68) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(259, ctx);
+    Count(259, ctx, base);
   }
   __imp__sub_82425D68(ctx, base);
 }
 REX_EXTERN(__imp__sub_82426180);
 REX_HOOK_RAW(sub_82426180) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(260, ctx);
+    Count(260, ctx, base);
   }
   __imp__sub_82426180(ctx, base);
 }
 REX_EXTERN(__imp__sub_824265F8);
 REX_HOOK_RAW(sub_824265F8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(261, ctx);
+    Count(261, ctx, base);
   }
   __imp__sub_824265F8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82426800);
 REX_HOOK_RAW(sub_82426800) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(262, ctx);
+    Count(262, ctx, base);
   }
   __imp__sub_82426800(ctx, base);
 }
 REX_EXTERN(__imp__sub_82426E60);
 REX_HOOK_RAW(sub_82426E60) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(263, ctx);
+    Count(263, ctx, base);
   }
   __imp__sub_82426E60(ctx, base);
 }
 REX_EXTERN(__imp__sub_82428D80);
 REX_HOOK_RAW(sub_82428D80) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(264, ctx);
+    Count(264, ctx, base);
   }
   __imp__sub_82428D80(ctx, base);
 }
 REX_EXTERN(__imp__sub_82445B18);
 REX_HOOK_RAW(sub_82445B18) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(265, ctx);
+    Count(265, ctx, base);
   }
   __imp__sub_82445B18(ctx, base);
 }
 REX_EXTERN(__imp__sub_82445BF0);
 REX_HOOK_RAW(sub_82445BF0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(266, ctx);
+    Count(266, ctx, base);
   }
   __imp__sub_82445BF0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82445C78);
 REX_HOOK_RAW(sub_82445C78) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(267, ctx);
+    Count(267, ctx, base);
   }
   __imp__sub_82445C78(ctx, base);
 }
 REX_EXTERN(__imp__sub_82445D50);
 REX_HOOK_RAW(sub_82445D50) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(268, ctx);
+    Count(268, ctx, base);
   }
   __imp__sub_82445D50(ctx, base);
 }
 REX_EXTERN(__imp__sub_82446268);
 REX_HOOK_RAW(sub_82446268) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(269, ctx);
+    Count(269, ctx, base);
   }
   __imp__sub_82446268(ctx, base);
 }
 REX_EXTERN(__imp__sub_82446388);
 REX_HOOK_RAW(sub_82446388) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(270, ctx);
+    Count(270, ctx, base);
   }
   __imp__sub_82446388(ctx, base);
 }
 REX_EXTERN(__imp__sub_82446EF0);
 REX_HOOK_RAW(sub_82446EF0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(271, ctx);
+    Count(271, ctx, base);
   }
   __imp__sub_82446EF0(ctx, base);
 }
 REX_EXTERN(__imp__sub_824483D8);
 REX_HOOK_RAW(sub_824483D8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(272, ctx);
+    Count(272, ctx, base);
   }
   __imp__sub_824483D8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82448B58);
 REX_HOOK_RAW(sub_82448B58) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(273, ctx);
+    Count(273, ctx, base);
   }
   __imp__sub_82448B58(ctx, base);
 }
 REX_EXTERN(__imp__sub_82448BF8);
 REX_HOOK_RAW(sub_82448BF8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(274, ctx);
+    Count(274, ctx, base);
   }
   __imp__sub_82448BF8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82448CA8);
 REX_HOOK_RAW(sub_82448CA8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(275, ctx);
+    Count(275, ctx, base);
   }
   __imp__sub_82448CA8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82449668);
 REX_HOOK_RAW(sub_82449668) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(276, ctx);
+    Count(276, ctx, base);
   }
   __imp__sub_82449668(ctx, base);
 }
 REX_EXTERN(__imp__sub_82449678);
 REX_HOOK_RAW(sub_82449678) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(277, ctx);
+    Count(277, ctx, base);
   }
   __imp__sub_82449678(ctx, base);
 }
 REX_EXTERN(__imp__sub_8244BE38);
 REX_HOOK_RAW(sub_8244BE38) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(278, ctx);
+    Count(278, ctx, base);
   }
   __imp__sub_8244BE38(ctx, base);
 }
 REX_EXTERN(__imp__sub_8244BFD8);
 REX_HOOK_RAW(sub_8244BFD8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(279, ctx);
+    Count(279, ctx, base);
   }
   __imp__sub_8244BFD8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8244CC30);
 REX_HOOK_RAW(sub_8244CC30) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(280, ctx);
+    Count(280, ctx, base);
   }
   __imp__sub_8244CC30(ctx, base);
 }
 REX_EXTERN(__imp__sub_8244CD20);
 REX_HOOK_RAW(sub_8244CD20) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(281, ctx);
+    Count(281, ctx, base);
   }
   __imp__sub_8244CD20(ctx, base);
 }
 REX_EXTERN(__imp__sub_8244CF18);
 REX_HOOK_RAW(sub_8244CF18) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(282, ctx);
+    Count(282, ctx, base);
   }
   __imp__sub_8244CF18(ctx, base);
 }
 REX_EXTERN(__imp__sub_8244D398);
 REX_HOOK_RAW(sub_8244D398) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(283, ctx);
+    Count(283, ctx, base);
   }
   __imp__sub_8244D398(ctx, base);
 }
 REX_EXTERN(__imp__sub_8244DFC8);
 REX_HOOK_RAW(sub_8244DFC8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(284, ctx);
+    Count(284, ctx, base);
   }
   __imp__sub_8244DFC8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8244F418);
 REX_HOOK_RAW(sub_8244F418) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(285, ctx);
+    Count(285, ctx, base);
   }
   __imp__sub_8244F418(ctx, base);
 }
 REX_EXTERN(__imp__sub_8244FA90);
 REX_HOOK_RAW(sub_8244FA90) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(286, ctx);
+    Count(286, ctx, base);
   }
   __imp__sub_8244FA90(ctx, base);
 }
 REX_EXTERN(__imp__sub_82450DE8);
 REX_HOOK_RAW(sub_82450DE8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(287, ctx);
+    Count(287, ctx, base);
   }
   __imp__sub_82450DE8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82451138);
 REX_HOOK_RAW(sub_82451138) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(288, ctx);
+    Count(288, ctx, base);
   }
   __imp__sub_82451138(ctx, base);
 }
 REX_EXTERN(__imp__sub_824513C0);
 REX_HOOK_RAW(sub_824513C0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(289, ctx);
+    Count(289, ctx, base);
   }
   __imp__sub_824513C0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82451780);
 REX_HOOK_RAW(sub_82451780) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(290, ctx);
+    Count(290, ctx, base);
   }
   __imp__sub_82451780(ctx, base);
 }
 REX_EXTERN(__imp__sub_824526B8);
 REX_HOOK_RAW(sub_824526B8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(291, ctx);
+    Count(291, ctx, base);
   }
   __imp__sub_824526B8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82452848);
 REX_HOOK_RAW(sub_82452848) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(292, ctx);
+    Count(292, ctx, base);
   }
   __imp__sub_82452848(ctx, base);
 }
 REX_EXTERN(__imp__sub_82452E38);
 REX_HOOK_RAW(sub_82452E38) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(293, ctx);
+    Count(293, ctx, base);
   }
   __imp__sub_82452E38(ctx, base);
 }
 REX_EXTERN(__imp__sub_82452EB8);
 REX_HOOK_RAW(sub_82452EB8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(294, ctx);
+    Count(294, ctx, base);
   }
   __imp__sub_82452EB8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82452F80);
 REX_HOOK_RAW(sub_82452F80) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(295, ctx);
+    Count(295, ctx, base);
   }
   __imp__sub_82452F80(ctx, base);
 }
 REX_EXTERN(__imp__sub_82453AC8);
 REX_HOOK_RAW(sub_82453AC8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(296, ctx);
+    Count(296, ctx, base);
   }
   __imp__sub_82453AC8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82456A90);
 REX_HOOK_RAW(sub_82456A90) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(297, ctx);
+    Count(297, ctx, base);
   }
   __imp__sub_82456A90(ctx, base);
 }
 REX_EXTERN(__imp__sub_82456B18);
 REX_HOOK_RAW(sub_82456B18) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(298, ctx);
+    Count(298, ctx, base);
   }
   __imp__sub_82456B18(ctx, base);
 }
 REX_EXTERN(__imp__sub_82456DB0);
 REX_HOOK_RAW(sub_82456DB0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(299, ctx);
+    Count(299, ctx, base);
   }
   __imp__sub_82456DB0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82457338);
 REX_HOOK_RAW(sub_82457338) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(300, ctx);
+    Count(300, ctx, base);
   }
   __imp__sub_82457338(ctx, base);
 }
 REX_EXTERN(__imp__sub_824586F8);
 REX_HOOK_RAW(sub_824586F8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(301, ctx);
+    Count(301, ctx, base);
   }
   __imp__sub_824586F8(ctx, base);
 }
 REX_EXTERN(__imp__sub_824589B0);
 REX_HOOK_RAW(sub_824589B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(302, ctx);
+    Count(302, ctx, base);
   }
   __imp__sub_824589B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82458A08);
 REX_HOOK_RAW(sub_82458A08) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(303, ctx);
+    Count(303, ctx, base);
   }
   __imp__sub_82458A08(ctx, base);
 }
 REX_EXTERN(__imp__sub_82459778);
 REX_HOOK_RAW(sub_82459778) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(304, ctx);
+    Count(304, ctx, base);
   }
   __imp__sub_82459778(ctx, base);
 }
 REX_EXTERN(__imp__sub_824598E0);
 REX_HOOK_RAW(sub_824598E0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(305, ctx);
+    Count(305, ctx, base);
   }
   __imp__sub_824598E0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82459B10);
 REX_HOOK_RAW(sub_82459B10) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(306, ctx);
+    Count(306, ctx, base);
   }
   __imp__sub_82459B10(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245AF20);
 REX_HOOK_RAW(sub_8245AF20) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(307, ctx);
+    Count(307, ctx, base);
   }
   __imp__sub_8245AF20(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245B1A8);
 REX_HOOK_RAW(sub_8245B1A8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(308, ctx);
+    Count(308, ctx, base);
   }
   __imp__sub_8245B1A8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245B370);
 REX_HOOK_RAW(sub_8245B370) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(309, ctx);
+    Count(309, ctx, base);
   }
   __imp__sub_8245B370(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245BA10);
 REX_HOOK_RAW(sub_8245BA10) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(310, ctx);
+    Count(310, ctx, base);
   }
   __imp__sub_8245BA10(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245BC20);
 REX_HOOK_RAW(sub_8245BC20) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(311, ctx);
+    Count(311, ctx, base);
   }
   __imp__sub_8245BC20(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245C070);
 REX_HOOK_RAW(sub_8245C070) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(312, ctx);
+    Count(312, ctx, base);
   }
   __imp__sub_8245C070(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245C368);
 REX_HOOK_RAW(sub_8245C368) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(313, ctx);
+    Count(313, ctx, base);
   }
   __imp__sub_8245C368(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245C3E8);
 REX_HOOK_RAW(sub_8245C3E8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(314, ctx);
+    Count(314, ctx, base);
   }
   __imp__sub_8245C3E8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245C410);
 REX_HOOK_RAW(sub_8245C410) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(315, ctx);
+    Count(315, ctx, base);
   }
   __imp__sub_8245C410(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245C4A0);
 REX_HOOK_RAW(sub_8245C4A0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(316, ctx);
+    Count(316, ctx, base);
   }
   __imp__sub_8245C4A0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245C4C0);
 REX_HOOK_RAW(sub_8245C4C0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(317, ctx);
+    Count(317, ctx, base);
   }
   __imp__sub_8245C4C0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245C8B0);
 REX_HOOK_RAW(sub_8245C8B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(318, ctx);
+    Count(318, ctx, base);
   }
   __imp__sub_8245C8B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245CD98);
 REX_HOOK_RAW(sub_8245CD98) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(319, ctx);
+    Count(319, ctx, base);
   }
   __imp__sub_8245CD98(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245CDF0);
 REX_HOOK_RAW(sub_8245CDF0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(320, ctx);
+    Count(320, ctx, base);
   }
   __imp__sub_8245CDF0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245D970);
 REX_HOOK_RAW(sub_8245D970) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(321, ctx);
+    Count(321, ctx, base);
   }
   __imp__sub_8245D970(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245DC48);
 REX_HOOK_RAW(sub_8245DC48) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(322, ctx);
+    Count(322, ctx, base);
   }
   __imp__sub_8245DC48(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245DCC0);
 REX_HOOK_RAW(sub_8245DCC0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(323, ctx);
+    Count(323, ctx, base);
   }
   __imp__sub_8245DCC0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245DDA8);
 REX_HOOK_RAW(sub_8245DDA8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(324, ctx);
+    Count(324, ctx, base);
   }
   __imp__sub_8245DDA8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245DDB8);
 REX_HOOK_RAW(sub_8245DDB8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(325, ctx);
+    Count(325, ctx, base);
   }
   __imp__sub_8245DDB8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245E908);
 REX_HOOK_RAW(sub_8245E908) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(326, ctx);
+    Count(326, ctx, base);
   }
   __imp__sub_8245E908(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245F7F0);
 REX_HOOK_RAW(sub_8245F7F0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(327, ctx);
+    Count(327, ctx, base);
   }
   __imp__sub_8245F7F0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245FAE8);
 REX_HOOK_RAW(sub_8245FAE8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(328, ctx);
+    Count(328, ctx, base);
   }
   __imp__sub_8245FAE8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245FE30);
 REX_HOOK_RAW(sub_8245FE30) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(329, ctx);
+    Count(329, ctx, base);
   }
   __imp__sub_8245FE30(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245FED8);
 REX_HOOK_RAW(sub_8245FED8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(330, ctx);
+    Count(330, ctx, base);
   }
   __imp__sub_8245FED8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8245FF18);
 REX_HOOK_RAW(sub_8245FF18) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(331, ctx);
+    Count(331, ctx, base);
   }
   __imp__sub_8245FF18(ctx, base);
 }
 REX_EXTERN(__imp__sub_82460310);
 REX_HOOK_RAW(sub_82460310) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(332, ctx);
+    Count(332, ctx, base);
   }
   __imp__sub_82460310(ctx, base);
 }
 REX_EXTERN(__imp__sub_82460558);
 REX_HOOK_RAW(sub_82460558) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(333, ctx);
+    Count(333, ctx, base);
   }
   __imp__sub_82460558(ctx, base);
 }
 REX_EXTERN(__imp__sub_824605E8);
 REX_HOOK_RAW(sub_824605E8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(334, ctx);
+    Count(334, ctx, base);
   }
   __imp__sub_824605E8(ctx, base);
 }
 REX_EXTERN(__imp__sub_824605F0);
 REX_HOOK_RAW(sub_824605F0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(335, ctx);
+    Count(335, ctx, base);
   }
   __imp__sub_824605F0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82460660);
 REX_HOOK_RAW(sub_82460660) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(336, ctx);
+    Count(336, ctx, base);
   }
   __imp__sub_82460660(ctx, base);
 }
 REX_EXTERN(__imp__sub_82460828);
 REX_HOOK_RAW(sub_82460828) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(337, ctx);
+    Count(337, ctx, base);
   }
   __imp__sub_82460828(ctx, base);
 }
 REX_EXTERN(__imp__sub_82460840);
 REX_HOOK_RAW(sub_82460840) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(338, ctx);
+    Count(338, ctx, base);
   }
   __imp__sub_82460840(ctx, base);
 }
 REX_EXTERN(__imp__sub_82460C20);
 REX_HOOK_RAW(sub_82460C20) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(339, ctx);
+    Count(339, ctx, base);
   }
   __imp__sub_82460C20(ctx, base);
 }
 REX_EXTERN(__imp__sub_82460DF0);
 REX_HOOK_RAW(sub_82460DF0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(340, ctx);
+    Count(340, ctx, base);
   }
   __imp__sub_82460DF0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82460ED8);
 REX_HOOK_RAW(sub_82460ED8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(341, ctx);
+    Count(341, ctx, base);
   }
   __imp__sub_82460ED8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82461A30);
 REX_HOOK_RAW(sub_82461A30) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(342, ctx);
+    Count(342, ctx, base);
   }
   __imp__sub_82461A30(ctx, base);
 }
 REX_EXTERN(__imp__sub_82461A50);
 REX_HOOK_RAW(sub_82461A50) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(343, ctx);
+    Count(343, ctx, base);
   }
   __imp__sub_82461A50(ctx, base);
 }
 REX_EXTERN(__imp__sub_82462580);
 REX_HOOK_RAW(sub_82462580) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(344, ctx);
+    Count(344, ctx, base);
   }
   __imp__sub_82462580(ctx, base);
 }
 REX_EXTERN(__imp__sub_82462758);
 REX_HOOK_RAW(sub_82462758) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(345, ctx);
+    Count(345, ctx, base);
   }
   __imp__sub_82462758(ctx, base);
 }
 REX_EXTERN(__imp__sub_82462790);
 REX_HOOK_RAW(sub_82462790) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(346, ctx);
+    Count(346, ctx, base);
   }
   __imp__sub_82462790(ctx, base);
 }
 REX_EXTERN(__imp__sub_824627A8);
 REX_HOOK_RAW(sub_824627A8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(347, ctx);
+    Count(347, ctx, base);
   }
   __imp__sub_824627A8(ctx, base);
 }
 REX_EXTERN(__imp__sub_824627B0);
 REX_HOOK_RAW(sub_824627B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(348, ctx);
+    Count(348, ctx, base);
   }
   __imp__sub_824627B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82462888);
 REX_HOOK_RAW(sub_82462888) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(349, ctx);
+    Count(349, ctx, base);
   }
   __imp__sub_82462888(ctx, base);
 }
 REX_EXTERN(__imp__sub_82462890);
 REX_HOOK_RAW(sub_82462890) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(350, ctx);
+    Count(350, ctx, base);
   }
   __imp__sub_82462890(ctx, base);
 }
 REX_EXTERN(__imp__sub_824628C0);
 REX_HOOK_RAW(sub_824628C0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(351, ctx);
+    Count(351, ctx, base);
   }
   __imp__sub_824628C0(ctx, base);
 }
 REX_EXTERN(__imp__sub_824645A8);
 REX_HOOK_RAW(sub_824645A8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(352, ctx);
+    Count(352, ctx, base);
   }
   __imp__sub_824645A8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82464888);
 REX_HOOK_RAW(sub_82464888) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(353, ctx);
+    Count(353, ctx, base);
   }
   __imp__sub_82464888(ctx, base);
 }
 REX_EXTERN(__imp__sub_82465718);
 REX_HOOK_RAW(sub_82465718) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(354, ctx);
+    Count(354, ctx, base);
   }
   __imp__sub_82465718(ctx, base);
 }
 REX_EXTERN(__imp__sub_824657C8);
 REX_HOOK_RAW(sub_824657C8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(355, ctx);
+    Count(355, ctx, base);
   }
   __imp__sub_824657C8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82465958);
 REX_HOOK_RAW(sub_82465958) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(356, ctx);
+    Count(356, ctx, base);
   }
   __imp__sub_82465958(ctx, base);
 }
 REX_EXTERN(__imp__sub_82465990);
 REX_HOOK_RAW(sub_82465990) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(357, ctx);
+    Count(357, ctx, base);
   }
   __imp__sub_82465990(ctx, base);
 }
 REX_EXTERN(__imp__sub_82465A10);
 REX_HOOK_RAW(sub_82465A10) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(358, ctx);
+    Count(358, ctx, base);
   }
   __imp__sub_82465A10(ctx, base);
 }
 REX_EXTERN(__imp__sub_82465A90);
 REX_HOOK_RAW(sub_82465A90) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(359, ctx);
+    Count(359, ctx, base);
   }
   __imp__sub_82465A90(ctx, base);
 }
 REX_EXTERN(__imp__sub_82465C08);
 REX_HOOK_RAW(sub_82465C08) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(360, ctx);
+    Count(360, ctx, base);
   }
   __imp__sub_82465C08(ctx, base);
 }
 REX_EXTERN(__imp__sub_82465C98);
 REX_HOOK_RAW(sub_82465C98) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(361, ctx);
+    Count(361, ctx, base);
   }
   __imp__sub_82465C98(ctx, base);
 }
 REX_EXTERN(__imp__sub_82465E60);
 REX_HOOK_RAW(sub_82465E60) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(362, ctx);
+    Count(362, ctx, base);
   }
   __imp__sub_82465E60(ctx, base);
 }
 REX_EXTERN(__imp__sub_82466090);
 REX_HOOK_RAW(sub_82466090) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(363, ctx);
+    Count(363, ctx, base);
   }
   __imp__sub_82466090(ctx, base);
 }
 REX_EXTERN(__imp__sub_82466260);
 REX_HOOK_RAW(sub_82466260) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(364, ctx);
+    Count(364, ctx, base);
   }
   __imp__sub_82466260(ctx, base);
 }
 REX_EXTERN(__imp__sub_82466278);
 REX_HOOK_RAW(sub_82466278) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(365, ctx);
+    Count(365, ctx, base);
   }
   __imp__sub_82466278(ctx, base);
 }
 REX_EXTERN(__imp__sub_82466300);
 REX_HOOK_RAW(sub_82466300) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(366, ctx);
+    Count(366, ctx, base);
   }
   __imp__sub_82466300(ctx, base);
 }
 REX_EXTERN(__imp__sub_82466350);
 REX_HOOK_RAW(sub_82466350) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(367, ctx);
+    Count(367, ctx, base);
   }
   __imp__sub_82466350(ctx, base);
 }
 REX_EXTERN(__imp__sub_82467120);
 REX_HOOK_RAW(sub_82467120) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(368, ctx);
+    Count(368, ctx, base);
   }
   __imp__sub_82467120(ctx, base);
 }
 REX_EXTERN(__imp__sub_82468B68);
 REX_HOOK_RAW(sub_82468B68) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(369, ctx);
+    Count(369, ctx, base);
   }
   __imp__sub_82468B68(ctx, base);
 }
 REX_EXTERN(__imp__sub_82468C00);
 REX_HOOK_RAW(sub_82468C00) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(370, ctx);
+    Count(370, ctx, base);
   }
   __imp__sub_82468C00(ctx, base);
 }
 REX_EXTERN(__imp__sub_82468D58);
 REX_HOOK_RAW(sub_82468D58) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(371, ctx);
+    Count(371, ctx, base);
   }
   __imp__sub_82468D58(ctx, base);
 }
 REX_EXTERN(__imp__sub_82469680);
 REX_HOOK_RAW(sub_82469680) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(372, ctx);
+    Count(372, ctx, base);
   }
   __imp__sub_82469680(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246B258);
 REX_HOOK_RAW(sub_8246B258) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(373, ctx);
+    Count(373, ctx, base);
   }
   __imp__sub_8246B258(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246B2B8);
 REX_HOOK_RAW(sub_8246B2B8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(374, ctx);
+    Count(374, ctx, base);
   }
   __imp__sub_8246B2B8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246B5B0);
 REX_HOOK_RAW(sub_8246B5B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(375, ctx);
+    Count(375, ctx, base);
   }
   __imp__sub_8246B5B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246B6A8);
 REX_HOOK_RAW(sub_8246B6A8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(376, ctx);
+    Count(376, ctx, base);
   }
   __imp__sub_8246B6A8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246C110);
 REX_HOOK_RAW(sub_8246C110) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(377, ctx);
+    Count(377, ctx, base);
   }
   __imp__sub_8246C110(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246C1E0);
 REX_HOOK_RAW(sub_8246C1E0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(378, ctx);
+    Count(378, ctx, base);
   }
   __imp__sub_8246C1E0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246C370);
 REX_HOOK_RAW(sub_8246C370) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(379, ctx);
+    Count(379, ctx, base);
   }
   __imp__sub_8246C370(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246C5E0);
 REX_HOOK_RAW(sub_8246C5E0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(380, ctx);
+    Count(380, ctx, base);
   }
   __imp__sub_8246C5E0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246CD38);
 REX_HOOK_RAW(sub_8246CD38) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(381, ctx);
+    Count(381, ctx, base);
   }
   __imp__sub_8246CD38(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246CEB8);
 REX_HOOK_RAW(sub_8246CEB8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(382, ctx);
+    Count(382, ctx, base);
   }
   __imp__sub_8246CEB8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246DC10);
 REX_HOOK_RAW(sub_8246DC10) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(383, ctx);
+    Count(383, ctx, base);
   }
   __imp__sub_8246DC10(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246E178);
 REX_HOOK_RAW(sub_8246E178) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(384, ctx);
+    Count(384, ctx, base);
   }
   __imp__sub_8246E178(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246E4F8);
 REX_HOOK_RAW(sub_8246E4F8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(385, ctx);
+    Count(385, ctx, base);
   }
   __imp__sub_8246E4F8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246E638);
 REX_HOOK_RAW(sub_8246E638) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(386, ctx);
+    Count(386, ctx, base);
   }
   __imp__sub_8246E638(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246E6E8);
 REX_HOOK_RAW(sub_8246E6E8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(387, ctx);
+    Count(387, ctx, base);
   }
   __imp__sub_8246E6E8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246E738);
 REX_HOOK_RAW(sub_8246E738) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(388, ctx);
+    Count(388, ctx, base);
   }
   __imp__sub_8246E738(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246F268);
 REX_HOOK_RAW(sub_8246F268) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(389, ctx);
+    Count(389, ctx, base);
   }
   __imp__sub_8246F268(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246F2B0);
 REX_HOOK_RAW(sub_8246F2B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(390, ctx);
+    Count(390, ctx, base);
   }
   __imp__sub_8246F2B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246FBE0);
 REX_HOOK_RAW(sub_8246FBE0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(391, ctx);
+    Count(391, ctx, base);
   }
   __imp__sub_8246FBE0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246FD58);
 REX_HOOK_RAW(sub_8246FD58) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(392, ctx);
+    Count(392, ctx, base);
   }
   __imp__sub_8246FD58(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246FEF8);
 REX_HOOK_RAW(sub_8246FEF8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(393, ctx);
+    Count(393, ctx, base);
   }
   __imp__sub_8246FEF8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8246FF78);
 REX_HOOK_RAW(sub_8246FF78) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(394, ctx);
+    Count(394, ctx, base);
   }
   __imp__sub_8246FF78(ctx, base);
 }
 REX_EXTERN(__imp__sub_82470000);
 REX_HOOK_RAW(sub_82470000) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(395, ctx);
+    Count(395, ctx, base);
   }
   __imp__sub_82470000(ctx, base);
 }
 REX_EXTERN(__imp__sub_82470060);
 REX_HOOK_RAW(sub_82470060) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(396, ctx);
+    Count(396, ctx, base);
   }
   __imp__sub_82470060(ctx, base);
 }
 REX_EXTERN(__imp__sub_82470088);
 REX_HOOK_RAW(sub_82470088) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(397, ctx);
+    Count(397, ctx, base);
   }
   __imp__sub_82470088(ctx, base);
 }
 REX_EXTERN(__imp__sub_824701E0);
 REX_HOOK_RAW(sub_824701E0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(398, ctx);
+    Count(398, ctx, base);
   }
   __imp__sub_824701E0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82470738);
 REX_HOOK_RAW(sub_82470738) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(399, ctx);
+    Count(399, ctx, base);
   }
   __imp__sub_82470738(ctx, base);
 }
 REX_EXTERN(__imp__sub_82470940);
 REX_HOOK_RAW(sub_82470940) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(400, ctx);
+    Count(400, ctx, base);
   }
   __imp__sub_82470940(ctx, base);
 }
 REX_EXTERN(__imp__sub_82470C18);
 REX_HOOK_RAW(sub_82470C18) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(401, ctx);
+    Count(401, ctx, base);
   }
   __imp__sub_82470C18(ctx, base);
 }
 REX_EXTERN(__imp__sub_82470E98);
 REX_HOOK_RAW(sub_82470E98) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(402, ctx);
+    Count(402, ctx, base);
   }
   __imp__sub_82470E98(ctx, base);
 }
 REX_EXTERN(__imp__sub_82470FC8);
 REX_HOOK_RAW(sub_82470FC8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(403, ctx);
+    Count(403, ctx, base);
   }
   __imp__sub_82470FC8(ctx, base);
 }
 REX_EXTERN(__imp__sub_824711F8);
 REX_HOOK_RAW(sub_824711F8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(404, ctx);
+    Count(404, ctx, base);
   }
   __imp__sub_824711F8(ctx, base);
 }
 REX_EXTERN(__imp__sub_824717C0);
 REX_HOOK_RAW(sub_824717C0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(405, ctx);
+    Count(405, ctx, base);
   }
   __imp__sub_824717C0(ctx, base);
 }
 REX_EXTERN(__imp__sub_824718B0);
 REX_HOOK_RAW(sub_824718B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(406, ctx);
+    Count(406, ctx, base);
   }
   __imp__sub_824718B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82471918);
 REX_HOOK_RAW(sub_82471918) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(407, ctx);
+    Count(407, ctx, base);
   }
   __imp__sub_82471918(ctx, base);
 }
 REX_EXTERN(__imp__sub_82471C40);
 REX_HOOK_RAW(sub_82471C40) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(408, ctx);
+    Count(408, ctx, base);
   }
   __imp__sub_82471C40(ctx, base);
 }
 REX_EXTERN(__imp__sub_824722E8);
 REX_HOOK_RAW(sub_824722E8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(409, ctx);
+    Count(409, ctx, base);
   }
   __imp__sub_824722E8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82472AE8);
 REX_HOOK_RAW(sub_82472AE8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(410, ctx);
+    Count(410, ctx, base);
   }
   __imp__sub_82472AE8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82473088);
 REX_HOOK_RAW(sub_82473088) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(411, ctx);
+    Count(411, ctx, base);
   }
   __imp__sub_82473088(ctx, base);
 }
 REX_EXTERN(__imp__sub_82473418);
 REX_HOOK_RAW(sub_82473418) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(412, ctx);
+    Count(412, ctx, base);
   }
   __imp__sub_82473418(ctx, base);
 }
 REX_EXTERN(__imp__sub_82473688);
 REX_HOOK_RAW(sub_82473688) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(413, ctx);
+    Count(413, ctx, base);
   }
   __imp__sub_82473688(ctx, base);
 }
 REX_EXTERN(__imp__sub_82475270);
 REX_HOOK_RAW(sub_82475270) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(414, ctx);
+    Count(414, ctx, base);
   }
   __imp__sub_82475270(ctx, base);
 }
 REX_EXTERN(__imp__sub_824752C0);
 REX_HOOK_RAW(sub_824752C0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(415, ctx);
+    Count(415, ctx, base);
   }
   __imp__sub_824752C0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82475330);
 REX_HOOK_RAW(sub_82475330) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(416, ctx);
+    Count(416, ctx, base);
   }
   __imp__sub_82475330(ctx, base);
 }
 REX_EXTERN(__imp__sub_824753A0);
 REX_HOOK_RAW(sub_824753A0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(417, ctx);
+    Count(417, ctx, base);
   }
   __imp__sub_824753A0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82475730);
 REX_HOOK_RAW(sub_82475730) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(418, ctx);
+    Count(418, ctx, base);
   }
   __imp__sub_82475730(ctx, base);
 }
 REX_EXTERN(__imp__sub_82475738);
 REX_HOOK_RAW(sub_82475738) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(419, ctx);
+    Count(419, ctx, base);
   }
   __imp__sub_82475738(ctx, base);
 }
 REX_EXTERN(__imp__sub_824759D0);
 REX_HOOK_RAW(sub_824759D0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(420, ctx);
+    Count(420, ctx, base);
   }
   __imp__sub_824759D0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82475C80);
 REX_HOOK_RAW(sub_82475C80) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(421, ctx);
+    Count(421, ctx, base);
   }
   __imp__sub_82475C80(ctx, base);
 }
 REX_EXTERN(__imp__sub_82476898);
 REX_HOOK_RAW(sub_82476898) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(422, ctx);
+    Count(422, ctx, base);
   }
   __imp__sub_82476898(ctx, base);
 }
 REX_EXTERN(__imp__sub_82476BB0);
 REX_HOOK_RAW(sub_82476BB0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(423, ctx);
+    Count(423, ctx, base);
   }
   __imp__sub_82476BB0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82476BE8);
 REX_HOOK_RAW(sub_82476BE8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(424, ctx);
+    Count(424, ctx, base);
   }
   __imp__sub_82476BE8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82476DF0);
 REX_HOOK_RAW(sub_82476DF0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(425, ctx);
+    Count(425, ctx, base);
   }
   __imp__sub_82476DF0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82477130);
 REX_HOOK_RAW(sub_82477130) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(426, ctx);
+    Count(426, ctx, base);
   }
   __imp__sub_82477130(ctx, base);
 }
 REX_EXTERN(__imp__sub_824771F0);
 REX_HOOK_RAW(sub_824771F0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(427, ctx);
+    Count(427, ctx, base);
   }
   __imp__sub_824771F0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82477268);
 REX_HOOK_RAW(sub_82477268) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(428, ctx);
+    Count(428, ctx, base);
   }
   __imp__sub_82477268(ctx, base);
 }
 REX_EXTERN(__imp__sub_82477558);
 REX_HOOK_RAW(sub_82477558) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(429, ctx);
+    Count(429, ctx, base);
   }
   __imp__sub_82477558(ctx, base);
 }
 REX_EXTERN(__imp__sub_824776A8);
 REX_HOOK_RAW(sub_824776A8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(430, ctx);
+    Count(430, ctx, base);
   }
   __imp__sub_824776A8(ctx, base);
 }
 REX_EXTERN(__imp__sub_824777E8);
 REX_HOOK_RAW(sub_824777E8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(431, ctx);
+    Count(431, ctx, base);
   }
   __imp__sub_824777E8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82477B00);
 REX_HOOK_RAW(sub_82477B00) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(432, ctx);
+    Count(432, ctx, base);
   }
   __imp__sub_82477B00(ctx, base);
 }
 REX_EXTERN(__imp__sub_82477B30);
 REX_HOOK_RAW(sub_82477B30) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(433, ctx);
+    Count(433, ctx, base);
   }
   __imp__sub_82477B30(ctx, base);
 }
 REX_EXTERN(__imp__sub_82477CB8);
 REX_HOOK_RAW(sub_82477CB8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(434, ctx);
+    Count(434, ctx, base);
   }
   __imp__sub_82477CB8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82478900);
 REX_HOOK_RAW(sub_82478900) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(435, ctx);
+    Count(435, ctx, base);
   }
   __imp__sub_82478900(ctx, base);
 }
 REX_EXTERN(__imp__sub_82479C80);
 REX_HOOK_RAW(sub_82479C80) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(436, ctx);
+    Count(436, ctx, base);
   }
   __imp__sub_82479C80(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247A4B0);
 REX_HOOK_RAW(sub_8247A4B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(437, ctx);
+    Count(437, ctx, base);
   }
   __imp__sub_8247A4B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247A858);
 REX_HOOK_RAW(sub_8247A858) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(438, ctx);
+    Count(438, ctx, base);
   }
   __imp__sub_8247A858(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247B448);
 REX_HOOK_RAW(sub_8247B448) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(439, ctx);
+    Count(439, ctx, base);
   }
   __imp__sub_8247B448(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247B6E0);
 REX_HOOK_RAW(sub_8247B6E0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(440, ctx);
+    Count(440, ctx, base);
   }
   __imp__sub_8247B6E0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247BA58);
 REX_HOOK_RAW(sub_8247BA58) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(441, ctx);
+    Count(441, ctx, base);
   }
   __imp__sub_8247BA58(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247BD98);
 REX_HOOK_RAW(sub_8247BD98) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(442, ctx);
+    Count(442, ctx, base);
   }
   __imp__sub_8247BD98(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247BDD0);
 REX_HOOK_RAW(sub_8247BDD0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(443, ctx);
+    Count(443, ctx, base);
   }
   __imp__sub_8247BDD0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247BEF8);
 REX_HOOK_RAW(sub_8247BEF8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(444, ctx);
+    Count(444, ctx, base);
   }
   __imp__sub_8247BEF8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247C2F8);
 REX_HOOK_RAW(sub_8247C2F8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(445, ctx);
+    Count(445, ctx, base);
   }
   __imp__sub_8247C2F8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247C738);
 REX_HOOK_RAW(sub_8247C738) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(446, ctx);
+    Count(446, ctx, base);
   }
   __imp__sub_8247C738(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247CCF8);
 REX_HOOK_RAW(sub_8247CCF8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(447, ctx);
+    Count(447, ctx, base);
   }
   __imp__sub_8247CCF8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247D6F0);
 REX_HOOK_RAW(sub_8247D6F0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(448, ctx);
+    Count(448, ctx, base);
   }
   __imp__sub_8247D6F0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247D710);
 REX_HOOK_RAW(sub_8247D710) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(449, ctx);
+    Count(449, ctx, base);
   }
   __imp__sub_8247D710(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247D7A8);
 REX_HOOK_RAW(sub_8247D7A8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(450, ctx);
+    Count(450, ctx, base);
   }
   __imp__sub_8247D7A8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247D8C0);
 REX_HOOK_RAW(sub_8247D8C0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(451, ctx);
+    Count(451, ctx, base);
   }
   __imp__sub_8247D8C0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247E268);
 REX_HOOK_RAW(sub_8247E268) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(452, ctx);
+    Count(452, ctx, base);
   }
   __imp__sub_8247E268(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247E370);
 REX_HOOK_RAW(sub_8247E370) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(453, ctx);
+    Count(453, ctx, base);
   }
   __imp__sub_8247E370(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247E8B0);
 REX_HOOK_RAW(sub_8247E8B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(454, ctx);
+    Count(454, ctx, base);
   }
   __imp__sub_8247E8B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247E908);
 REX_HOOK_RAW(sub_8247E908) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(455, ctx);
+    Count(455, ctx, base);
   }
   __imp__sub_8247E908(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247E918);
 REX_HOOK_RAW(sub_8247E918) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(456, ctx);
+    Count(456, ctx, base);
   }
   __imp__sub_8247E918(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247EBF0);
 REX_HOOK_RAW(sub_8247EBF0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(457, ctx);
+    Count(457, ctx, base);
   }
   __imp__sub_8247EBF0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247ECB0);
 REX_HOOK_RAW(sub_8247ECB0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(458, ctx);
+    Count(458, ctx, base);
   }
   __imp__sub_8247ECB0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247F0A0);
 REX_HOOK_RAW(sub_8247F0A0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(459, ctx);
+    Count(459, ctx, base);
   }
   __imp__sub_8247F0A0(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247F168);
 REX_HOOK_RAW(sub_8247F168) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(460, ctx);
+    Count(460, ctx, base);
   }
   __imp__sub_8247F168(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247F290);
 REX_HOOK_RAW(sub_8247F290) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(461, ctx);
+    Count(461, ctx, base);
   }
   __imp__sub_8247F290(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247F298);
 REX_HOOK_RAW(sub_8247F298) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(462, ctx);
+    Count(462, ctx, base);
   }
   __imp__sub_8247F298(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247F558);
 REX_HOOK_RAW(sub_8247F558) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(463, ctx);
+    Count(463, ctx, base);
   }
   __imp__sub_8247F558(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247F578);
 REX_HOOK_RAW(sub_8247F578) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(464, ctx);
+    Count(464, ctx, base);
   }
   __imp__sub_8247F578(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247F590);
 REX_HOOK_RAW(sub_8247F590) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(465, ctx);
+    Count(465, ctx, base);
   }
   __imp__sub_8247F590(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247F5D8);
 REX_HOOK_RAW(sub_8247F5D8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(466, ctx);
+    Count(466, ctx, base);
   }
   __imp__sub_8247F5D8(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247F650);
 REX_HOOK_RAW(sub_8247F650) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(467, ctx);
+    Count(467, ctx, base);
   }
   __imp__sub_8247F650(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247F690);
 REX_HOOK_RAW(sub_8247F690) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(468, ctx);
+    Count(468, ctx, base);
   }
   __imp__sub_8247F690(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247FC38);
 REX_HOOK_RAW(sub_8247FC38) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(469, ctx);
+    Count(469, ctx, base);
   }
   __imp__sub_8247FC38(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247FC48);
 REX_HOOK_RAW(sub_8247FC48) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(470, ctx);
+    Count(470, ctx, base);
   }
   __imp__sub_8247FC48(ctx, base);
 }
 REX_EXTERN(__imp__sub_8247FC98);
 REX_HOOK_RAW(sub_8247FC98) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(471, ctx);
+    Count(471, ctx, base);
   }
   __imp__sub_8247FC98(ctx, base);
 }
 REX_EXTERN(__imp__sub_82480060);
 REX_HOOK_RAW(sub_82480060) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(472, ctx);
+    Count(472, ctx, base);
   }
   __imp__sub_82480060(ctx, base);
 }
 REX_EXTERN(__imp__sub_824800F0);
 REX_HOOK_RAW(sub_824800F0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(473, ctx);
+    Count(473, ctx, base);
   }
   __imp__sub_824800F0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82480118);
 REX_HOOK_RAW(sub_82480118) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(474, ctx);
+    Count(474, ctx, base);
   }
   __imp__sub_82480118(ctx, base);
 }
 REX_EXTERN(__imp__sub_82480290);
 REX_HOOK_RAW(sub_82480290) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(475, ctx);
+    Count(475, ctx, base);
   }
   __imp__sub_82480290(ctx, base);
 }
 REX_EXTERN(__imp__sub_824803A8);
 REX_HOOK_RAW(sub_824803A8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(476, ctx);
+    Count(476, ctx, base);
   }
   __imp__sub_824803A8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82480C98);
 REX_HOOK_RAW(sub_82480C98) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(477, ctx);
+    Count(477, ctx, base);
   }
   __imp__sub_82480C98(ctx, base);
 }
 REX_EXTERN(__imp__sub_82480D28);
 REX_HOOK_RAW(sub_82480D28) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(478, ctx);
+    Count(478, ctx, base);
   }
   __imp__sub_82480D28(ctx, base);
 }
 REX_EXTERN(__imp__sub_824817B8);
 REX_HOOK_RAW(sub_824817B8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(479, ctx);
+    Count(479, ctx, base);
   }
   __imp__sub_824817B8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82481E98);
 REX_HOOK_RAW(sub_82481E98) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(480, ctx);
+    Count(480, ctx, base);
   }
   __imp__sub_82481E98(ctx, base);
 }
 REX_EXTERN(__imp__sub_82481EA0);
 REX_HOOK_RAW(sub_82481EA0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(481, ctx);
+    Count(481, ctx, base);
   }
   __imp__sub_82481EA0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82482050);
 REX_HOOK_RAW(sub_82482050) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(482, ctx);
+    Count(482, ctx, base);
   }
   __imp__sub_82482050(ctx, base);
 }
 REX_EXTERN(__imp__sub_82482118);
 REX_HOOK_RAW(sub_82482118) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(483, ctx);
+    Count(483, ctx, base);
   }
   __imp__sub_82482118(ctx, base);
 }
 REX_EXTERN(__imp__sub_82482238);
 REX_HOOK_RAW(sub_82482238) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(484, ctx);
+    Count(484, ctx, base);
   }
   __imp__sub_82482238(ctx, base);
 }
 REX_EXTERN(__imp__sub_82482450);
 REX_HOOK_RAW(sub_82482450) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(485, ctx);
+    Count(485, ctx, base);
   }
   __imp__sub_82482450(ctx, base);
 }
 REX_EXTERN(__imp__sub_82482678);
 REX_HOOK_RAW(sub_82482678) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(486, ctx);
+    Count(486, ctx, base);
   }
   __imp__sub_82482678(ctx, base);
 }
 REX_EXTERN(__imp__sub_82482720);
 REX_HOOK_RAW(sub_82482720) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(487, ctx);
+    Count(487, ctx, base);
   }
   __imp__sub_82482720(ctx, base);
 }
 REX_EXTERN(__imp__sub_82482748);
 REX_HOOK_RAW(sub_82482748) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(488, ctx);
+    Count(488, ctx, base);
   }
   __imp__sub_82482748(ctx, base);
 }
 REX_EXTERN(__imp__sub_82482760);
 REX_HOOK_RAW(sub_82482760) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(489, ctx);
+    Count(489, ctx, base);
   }
   __imp__sub_82482760(ctx, base);
 }
 REX_EXTERN(__imp__sub_82482798);
 REX_HOOK_RAW(sub_82482798) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(490, ctx);
+    Count(490, ctx, base);
   }
   __imp__sub_82482798(ctx, base);
 }
 REX_EXTERN(__imp__sub_824827B8);
 REX_HOOK_RAW(sub_824827B8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(491, ctx);
+    Count(491, ctx, base);
   }
   __imp__sub_824827B8(ctx, base);
 }
 REX_EXTERN(__imp__sub_824827F8);
 REX_HOOK_RAW(sub_824827F8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(492, ctx);
+    Count(492, ctx, base);
   }
   __imp__sub_824827F8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82482880);
 REX_HOOK_RAW(sub_82482880) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(493, ctx);
+    Count(493, ctx, base);
   }
   __imp__sub_82482880(ctx, base);
 }
 REX_EXTERN(__imp__sub_82483760);
 REX_HOOK_RAW(sub_82483760) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(494, ctx);
+    Count(494, ctx, base);
   }
   __imp__sub_82483760(ctx, base);
 }
 REX_EXTERN(__imp__sub_82483A00);
 REX_HOOK_RAW(sub_82483A00) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(495, ctx);
+    Count(495, ctx, base);
   }
   __imp__sub_82483A00(ctx, base);
 }
 REX_EXTERN(__imp__sub_82483B38);
 REX_HOOK_RAW(sub_82483B38) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(496, ctx);
+    Count(496, ctx, base);
   }
   __imp__sub_82483B38(ctx, base);
 }
 REX_EXTERN(__imp__sub_82483B40);
 REX_HOOK_RAW(sub_82483B40) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(497, ctx);
+    Count(497, ctx, base);
   }
   __imp__sub_82483B40(ctx, base);
 }
 REX_EXTERN(__imp__sub_82483EE0);
 REX_HOOK_RAW(sub_82483EE0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(498, ctx);
+    Count(498, ctx, base);
   }
   __imp__sub_82483EE0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82484028);
 REX_HOOK_RAW(sub_82484028) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(499, ctx);
+    Count(499, ctx, base);
   }
   __imp__sub_82484028(ctx, base);
 }
 REX_EXTERN(__imp__sub_82484060);
 REX_HOOK_RAW(sub_82484060) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(500, ctx);
+    Count(500, ctx, base);
   }
   __imp__sub_82484060(ctx, base);
 }
 REX_EXTERN(__imp__sub_82484160);
 REX_HOOK_RAW(sub_82484160) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(501, ctx);
+    Count(501, ctx, base);
   }
   __imp__sub_82484160(ctx, base);
 }
 REX_EXTERN(__imp__sub_824842F0);
 REX_HOOK_RAW(sub_824842F0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(502, ctx);
+    Count(502, ctx, base);
   }
   __imp__sub_824842F0(ctx, base);
 }
 REX_EXTERN(__imp__sub_824842F8);
 REX_HOOK_RAW(sub_824842F8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(503, ctx);
+    Count(503, ctx, base);
   }
   __imp__sub_824842F8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82484578);
 REX_HOOK_RAW(sub_82484578) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(504, ctx);
+    Count(504, ctx, base);
   }
   __imp__sub_82484578(ctx, base);
 }
 REX_EXTERN(__imp__sub_82484608);
 REX_HOOK_RAW(sub_82484608) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(505, ctx);
+    Count(505, ctx, base);
   }
   __imp__sub_82484608(ctx, base);
 }
 REX_EXTERN(__imp__sub_824848F8);
 REX_HOOK_RAW(sub_824848F8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(506, ctx);
+    Count(506, ctx, base);
   }
   __imp__sub_824848F8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82484DF8);
 REX_HOOK_RAW(sub_82484DF8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(507, ctx);
+    Count(507, ctx, base);
   }
   __imp__sub_82484DF8(ctx, base);
 }
 REX_EXTERN(__imp__sub_824852D8);
 REX_HOOK_RAW(sub_824852D8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(508, ctx);
+    Count(508, ctx, base);
   }
   __imp__sub_824852D8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82485450);
 REX_HOOK_RAW(sub_82485450) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(509, ctx);
+    Count(509, ctx, base);
   }
   __imp__sub_82485450(ctx, base);
 }
 REX_EXTERN(__imp__sub_824855A0);
 REX_HOOK_RAW(sub_824855A0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(510, ctx);
+    Count(510, ctx, base);
   }
   __imp__sub_824855A0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82485E20);
 REX_HOOK_RAW(sub_82485E20) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(511, ctx);
+    Count(511, ctx, base);
   }
   __imp__sub_82485E20(ctx, base);
 }
 REX_EXTERN(__imp__sub_82485F10);
 REX_HOOK_RAW(sub_82485F10) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(512, ctx);
+    Count(512, ctx, base);
   }
   __imp__sub_82485F10(ctx, base);
 }
 REX_EXTERN(__imp__sub_82486650);
 REX_HOOK_RAW(sub_82486650) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(513, ctx);
+    Count(513, ctx, base);
   }
   __imp__sub_82486650(ctx, base);
 }
 REX_EXTERN(__imp__sub_82486850);
 REX_HOOK_RAW(sub_82486850) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(514, ctx);
+    Count(514, ctx, base);
   }
   __imp__sub_82486850(ctx, base);
 }
 REX_EXTERN(__imp__sub_82487368);
 REX_HOOK_RAW(sub_82487368) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(515, ctx);
+    Count(515, ctx, base);
   }
   __imp__sub_82487368(ctx, base);
 }
 REX_EXTERN(__imp__sub_82487568);
 REX_HOOK_RAW(sub_82487568) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(516, ctx);
+    Count(516, ctx, base);
   }
   __imp__sub_82487568(ctx, base);
 }
 REX_EXTERN(__imp__sub_82487750);
 REX_HOOK_RAW(sub_82487750) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(517, ctx);
+    Count(517, ctx, base);
   }
   __imp__sub_82487750(ctx, base);
 }
 REX_EXTERN(__imp__sub_824878C8);
 REX_HOOK_RAW(sub_824878C8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(518, ctx);
+    Count(518, ctx, base);
   }
   __imp__sub_824878C8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82487A88);
 REX_HOOK_RAW(sub_82487A88) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(519, ctx);
+    Count(519, ctx, base);
   }
   __imp__sub_82487A88(ctx, base);
 }
 REX_EXTERN(__imp__sub_82487C20);
 REX_HOOK_RAW(sub_82487C20) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(520, ctx);
+    Count(520, ctx, base);
   }
   __imp__sub_82487C20(ctx, base);
 }
 REX_EXTERN(__imp__sub_82487C30);
 REX_HOOK_RAW(sub_82487C30) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(521, ctx);
+    Count(521, ctx, base);
   }
   __imp__sub_82487C30(ctx, base);
 }
 REX_EXTERN(__imp__sub_82487D18);
 REX_HOOK_RAW(sub_82487D18) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(522, ctx);
+    Count(522, ctx, base);
   }
   __imp__sub_82487D18(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6A030);
 REX_HOOK_RAW(sub_82B6A030) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(523, ctx);
+    Count(523, ctx, base);
   }
   __imp__sub_82B6A030(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6A050);
 REX_HOOK_RAW(sub_82B6A050) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(524, ctx);
+    Count(524, ctx, base);
   }
   __imp__sub_82B6A050(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6A100);
 REX_HOOK_RAW(sub_82B6A100) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(525, ctx);
+    Count(525, ctx, base);
   }
   __imp__sub_82B6A100(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6A108);
 REX_HOOK_RAW(sub_82B6A108) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(526, ctx);
+    Count(526, ctx, base);
   }
   __imp__sub_82B6A108(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6A110);
 REX_HOOK_RAW(sub_82B6A110) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(527, ctx);
+    Count(527, ctx, base);
   }
   __imp__sub_82B6A110(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6A230);
 REX_HOOK_RAW(sub_82B6A230) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(528, ctx);
+    Count(528, ctx, base);
   }
   __imp__sub_82B6A230(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6A368);
 REX_HOOK_RAW(sub_82B6A368) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(529, ctx);
+    Count(529, ctx, base);
   }
   __imp__sub_82B6A368(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6A400);
 REX_HOOK_RAW(sub_82B6A400) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(530, ctx);
+    Count(530, ctx, base);
   }
   __imp__sub_82B6A400(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6A428);
 REX_HOOK_RAW(sub_82B6A428) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(531, ctx);
+    Count(531, ctx, base);
   }
   __imp__sub_82B6A428(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6A470);
 REX_HOOK_RAW(sub_82B6A470) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(532, ctx);
+    Count(532, ctx, base);
   }
   __imp__sub_82B6A470(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6A490);
 REX_HOOK_RAW(sub_82B6A490) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(533, ctx);
+    Count(533, ctx, base);
   }
   __imp__sub_82B6A490(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6A5D8);
 REX_HOOK_RAW(sub_82B6A5D8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(534, ctx);
+    Count(534, ctx, base);
   }
   __imp__sub_82B6A5D8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6A640);
 REX_HOOK_RAW(sub_82B6A640) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(535, ctx);
+    Count(535, ctx, base);
   }
   __imp__sub_82B6A640(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6A708);
 REX_HOOK_RAW(sub_82B6A708) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(536, ctx);
+    Count(536, ctx, base);
   }
   __imp__sub_82B6A708(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6A7B8);
 REX_HOOK_RAW(sub_82B6A7B8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(537, ctx);
+    Count(537, ctx, base);
   }
   __imp__sub_82B6A7B8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6A7C8);
 REX_HOOK_RAW(sub_82B6A7C8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(538, ctx);
+    Count(538, ctx, base);
   }
   __imp__sub_82B6A7C8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6AD98);
 REX_HOOK_RAW(sub_82B6AD98) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(539, ctx);
+    Count(539, ctx, base);
   }
   __imp__sub_82B6AD98(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6AE90);
 REX_HOOK_RAW(sub_82B6AE90) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(540, ctx);
+    Count(540, ctx, base);
   }
   __imp__sub_82B6AE90(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6B3A0);
 REX_HOOK_RAW(sub_82B6B3A0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(541, ctx);
+    Count(541, ctx, base);
   }
   __imp__sub_82B6B3A0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6CC80);
 REX_HOOK_RAW(sub_82B6CC80) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(542, ctx);
+    Count(542, ctx, base);
   }
   __imp__sub_82B6CC80(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6CD30);
 REX_HOOK_RAW(sub_82B6CD30) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(543, ctx);
+    Count(543, ctx, base);
   }
   __imp__sub_82B6CD30(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6CDB0);
 REX_HOOK_RAW(sub_82B6CDB0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(544, ctx);
+    Count(544, ctx, base);
   }
   __imp__sub_82B6CDB0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6D898);
 REX_HOOK_RAW(sub_82B6D898) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(545, ctx);
+    Count(545, ctx, base);
   }
   __imp__sub_82B6D898(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6D930);
 REX_HOOK_RAW(sub_82B6D930) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(546, ctx);
+    Count(546, ctx, base);
   }
   __imp__sub_82B6D930(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6DBD0);
 REX_HOOK_RAW(sub_82B6DBD0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(547, ctx);
+    Count(547, ctx, base);
   }
   __imp__sub_82B6DBD0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6DC70);
 REX_HOOK_RAW(sub_82B6DC70) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(548, ctx);
+    Count(548, ctx, base);
   }
   __imp__sub_82B6DC70(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6DDC8);
 REX_HOOK_RAW(sub_82B6DDC8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(549, ctx);
+    Count(549, ctx, base);
   }
   __imp__sub_82B6DDC8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6DE50);
 REX_HOOK_RAW(sub_82B6DE50) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(550, ctx);
+    Count(550, ctx, base);
   }
   __imp__sub_82B6DE50(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6DEE8);
 REX_HOOK_RAW(sub_82B6DEE8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(551, ctx);
+    Count(551, ctx, base);
   }
   __imp__sub_82B6DEE8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6E0F0);
 REX_HOOK_RAW(sub_82B6E0F0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(552, ctx);
+    Count(552, ctx, base);
   }
   __imp__sub_82B6E0F0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6E1B0);
 REX_HOOK_RAW(sub_82B6E1B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(553, ctx);
+    Count(553, ctx, base);
   }
   __imp__sub_82B6E1B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6E338);
 REX_HOOK_RAW(sub_82B6E338) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(554, ctx);
+    Count(554, ctx, base);
   }
   __imp__sub_82B6E338(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6E9E8);
 REX_HOOK_RAW(sub_82B6E9E8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(555, ctx);
+    Count(555, ctx, base);
   }
   __imp__sub_82B6E9E8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6FC80);
 REX_HOOK_RAW(sub_82B6FC80) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(556, ctx);
+    Count(556, ctx, base);
   }
   __imp__sub_82B6FC80(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6FD58);
 REX_HOOK_RAW(sub_82B6FD58) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(557, ctx);
+    Count(557, ctx, base);
   }
   __imp__sub_82B6FD58(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6FDB0);
 REX_HOOK_RAW(sub_82B6FDB0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(558, ctx);
+    Count(558, ctx, base);
   }
   __imp__sub_82B6FDB0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6FDF8);
 REX_HOOK_RAW(sub_82B6FDF8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(559, ctx);
+    Count(559, ctx, base);
   }
   __imp__sub_82B6FDF8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6FF28);
 REX_HOOK_RAW(sub_82B6FF28) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(560, ctx);
+    Count(560, ctx, base);
   }
   __imp__sub_82B6FF28(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B6FFA8);
 REX_HOOK_RAW(sub_82B6FFA8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(561, ctx);
+    Count(561, ctx, base);
   }
   __imp__sub_82B6FFA8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B70028);
 REX_HOOK_RAW(sub_82B70028) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(562, ctx);
+    Count(562, ctx, base);
   }
   __imp__sub_82B70028(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B700D8);
 REX_HOOK_RAW(sub_82B700D8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(563, ctx);
+    Count(563, ctx, base);
   }
   __imp__sub_82B700D8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B70108);
 REX_HOOK_RAW(sub_82B70108) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(564, ctx);
+    Count(564, ctx, base);
   }
   __imp__sub_82B70108(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B70280);
 REX_HOOK_RAW(sub_82B70280) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(565, ctx);
+    Count(565, ctx, base);
   }
   __imp__sub_82B70280(ctx, base);
+  RememberObject(ctx.r3.u32, 1);
 }
 REX_EXTERN(__imp__sub_82B70468);
 REX_HOOK_RAW(sub_82B70468) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(566, ctx);
+    Count(566, ctx, base);
   }
   __imp__sub_82B70468(ctx, base);
+  RememberObject(ctx.r3.u32, 2);
 }
 REX_EXTERN(__imp__sub_82B70558);
 REX_HOOK_RAW(sub_82B70558) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(567, ctx);
+    Count(567, ctx, base);
   }
   __imp__sub_82B70558(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B708C0);
 REX_HOOK_RAW(sub_82B708C0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(568, ctx);
+    Count(568, ctx, base);
   }
   __imp__sub_82B708C0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B70C08);
 REX_HOOK_RAW(sub_82B70C08) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(569, ctx);
+    Count(569, ctx, base);
   }
   __imp__sub_82B70C08(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B70C98);
 REX_HOOK_RAW(sub_82B70C98) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(570, ctx);
+    Count(570, ctx, base);
   }
   __imp__sub_82B70C98(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B70D10);
 REX_HOOK_RAW(sub_82B70D10) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(571, ctx);
+    Count(571, ctx, base);
   }
   __imp__sub_82B70D10(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B71C38);
 REX_HOOK_RAW(sub_82B71C38) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(572, ctx);
+    Count(572, ctx, base);
   }
   __imp__sub_82B71C38(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B71C40);
 REX_HOOK_RAW(sub_82B71C40) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(573, ctx);
+    Count(573, ctx, base);
   }
   __imp__sub_82B71C40(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B71C48);
 REX_HOOK_RAW(sub_82B71C48) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(574, ctx);
+    Count(574, ctx, base);
   }
   __imp__sub_82B71C48(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B71C50);
 REX_HOOK_RAW(sub_82B71C50) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(575, ctx);
+    Count(575, ctx, base);
   }
   __imp__sub_82B71C50(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B72110);
 REX_HOOK_RAW(sub_82B72110) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(576, ctx);
+    Count(576, ctx, base);
   }
   __imp__sub_82B72110(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B72118);
 REX_HOOK_RAW(sub_82B72118) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(577, ctx);
+    Count(577, ctx, base);
     Report();
   }
   __imp__sub_82B72118(ctx, base);
@@ -4731,280 +4807,280 @@ REX_HOOK_RAW(sub_82B72118) {
 REX_EXTERN(__imp__sub_82B72D38);
 REX_HOOK_RAW(sub_82B72D38) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(578, ctx);
+    Count(578, ctx, base);
   }
   __imp__sub_82B72D38(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B72D48);
 REX_HOOK_RAW(sub_82B72D48) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(579, ctx);
+    Count(579, ctx, base);
   }
   __imp__sub_82B72D48(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B72DE0);
 REX_HOOK_RAW(sub_82B72DE0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(580, ctx);
+    Count(580, ctx, base);
   }
   __imp__sub_82B72DE0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B72F10);
 REX_HOOK_RAW(sub_82B72F10) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(581, ctx);
+    Count(581, ctx, base);
   }
   __imp__sub_82B72F10(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B73088);
 REX_HOOK_RAW(sub_82B73088) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(582, ctx);
+    Count(582, ctx, base);
   }
   __imp__sub_82B73088(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B73160);
 REX_HOOK_RAW(sub_82B73160) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(583, ctx);
+    Count(583, ctx, base);
   }
   __imp__sub_82B73160(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B73198);
 REX_HOOK_RAW(sub_82B73198) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(584, ctx);
+    Count(584, ctx, base);
   }
   __imp__sub_82B73198(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B731C0);
 REX_HOOK_RAW(sub_82B731C0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(585, ctx);
+    Count(585, ctx, base);
   }
   __imp__sub_82B731C0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B731E0);
 REX_HOOK_RAW(sub_82B731E0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(586, ctx);
+    Count(586, ctx, base);
   }
   __imp__sub_82B731E0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B731F0);
 REX_HOOK_RAW(sub_82B731F0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(587, ctx);
+    Count(587, ctx, base);
   }
   __imp__sub_82B731F0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B733C8);
 REX_HOOK_RAW(sub_82B733C8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(588, ctx);
+    Count(588, ctx, base);
   }
   __imp__sub_82B733C8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B73420);
 REX_HOOK_RAW(sub_82B73420) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(589, ctx);
+    Count(589, ctx, base);
   }
   __imp__sub_82B73420(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B73458);
 REX_HOOK_RAW(sub_82B73458) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(590, ctx);
+    Count(590, ctx, base);
   }
   __imp__sub_82B73458(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B73730);
 REX_HOOK_RAW(sub_82B73730) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(591, ctx);
+    Count(591, ctx, base);
   }
   __imp__sub_82B73730(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B73D00);
 REX_HOOK_RAW(sub_82B73D00) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(592, ctx);
+    Count(592, ctx, base);
   }
   __imp__sub_82B73D00(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B73D30);
 REX_HOOK_RAW(sub_82B73D30) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(593, ctx);
+    Count(593, ctx, base);
   }
   __imp__sub_82B73D30(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B73E38);
 REX_HOOK_RAW(sub_82B73E38) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(594, ctx);
+    Count(594, ctx, base);
   }
   __imp__sub_82B73E38(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B73E40);
 REX_HOOK_RAW(sub_82B73E40) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(595, ctx);
+    Count(595, ctx, base);
   }
   __imp__sub_82B73E40(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B73E60);
 REX_HOOK_RAW(sub_82B73E60) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(596, ctx);
+    Count(596, ctx, base);
   }
   __imp__sub_82B73E60(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B73F08);
 REX_HOOK_RAW(sub_82B73F08) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(597, ctx);
+    Count(597, ctx, base);
   }
   __imp__sub_82B73F08(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B74410);
 REX_HOOK_RAW(sub_82B74410) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(598, ctx);
+    Count(598, ctx, base);
   }
   __imp__sub_82B74410(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B744E0);
 REX_HOOK_RAW(sub_82B744E0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(599, ctx);
+    Count(599, ctx, base);
   }
   __imp__sub_82B744E0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B745B0);
 REX_HOOK_RAW(sub_82B745B0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(600, ctx);
+    Count(600, ctx, base);
   }
   __imp__sub_82B745B0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B74680);
 REX_HOOK_RAW(sub_82B74680) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(601, ctx);
+    Count(601, ctx, base);
   }
   __imp__sub_82B74680(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B74698);
 REX_HOOK_RAW(sub_82B74698) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(602, ctx);
+    Count(602, ctx, base);
   }
   __imp__sub_82B74698(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B74718);
 REX_HOOK_RAW(sub_82B74718) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(603, ctx);
+    Count(603, ctx, base);
   }
   __imp__sub_82B74718(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B74788);
 REX_HOOK_RAW(sub_82B74788) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(604, ctx);
+    Count(604, ctx, base);
   }
   __imp__sub_82B74788(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B74868);
 REX_HOOK_RAW(sub_82B74868) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(605, ctx);
+    Count(605, ctx, base);
   }
   __imp__sub_82B74868(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B74938);
 REX_HOOK_RAW(sub_82B74938) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(606, ctx);
+    Count(606, ctx, base);
   }
   __imp__sub_82B74938(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B74AE0);
 REX_HOOK_RAW(sub_82B74AE0) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(607, ctx);
+    Count(607, ctx, base);
   }
   __imp__sub_82B74AE0(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B75670);
 REX_HOOK_RAW(sub_82B75670) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(608, ctx);
+    Count(608, ctx, base);
   }
   __imp__sub_82B75670(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B77778);
 REX_HOOK_RAW(sub_82B77778) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(609, ctx);
+    Count(609, ctx, base);
   }
   __imp__sub_82B77778(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B79058);
 REX_HOOK_RAW(sub_82B79058) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(610, ctx);
+    Count(610, ctx, base);
   }
   __imp__sub_82B79058(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B79EE8);
 REX_HOOK_RAW(sub_82B79EE8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(611, ctx);
+    Count(611, ctx, base);
   }
   __imp__sub_82B79EE8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B7D2D8);
 REX_HOOK_RAW(sub_82B7D2D8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(612, ctx);
+    Count(612, ctx, base);
   }
   __imp__sub_82B7D2D8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B7D378);
 REX_HOOK_RAW(sub_82B7D378) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(613, ctx);
+    Count(613, ctx, base);
   }
   __imp__sub_82B7D378(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B7EE90);
 REX_HOOK_RAW(sub_82B7EE90) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(614, ctx);
+    Count(614, ctx, base);
   }
   __imp__sub_82B7EE90(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B7EED8);
 REX_HOOK_RAW(sub_82B7EED8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(615, ctx);
+    Count(615, ctx, base);
   }
   __imp__sub_82B7EED8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B7EEE8);
 REX_HOOK_RAW(sub_82B7EEE8) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(616, ctx);
+    Count(616, ctx, base);
   }
   __imp__sub_82B7EEE8(ctx, base);
 }
 REX_EXTERN(__imp__sub_82B81F78);
 REX_HOOK_RAW(sub_82B81F78) {
   if (REXCVAR_GET(fh2_censo)) {
-    Count(617, ctx);
+    Count(617, ctx, base);
   }
   __imp__sub_82B81F78(ctx, base);
 }

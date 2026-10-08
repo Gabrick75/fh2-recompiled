@@ -194,6 +194,24 @@ nfsmw-nx adaptado ao Android. Na prática é o código do "Evolved". O `codepdbh
 
 O FH2 segue o mesmo caminho, com `FH2_RECOMP`.
 
+### Funções D3D do FH2 que o renderizador pede (como o Carbon)
+
+Sem o código gerado do NFSMW para comparar, achadas em tempo de execução com o censo (`--fh2_censo=true`,
+`tools/renderprobe/gen_census_fh2.py`). O censo agora também registra:
+- as funções que recebem um contêiner de shader em `r3`–`r5`;
+- as que recebem em `r4`/`r5` um objeto devolvido pelos construtores.
+
+| Papel | FH2 | Carbon | Como se confirmou |
+|---|---|---|---|
+| `CreatePixelShader` (`r3` = contêiner, devolve o objeto) | `sub_82B70280` | `826E4218` | 511 contêineres de pixel |
+| `CreateVertexShader` | `sub_82B70468` | `826E4680` | 412 de vértice; copia a parte virtual para objeto+872, como no Carbon |
+| `SetVertexShader` (`r4` = objeto) | `sub_8245B370` | `826E4790` | `stw r29,13072(r30)`: VS em **device+0x3310** |
+| `SetPixelShader` | `sub_8245BA10` | `826E4350` | `stw r29,13068(r30)`: PS em **device+0x330C** |
+| Draws (`DRAW_INDX`) | `sub_82426180`, `sub_82425D68`, `sub_82418988`, `sub_8241DA58` | `826DDA78`… | mapeados antes; falta dizer qual `Draw*` é cada um |
+| `RunCommandBuffer` | `sub_82426800` | — | |
+| Swap (chama `VdSwap`) | `sub_82B72118` | `826E27A8`? | |
+| Calcula tamanho ou valida contêiner (os dois tipos) | `sub_82B70108` | | |
+
 ### Etapas
 
 1. Biblioteca de shaders do FH2: XenosRecomp + DXC no PC sobre os `.fxobj` (e o XEX); medir quantos traduzem e quantos
