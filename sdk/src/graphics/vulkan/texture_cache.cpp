@@ -3447,9 +3447,24 @@ void VulkanTextureCache::AddAtalho(const Atalho& atalho) {
   }
   atalhos_.push_back(atalho);
   atalhos_.back().frame = frame;
+  if (atalho.image >= 0) {
+    const uint32_t stale_end = atalho.extent_start + atalho.extent_length;
+    atalho_stale_.erase(std::remove_if(atalho_stale_.begin(), atalho_stale_.end(),
+                                       [&](const AtalhoStale& s) {
+                                         return s.start < stale_end &&
+                                                atalho.extent_start < s.start + s.length;
+                                       }),
+                        atalho_stale_.end());
+    atalho_stale_.push_back({atalho.extent_start, atalho.extent_length, atalho.dest_base});
+  }
 }
 
 void VulkanTextureCache::AtalhoNormalWrite(uint32_t start, uint32_t length) {
+  atalho_stale_.erase(std::remove_if(atalho_stale_.begin(), atalho_stale_.end(),
+                                     [&](const AtalhoStale& s) {
+                                       return s.start < start + length && start < s.start + s.length;
+                                     }),
+                      atalho_stale_.end());
   for (size_t i = atalhos_.size(); i-- > 0;) {
     const Atalho& old = atalhos_[i];
     if (old.extent_start < start + length && start < old.extent_start + old.extent_length) {
@@ -3480,6 +3495,22 @@ int VulkanTextureCache::PlanAtalho(VulkanTexture& texture, bool load_base, bool 
     }
   }
   if (overlapping.empty()) {
+    // No shortcut now, but memory a shortcut left unwritten: this texture would load old data (another view
+    // of the same resolve, or the texture reloaded later). That address goes back to the usual path.
+    for (size_t n = atalho_stale_.size(); n-- > 0;) {
+      const AtalhoStale& s = atalho_stale_[n];
+      if (s.start < end && start < s.start + s.length) {
+        static int logged = 0;
+        if (logged < 40) {
+          ++logged;
+          REXGPU_INFO("[atalho] {:08X} ruim: memoria velha lida por textura {:08X} {}x{} fmt {} pitch {}",
+                      s.dest_base, start, key.GetWidth(), key.GetHeight(), uint32_t(key.format), key.pitch);
+        }
+        atalho_estados_[s.dest_base] = AtalhoEstado::kRuim;
+        g_cp_times.atalho_misses.fetch_add(1, std::memory_order_relaxed);
+        atalho_stale_.erase(atalho_stale_.begin() + n);
+      }
+    }
     return 0;
   }
   // Every resolve over the texture must be a whole region of it, in its format: they are placed at their

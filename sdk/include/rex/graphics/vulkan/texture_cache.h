@@ -391,6 +391,14 @@ class VulkanTextureCache final : public TextureCache {
   void ReleaseAtalho(size_t index);
   std::vector<AtalhoImage> atalho_images_;
   std::vector<Atalho> atalhos_;
+  // Guest memory ranges a shortcut left unwritten (the resolve went straight into a texture): reading them
+  // without a shortcut would get old data, so such a read sends the address back to the usual path.
+  struct AtalhoStale {
+    uint32_t start;
+    uint32_t length;
+    uint32_t dest_base;
+  };
+  std::vector<AtalhoStale> atalho_stale_;
   std::unordered_map<uint32_t, AtalhoEstado> atalho_estados_;
   std::unordered_map<VkFormat, bool> atalho_format_blit_;
   VkPipelineStageFlags guest_shader_pipeline_stages_;
