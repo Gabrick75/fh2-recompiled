@@ -861,9 +861,14 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
     uint32_t mode;
     uint32_t pitch;
     uint32_t swap;
+    uint32_t source_kind;
+    int32_t sample_index;
   };
   VkPipelineLayout atalho_pipeline_layout_ = VK_NULL_HANDLE;
   VkPipeline atalho_pipeline_ = VK_NULL_HANDLE;
+  // The same shader with depth render targets (their transfer source set holds depth and stencil).
+  VkPipelineLayout atalho_pipeline_layout_depth_ = VK_NULL_HANDLE;
+  VkPipeline atalho_pipeline_depth_ = VK_NULL_HANDLE;
   VkPipelineLayout direct_resolve_pipeline_layout_color_ = VK_NULL_HANDLE;
   VkPipelineLayout direct_resolve_pipeline_layout_depth_ = VK_NULL_HANDLE;
   std::unordered_map<DirectResolvePipelineKey, VkPipeline, DirectResolvePipelineKey::Hasher>

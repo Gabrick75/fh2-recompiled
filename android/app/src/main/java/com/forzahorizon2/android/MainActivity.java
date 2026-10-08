@@ -282,6 +282,12 @@ public final class MainActivity extends AppCompatActivity {
                         "Deixa o jogo só nos núcleos rápidos do processador e o processador de comandos da GPU sozinho no " +
                                 "mais rápido (+16 %).",
                         GameOptions.flag(this, GameOptions.PIN_THREADS), v -> GameOptions.flag(this, GameOptions.PIN_THREADS, v)),
+                toggle("Cópias diretas para texturas (experimental)",
+                        "Quando o jogo copia uma imagem que desenhou para usá-la como textura, copia direto na GPU, " +
+                                "sem passar pela memória do console emulado. Menos trabalho para a GPU; desligue se " +
+                                "aparecer alguma imagem errada.",
+                        GameOptions.flag(this, GameOptions.RESOLVE_SHORTCUT),
+                        v -> GameOptions.flag(this, GameOptions.RESOLVE_SHORTCUT, v)),
                 driverSection()));
 
         // --- Sound

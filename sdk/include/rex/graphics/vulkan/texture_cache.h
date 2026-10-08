@@ -374,9 +374,20 @@ class VulkanTextureCache final : public TextureCache {
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
     bool in_use = false;
   };
-  // Fills the texture from a shortcut if one covers it exactly (returns true), and updates the shortcut
+  // Which shortcuts make up a texture being loaded, and where. PlanAtalho returns 0 (load as usual), 1 (the
+  // shortcuts cover the whole texture: no load) or 2 (load, then the shortcuts on top), and updates the shortcut
   // states with what the load shows about the readers of the resolves.
-  bool LoadTextureFromAtalho(VulkanTexture& texture, bool load_base, bool load_mips, VkFormat image_format);
+  struct AtalhoPart {
+    size_t atalho;
+    uint32_t x, y, width, height;  // guest texels in the texture
+  };
+  struct AtalhoPlan {
+    std::vector<AtalhoPart> parts;
+    bool full = false;
+  };
+  int PlanAtalho(VulkanTexture& texture, bool load_base, bool load_mips, VkFormat image_format,
+                 AtalhoPlan& plan);
+  void ApplyAtalho(VulkanTexture& texture, const AtalhoPlan& plan, bool after_load);
   void ReleaseAtalho(size_t index);
   std::vector<AtalhoImage> atalho_images_;
   std::vector<Atalho> atalhos_;

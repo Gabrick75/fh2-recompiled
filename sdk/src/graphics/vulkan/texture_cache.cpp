@@ -1298,7 +1298,11 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
   }
   const HostFormat& host_format =
       host_format_is_signed ? host_format_pair.format_signed : host_format_pair.format_unsigned;
-  if (LoadTextureFromAtalho(vulkan_texture, load_base, load_mips, host_format.format)) {
+  // Resolve shortcuts covering the whole texture replace the load; covering part of it, they go on top of it.
+  AtalhoPlan atalho_plan;
+  const int atalho_kind = PlanAtalho(vulkan_texture, load_base, load_mips, host_format.format, atalho_plan);
+  if (atalho_kind == 1) {
+    ApplyAtalho(vulkan_texture, atalho_plan, false);
     return true;
   }
   command_processor_.MarcarGpu(VulkanCommandProcessor::GpuEtapa::kCargaTextura);
@@ -1864,6 +1868,9 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
     copy_region.imageExtent.depth = std::max(depth >> level, UINT32_C(1));
   }
 
+  if (atalho_kind == 2) {
+    ApplyAtalho(vulkan_texture, atalho_plan, true);
+  }
   return true;
 }
 
@@ -3455,93 +3462,74 @@ void VulkanTextureCache::AtalhoNormalWrite(uint32_t start, uint32_t length) {
   }
 }
 
-bool VulkanTextureCache::LoadTextureFromAtalho(VulkanTexture& texture, bool load_base, bool load_mips,
-                                               VkFormat image_format) {
+int VulkanTextureCache::PlanAtalho(VulkanTexture& texture, bool load_base, bool load_mips,
+                                   VkFormat image_format, AtalhoPlan& plan) {
+  plan.parts.clear();
+  plan.full = false;
   if (atalhos_.empty()) {
-    return false;
+    return 0;
   }
   const TextureKey& key = texture.key();
   const uint32_t start = key.base_page << 12;
   const uint32_t end = start + std::max(texture.GetGuestBaseSize(), UINT32_C(1));
-  size_t found = SIZE_MAX;
-  uint32_t overlapping = 0;
+  std::vector<size_t> overlapping;
   for (size_t i = 0; i < atalhos_.size(); ++i) {
     const Atalho& a = atalhos_[i];
     if (a.extent_start < end && start < a.extent_start + a.extent_length) {
-      ++overlapping;
-      found = i;
+      overlapping.push_back(i);
     }
   }
-  if (!overlapping) {
-    return false;
+  if (overlapping.empty()) {
+    return 0;
   }
-  if (overlapping == 1) {
-    const Atalho& a = atalhos_[found];
-    bool match = load_base && !load_mips && key.base_page != 0 && key.mip_max_level == 0 &&
-                       key.dimension == xenos::DataDimension::k2DOrStacked &&
-                       key.GetDepthOrArraySize() == 1 && key.tiled && !key.scaled_resolve &&
-                       !key.signed_separate && a.dest_base == start && a.format == key.format &&
-                       a.pitch_div_32 == key.pitch && key.GetWidth() <= a.width &&
-                       key.GetHeight() <= a.height &&
-                       a.vk_format == image_format;
-    if (match && a.vk_format != image_format) {
-      // The texture's format must take blits too.
-      auto blit_it = atalho_format_blit_.find(image_format);
-      if (blit_it == atalho_format_blit_.end()) {
-        const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
-        VkFormatProperties properties;
-        vulkan_device->vulkan_instance()->functions().vkGetPhysicalDeviceFormatProperties(
-            vulkan_device->physical_device(), image_format, &properties);
-        blit_it = atalho_format_blit_
-                      .emplace(image_format,
-                               (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT) != 0)
-                      .first;
-      }
-      match = blit_it->second;
-    }
-    if (match) {
-      atalho_estados_[a.dest_base] = AtalhoEstado::kBom;
-      if (a.image < 0) {
-        ReleaseAtalho(found);
-        return false;
-      }
-      AtalhoImage& source = atalho_images_[a.image];
-      command_processor_.MarcarGpu(VulkanCommandProcessor::GpuEtapa::kAtalho);
-      texture.MarkAsUsed();
-      VulkanTexture::Usage old_usage = texture.SetUsage(VulkanTexture::Usage::kTransferDestination);
-      if (old_usage != VulkanTexture::Usage::kTransferDestination) {
-        VkPipelineStageFlags src_stage, dst_stage;
-        VkAccessFlags src_access, dst_access;
-        VkImageLayout old_layout, new_layout;
-        GetTextureUsageMasks(old_usage, src_stage, src_access, old_layout);
-        GetTextureUsageMasks(VulkanTexture::Usage::kTransferDestination, dst_stage, dst_access,
-                             new_layout);
-        command_processor_.PushImageMemoryBarrier(texture.image(),
-                                                  ui::vulkan::util::InitializeSubresourceRange(),
-                                                  src_stage, dst_stage, src_access, dst_access,
-                                                  old_layout, new_layout);
-      }
-      command_processor_.SubmitBarriers(true);
-      VkImageBlit region = {};
-      region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-      region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-      region.srcOffsets[1] = {
-          int32_t(std::max(UINT32_C(1), (a.host_width * key.GetWidth() + a.width / 2) / a.width)),
-          int32_t(std::max(UINT32_C(1), (a.host_height * key.GetHeight() + a.height / 2) / a.height)), 1};
-      region.dstOffsets[1] = {int32_t(key.GetWidth()), int32_t(key.GetHeight()), 1};
-      command_processor_.deferred_command_buffer().CmdVkBlitImage(
-          source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, texture.image(),
-          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region, VK_FILTER_NEAREST);
-      g_cp_times.atalho_hits.fetch_add(1, std::memory_order_relaxed);
-      ReleaseAtalho(found);
-      return true;
-    }
-  }
-  // Read in another way (another size or format, several resolves at once, mips...): those addresses keep
-  // the usual path. A shortcut already taken leaves this texture stale once.
-  for (size_t i = atalhos_.size(); i-- > 0;) {
+  // Every resolve over the texture must be a whole region of it, in its format: they are placed at their
+  // offset in the 32x32-texel macro tiles of the guest's tiled layout (address difference -> tile index).
+  const uint32_t texel_bytes = image_format == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4;
+  const bool texture_ok = load_base && !load_mips && key.base_page != 0 && key.mip_max_level == 0 &&
+                          key.dimension == xenos::DataDimension::k2DOrStacked &&
+                          key.GetDepthOrArraySize() == 1 && key.tiled && !key.scaled_resolve &&
+                          !key.signed_separate && key.pitch != 0;
+  bool all_match = texture_ok;
+  bool any_watch_only = false;
+  uint64_t covered = 0;
+  for (size_t i : overlapping) {
     const Atalho& a = atalhos_[i];
-    if (a.extent_start < end && start < a.extent_start + a.extent_length) {
+    bool match = all_match && a.format == key.format && a.vk_format == image_format &&
+                 a.pitch_div_32 == key.pitch && a.dest_base >= start;
+    uint32_t offset_x = 0, offset_y = 0;
+    if (match) {
+      const uint32_t macro_tile_bytes = 32 * 32 * texel_bytes;
+      const uint32_t difference = a.dest_base - start;
+      if (difference % macro_tile_bytes) {
+        match = false;
+      } else {
+        const uint32_t tile = difference / macro_tile_bytes;
+        offset_x = (tile % key.pitch) * 32;
+        offset_y = (tile / key.pitch) * 32;
+        match = offset_x < key.GetWidth() && offset_y < key.GetHeight();
+      }
+    }
+    if (match && a.vk_format != image_format) {
+      match = false;
+    }
+    if (!match) {
+      all_match = false;
+      break;
+    }
+    const uint32_t width = std::min(a.width, key.GetWidth() - offset_x);
+    const uint32_t height = std::min(a.height, key.GetHeight() - offset_y);
+    covered += uint64_t(width) * height;
+    if (a.image < 0) {
+      any_watch_only = true;
+    } else {
+      plan.parts.push_back({i, offset_x, offset_y, width, height});
+    }
+  }
+  if (!all_match) {
+    // Read in another way (another size or format, mips...): those addresses keep the usual path. A shortcut
+    // already taken leaves this texture stale once.
+    for (size_t n = overlapping.size(); n-- > 0;) {
+      const Atalho& a = atalhos_[overlapping[n]];
       static int logged = 0;
       if (logged < 40) {
         ++logged;
@@ -3550,16 +3538,82 @@ bool VulkanTextureCache::LoadTextureFromAtalho(VulkanTexture& texture, bool load
                     a.dest_base, start, key.GetWidth(), key.GetHeight(), uint32_t(key.format), key.pitch,
                     key.mip_max_level, key.tiled, uint32_t(key.dimension), a.width, a.height,
                     uint32_t(a.format), a.pitch_div_32, uint32_t(a.vk_format), uint32_t(image_format),
-                    overlapping);
+                    overlapping.size());
       }
       atalho_estados_[a.dest_base] = AtalhoEstado::kRuim;
       if (a.image >= 0) {
         g_cp_times.atalho_misses.fetch_add(1, std::memory_order_relaxed);
       }
-      ReleaseAtalho(i);
+    }
+    std::sort(overlapping.begin(), overlapping.end());
+    for (size_t n = overlapping.size(); n-- > 0;) {
+      ReleaseAtalho(overlapping[n]);
+    }
+    plan.parts.clear();
+    return 0;
+  }
+  for (size_t i : overlapping) {
+    atalho_estados_[atalhos_[i].dest_base] = AtalhoEstado::kBom;
+  }
+  // Watched resolves were written to guest memory: the texture loads from it, the shortcuts go on top.
+  plan.full = !any_watch_only && covered >= uint64_t(key.GetWidth()) * key.GetHeight();
+  if (plan.parts.empty()) {
+    std::sort(overlapping.begin(), overlapping.end());
+    for (size_t n = overlapping.size(); n-- > 0;) {
+      ReleaseAtalho(overlapping[n]);
+    }
+    return 0;
+  }
+  return plan.full ? 1 : 2;
+}
+
+void VulkanTextureCache::ApplyAtalho(VulkanTexture& texture, const AtalhoPlan& plan, bool after_load) {
+  command_processor_.MarcarGpu(VulkanCommandProcessor::GpuEtapa::kAtalho);
+  if (after_load) {
+    // The blits overwrite parts of what the load just copied into the texture.
+    command_processor_.PushImageMemoryBarrier(
+        texture.image(), ui::vulkan::util::InitializeSubresourceRange(), VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+  } else {
+    texture.MarkAsUsed();
+    VulkanTexture::Usage old_usage = texture.SetUsage(VulkanTexture::Usage::kTransferDestination);
+    if (old_usage != VulkanTexture::Usage::kTransferDestination) {
+      VkPipelineStageFlags src_stage, dst_stage;
+      VkAccessFlags src_access, dst_access;
+      VkImageLayout old_layout, new_layout;
+      GetTextureUsageMasks(old_usage, src_stage, src_access, old_layout);
+      GetTextureUsageMasks(VulkanTexture::Usage::kTransferDestination, dst_stage, dst_access, new_layout);
+      command_processor_.PushImageMemoryBarrier(texture.image(), ui::vulkan::util::InitializeSubresourceRange(),
+                                                src_stage, dst_stage, src_access, dst_access, old_layout,
+                                                new_layout);
     }
   }
-  return false;
+  command_processor_.SubmitBarriers(true);
+  for (const AtalhoPart& part : plan.parts) {
+    const Atalho& a = atalhos_[part.atalho];
+    VkImageBlit region = {};
+    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.srcOffsets[1] = {
+        int32_t(std::max(UINT32_C(1), (a.host_width * part.width + a.width / 2) / a.width)),
+        int32_t(std::max(UINT32_C(1), (a.host_height * part.height + a.height / 2) / a.height)), 1};
+    region.dstOffsets[0] = {int32_t(part.x), int32_t(part.y), 0};
+    region.dstOffsets[1] = {int32_t(part.x + part.width), int32_t(part.y + part.height), 1};
+    command_processor_.deferred_command_buffer().CmdVkBlitImage(
+        atalho_images_[a.image].image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, texture.image(),
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region, VK_FILTER_NEAREST);
+    g_cp_times.atalho_hits.fetch_add(1, std::memory_order_relaxed);
+  }
+  // Consumed: highest index first, ReleaseAtalho moves the last entry into the freed slot.
+  std::vector<size_t> used;
+  for (const AtalhoPart& part : plan.parts) {
+    used.push_back(part.atalho);
+  }
+  std::sort(used.begin(), used.end());
+  for (size_t n = used.size(); n-- > 0;) {
+    ReleaseAtalho(used[n]);
+  }
 }
 
 }  // namespace rex::graphics::vulkan

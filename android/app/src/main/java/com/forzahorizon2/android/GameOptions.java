@@ -37,6 +37,7 @@ final class GameOptions {
     static final String PIN_THREADS = "pin_threads";
     static final String ONE_PASS = "one_pass";                // fh2_uma_faixa: the scene in one pass, not 3 tiles
     static final String ADAPTIVE_VBLANK = "adaptive_vblank";  // vblank_adaptativo
+    static final String RESOLVE_SHORTCUT = "resolve_shortcut";  // gpu_atalho_resolve
     static final String DRIVER = "driver";                    // imported driver name, "" = system; not loaded yet
     static final String TURBO = "turbo";                      // not applied yet
     // Sound
@@ -85,7 +86,8 @@ final class GameOptions {
     }
 
     static boolean flag(Context context, String key) {
-        boolean byDefault = PIN_THREADS.equals(key) || ONE_PASS.equals(key) || ADAPTIVE_VBLANK.equals(key);
+        boolean byDefault = PIN_THREADS.equals(key) || ONE_PASS.equals(key) || ADAPTIVE_VBLANK.equals(key) ||
+                RESOLVE_SHORTCUT.equals(key);
         return prefs(context).getBoolean(key, byDefault);
     }
 
@@ -152,6 +154,7 @@ final class GameOptions {
         args.add("--gpu_escala_render=" + renderScalePercent(context));
         args.add("--fh2_uma_faixa=" + flag(context, ONE_PASS));
         args.add("--vblank_adaptativo=" + flag(context, ADAPTIVE_VBLANK));
+        args.add("--gpu_atalho_resolve=" + flag(context, RESOLVE_SHORTCUT));
         args.add("--fh2_android_nucleos_grandes=" + flag(context, PIN_THREADS));
         // 'auto': the command processor alone on the fastest core (+16 % on the S23 Ultra), see android_rendimiento.cpp.
         args.add("--fh2_android_afinidade=" + (flag(context, PIN_THREADS) ? "auto" : "off"));  // never empty: the cvar parser aborts on it
