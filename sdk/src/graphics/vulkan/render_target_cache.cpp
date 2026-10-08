@@ -1305,6 +1305,7 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
     atalho.image = texture_cache.AcquireAtalhoImage(atalho.vk_format, atalho.host_width,
                                                     atalho.host_height, atalho_image);
     if (atalho.image >= 0) {
+      command_processor_.MarcarGpu(VulkanCommandProcessor::GpuEtapa::kAtalho);
       command_processor_.PushImageMemoryBarrier(
           atalho_rt->image(), ui::vulkan::util::InitializeSubresourceRange(),
           atalho_rt->current_stage_mask(), VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1441,6 +1442,7 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
                                                             uint32_t(copy_dest_use_length)));
           }
           UseEdramBuffer(EdramBufferUsage::kComputeRead);
+          command_processor_.MarcarGpu(VulkanCommandProcessor::GpuEtapa::kCopia);
           command_processor_.BindExternalComputePipeline(
               resolve_copy_pipelines_[size_t(copy_shader)]);
           VkDescriptorSet descriptor_sets[kResolveCopyDescriptorSetCount] = {};
@@ -4754,6 +4756,17 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
     const uint64_t* render_target_resolve_clear_values,
     const Transfer::Rectangle* resolve_clear_rectangle) {
   assert_true(GetPath() == Path::kHostRenderTargets);
+  {
+    // Called before almost every draw; only actual transfers or clears are timed and counted as such.
+    bool any_work = render_target_resolve_clear_values && resolve_clear_rectangle;
+    for (uint32_t i = 0; !any_work && render_target_transfers && i < render_target_count; ++i) {
+      any_work = render_targets[i] && !render_target_transfers[i].empty();
+    }
+    if (any_work) {
+      command_processor_.MarcarGpu(VulkanCommandProcessor::GpuEtapa::kTransferencia);
+      g_cp_times.transfer_calls.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
 #if REX_PLATFORM_SWITCH
   RexSwitchPerfCount(11);
   if (render_target_transfers) {
@@ -5487,6 +5500,7 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
             if (!RexSwitchPerfSkip(2))
 #endif
             command_buffer.CmdVkDraw(transfer_vertex_count, 1, 0, 0);
+            g_cp_times.transfer_draws.fetch_add(1, std::memory_order_relaxed);
           }
         }
       }
@@ -6285,6 +6299,7 @@ bool VulkanRenderTargetCache::DumpRenderTargets(uint32_t dump_base, uint32_t dum
   if (dump_rectangles_.empty()) {
     return true;
   }
+  command_processor_.MarcarGpu(VulkanCommandProcessor::GpuEtapa::kDump);
 
   // Clear previously set temporary indices.
   for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {

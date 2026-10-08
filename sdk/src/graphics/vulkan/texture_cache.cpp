@@ -1301,6 +1301,7 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
   if (LoadTextureFromAtalho(vulkan_texture, load_base, load_mips, host_format.format)) {
     return true;
   }
+  command_processor_.MarcarGpu(VulkanCommandProcessor::GpuEtapa::kCargaTextura);
   LoadShaderIndex load_shader = host_format.load_shader;
   if (load_shader == kLoadShaderIndexUnknown) {
     return false;
@@ -3506,6 +3507,7 @@ bool VulkanTextureCache::LoadTextureFromAtalho(VulkanTexture& texture, bool load
         return false;
       }
       AtalhoImage& source = atalho_images_[a.image];
+      command_processor_.MarcarGpu(VulkanCommandProcessor::GpuEtapa::kAtalho);
       texture.MarkAsUsed();
       VulkanTexture::Usage old_usage = texture.SetUsage(VulkanTexture::Usage::kTransferDestination);
       if (old_usage != VulkanTexture::Usage::kTransferDestination) {

@@ -40,6 +40,9 @@ struct CpTimes {
   std::atomic<uint32_t> atalho_resolves{0};
   std::atomic<uint32_t> atalho_hits{0};
   std::atomic<uint32_t> atalho_misses{0};
+  // Ownership transfers between render targets: calls with transfers or clears, and transfer draws.
+  std::atomic<uint32_t> transfer_calls{0};
+  std::atomic<uint32_t> transfer_draws{0};
 };
 
 extern CpTimes g_cp_times;

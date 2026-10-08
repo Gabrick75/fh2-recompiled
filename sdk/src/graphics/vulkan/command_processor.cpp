@@ -141,6 +141,10 @@ std::atomic<bool> rex_frame_trace_active{false};
 std::atomic<uint32_t> rex_frame_trace_draw{0};
 extern "C" __attribute__((visibility("default"))) std::atomic<float> rex_frame_ms_guest{-1.0f};
 
+REXCVAR_DEFINE_BOOL(gpu_cronometro, false, "GPU",
+                    "Log the GPU time per frame of each kind of work (draws, transfers between render targets, "
+                    "resolve dump and copy, texture loads, resolve shortcut, presentation), from timestamps")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_INT32(gpu_log_quadros, 0, "GPU",
                      "Debug: log this many frames of resolves, texture loads and swaps in order ([quadro] lines), "
                      "starting gpu_log_quadros_apos_s seconds after the first frame");
@@ -1966,6 +1970,25 @@ bool VulkanCommandProcessor::SetupContext() {
   }
 
   occlusion_query_resources_available_ = InitializeOcclusionQueryResources();
+  if (REXCVAR_GET(gpu_cronometro)) {
+    const ui::vulkan::VulkanDevice* cronometro_device = GetVulkanDevice();
+    VkPhysicalDeviceProperties physical_properties;
+    cronometro_device->vulkan_instance()->functions().vkGetPhysicalDeviceProperties(
+        cronometro_device->physical_device(), &physical_properties);
+    if (physical_properties.limits.timestampComputeAndGraphics) {
+      VkQueryPoolCreateInfo cronometro_pool_info = {};
+      cronometro_pool_info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+      cronometro_pool_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+      cronometro_pool_info.queryCount = kCronometroSlots * kCronometroMarcas;
+      if (cronometro_device->functions().vkCreateQueryPool(cronometro_device->device(),
+                                                           &cronometro_pool_info, nullptr,
+                                                           &cronometro_pool_) == VK_SUCCESS) {
+        cronometro_periodo_ns_ = physical_properties.limits.timestampPeriod;
+        cronometro_slots_ = std::make_unique<CronometroSlot[]>(kCronometroSlots);
+      }
+    }
+    REXGPU_INFO("[cronometro] {}", cronometro_pool_ != VK_NULL_HANDLE ? "ligado" : "sem timestamps");
+  }
 
   // Just not to expose uninitialized memory.
   std::memset(&system_constants_, 0, sizeof(system_constants_));
@@ -1980,6 +2003,11 @@ void VulkanCommandProcessor::ShutdownContext() {
 #endif
   InvalidateAllVertexBufferResidency();
   ShutdownOcclusionQueryResources();
+  if (cronometro_pool_ != VK_NULL_HANDLE) {
+    GetVulkanDevice()->functions().vkDestroyQueryPool(GetVulkanDevice()->device(), cronometro_pool_,
+                                                      nullptr);
+    cronometro_pool_ = VK_NULL_HANDLE;
+  }
 
   const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
@@ -2360,6 +2388,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
                                        uint32_t frontbuffer_height) {
   SCOPE_profile_cpu_f("gpu");
   CpTimer swap_timer(g_cp_times.swap_ns);
+  MarcarGpu(GpuEtapa::kApresentacao);
   if (REXCVAR_GET(gpu_log_quadros) > 0) {
     static const auto first_swap = std::chrono::steady_clock::now();
     static bool started = false;
@@ -2456,6 +2485,21 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
                     count(g_cp_times.texture_loads),
                     double(g_cp_times.texture_load_pixels.exchange(0, std::memory_order_relaxed)) / 1e6 *
                         per_frame);
+        if (cronometro_pool_ != VK_NULL_HANDLE) {
+          static const char* const kNomes[] = {"desenho", "transferencias", "dump",  "copia",
+                                               "cargas de textura", "atalho", "apresentacao", "outro"};
+          std::string linha;
+          double total = 0.0;
+          for (size_t e = 0; e < size_t(GpuEtapa::kCount); ++e) {
+            const double ms_etapa = cronometro_ns_[e] / 1e6 * per_frame;
+            total += ms_etapa;
+            linha += fmt::format("  {} {:.1f}", kNomes[e], ms_etapa);
+            cronometro_ns_[e] = 0.0;
+          }
+          REXGPU_INFO("GPU por quadro: {:.1f} ms ={}", total, linha);
+        }
+        REXGPU_INFO("transferencias por quadro: {:.1f} chamadas, {:.1f} draws de transferencia",
+                    count(g_cp_times.transfer_calls), count(g_cp_times.transfer_draws));
         REXGPU_INFO("atalho de resolve por quadro: {:.1f} resolves, {:.1f} texturas preenchidas, {:.2f} perdidos",
                     count(g_cp_times.atalho_resolves), count(g_cp_times.atalho_hits),
                     count(g_cp_times.atalho_misses));
@@ -4600,6 +4644,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
                                                   : 32u);
   }
 #endif
+  MarcarGpu(GpuEtapa::kDesenho);
   if (primitive_processing_result.index_buffer_type ==
           PrimitiveProcessor::ProcessedIndexBufferType::kNone ||
       shader_32bit_index_dma) {
@@ -5526,6 +5571,7 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
   submissions_in_flight_fences_.erase(submissions_in_flight_fences_.cbegin(),
                                       submissions_in_flight_fences_awaited_end);
   submission_completed_ += fences_awaited;
+  CronometroColetar();
 
   // Reclaim semaphores.
   while (!submissions_in_flight_semaphores_.empty()) {
@@ -5647,6 +5693,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
     // the end of the submission (when async pipeline object creation requests
     // are fulfilled).
     deferred_command_buffer_.Reset();
+    CronometroInicioSubmissao();
 
     // Reset cached state of the command buffer.
     dynamic_viewport_update_needed_ = true;
@@ -5880,6 +5927,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
     }
 
     SubmitBarriers(true);
+    CronometroFimSubmissao();
 
     assert_false(command_buffers_writable_.empty());
     CommandBuffer command_buffer = command_buffers_writable_.back();
@@ -7361,6 +7409,80 @@ uint32_t VulkanCommandProcessor::WriteTransientTextureBindings(
   }
   assert_not_zero(descriptor_set_write_count);
   return descriptor_set_write_count;
+}
+
+void VulkanCommandProcessor::MarcarGpu(GpuEtapa etapa) {
+  if (!cronometro_slot_ativo_ || etapa == cronometro_etapa_) {
+    return;
+  }
+  CronometroSlot& slot = cronometro_slots_[GetCurrentSubmission() % kCronometroSlots];
+  if (slot.count >= kCronometroMarcas - 1 && etapa != GpuEtapa::kCount) {
+    return;
+  }
+  // The interval up to this timestamp belongs to the previous kind.
+  deferred_command_buffer_.CmdVkWriteTimestamp(
+      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, cronometro_pool_,
+      uint32_t(GetCurrentSubmission() % kCronometroSlots) * kCronometroMarcas + slot.count);
+  slot.etapas[slot.count++] = cronometro_etapa_;
+  cronometro_etapa_ = etapa;
+}
+
+void VulkanCommandProcessor::CronometroInicioSubmissao() {
+  cronometro_slot_ativo_ = false;
+  if (cronometro_pool_ == VK_NULL_HANDLE) {
+    return;
+  }
+  CronometroSlot& slot = cronometro_slots_[GetCurrentSubmission() % kCronometroSlots];
+  if (slot.count && slot.submission > submission_completed_) {
+    // Still in flight (more submissions than slots): this one goes untimed.
+    return;
+  }
+  const uint32_t base = uint32_t(GetCurrentSubmission() % kCronometroSlots) * kCronometroMarcas;
+  deferred_command_buffer_.CmdVkResetQueryPool(cronometro_pool_, base, kCronometroMarcas);
+  deferred_command_buffer_.CmdVkWriteTimestamp(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, cronometro_pool_, base);
+  slot.submission = GetCurrentSubmission();
+  slot.count = 1;
+  slot.etapas[0] = GpuEtapa::kOutro;
+  cronometro_slot_ativo_ = true;
+}
+
+void VulkanCommandProcessor::CronometroFimSubmissao() {
+  if (!cronometro_slot_ativo_) {
+    return;
+  }
+  // A final timestamp closing the last interval.
+  MarcarGpu(GpuEtapa::kCount);
+  cronometro_etapa_ = GpuEtapa::kOutro;
+  cronometro_slot_ativo_ = false;
+}
+
+void VulkanCommandProcessor::CronometroColetar() {
+  if (cronometro_pool_ == VK_NULL_HANDLE) {
+    return;
+  }
+  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+  for (uint32_t i = 0; i < kCronometroSlots; ++i) {
+    CronometroSlot& slot = cronometro_slots_[i];
+    if (slot.count < 2 || slot.submission > submission_completed_ ||
+        slot.submission <= cronometro_coletado_) {
+      continue;
+    }
+    static uint64_t stamps[kCronometroMarcas];
+    if (vulkan_device->functions().vkGetQueryPoolResults(
+            vulkan_device->device(), cronometro_pool_, i * kCronometroMarcas, slot.count,
+            sizeof(uint64_t) * slot.count, stamps, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) ==
+        VK_SUCCESS) {
+      // Timestamp m closes the interval of etapas[m] (the kind current before it).
+      for (uint32_t m = 1; m < slot.count; ++m) {
+        if (stamps[m] >= stamps[m - 1] && slot.etapas[m] < GpuEtapa::kCount) {
+          cronometro_ns_[size_t(slot.etapas[m])] +=
+              double(stamps[m] - stamps[m - 1]) * cronometro_periodo_ns_;
+        }
+      }
+    }
+    slot.count = 0;
+  }
+  cronometro_coletado_ = submission_completed_;
 }
 
 }  // namespace rex::graphics::vulkan

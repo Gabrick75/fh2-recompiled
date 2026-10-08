@@ -47,6 +47,21 @@ namespace rex::graphics::vulkan {
 
 class VulkanCommandProcessor : public CommandProcessor {
  public:
+  // rex: GPU time per kind of work (gpu_cronometro): a timestamp at every change of kind, summed per kind
+  // when the submission completes and logged with the FPS line.
+  enum class GpuEtapa : uint8_t {
+    kDesenho,
+    kTransferencia,
+    kDump,
+    kCopia,
+    kCargaTextura,
+    kAtalho,
+    kApresentacao,
+    kOutro,
+    kCount,
+  };
+  void MarcarGpu(GpuEtapa etapa);
+
   // Single-descriptor layouts for use within a single frame.
   enum class SingleTransientDescriptorLayout {
     kStorageBufferCompute,
@@ -523,6 +538,25 @@ class VulkanCommandProcessor : public CommandProcessor {
 
   bool submission_open_ = false;
   uint64_t submission_completed_ = 0;
+
+  // gpu_cronometro.
+  static constexpr uint32_t kCronometroSlots = 16;
+  static constexpr uint32_t kCronometroMarcas = 1024;
+  struct CronometroSlot {
+    uint64_t submission = 0;
+    uint32_t count = 0;
+    GpuEtapa etapas[kCronometroMarcas];
+  };
+  void CronometroInicioSubmissao();
+  void CronometroFimSubmissao();
+  void CronometroColetar();
+  VkQueryPool cronometro_pool_ = VK_NULL_HANDLE;
+  double cronometro_periodo_ns_ = 1.0;
+  std::unique_ptr<CronometroSlot[]> cronometro_slots_;
+  GpuEtapa cronometro_etapa_ = GpuEtapa::kOutro;
+  bool cronometro_slot_ativo_ = false;
+  double cronometro_ns_[size_t(GpuEtapa::kCount)] = {};
+  uint64_t cronometro_coletado_ = 0;
   // In case vkQueueSubmit fails after something like a successful
   // vkQueueBindSparse, to wait correctly on the next attempt.
   std::vector<VkSemaphore> current_submission_wait_semaphores_;
