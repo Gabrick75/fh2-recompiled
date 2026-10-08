@@ -70,6 +70,7 @@ public final class MainActivity extends AppCompatActivity {
     private static final String TREE_URI = "tree_uri";
     // Relative to the internal storage root (the "jogos" folder holds the user's games).
     static final String GAME_FOLDER_NAME = "jogos/ForzaHorizon2";
+    static final String PROJECT_URL = "https://github.com/Gabrick75/fh2-recompiled";
 
     private static final int ACCENT = 0xFFE6007E;
     private static final int BACKGROUND = 0xFF121212;
@@ -160,7 +161,7 @@ public final class MainActivity extends AppCompatActivity {
         title.setTextColor(Color.WHITE);
         title.setPadding(dp(8), dp(12), dp(8), dp(2));
         left.addView(title);
-        TextView subtitle = summary("Recompilação não oficial para Android. Use a sua própria cópia do jogo.");
+        TextView subtitle = summary("Xbox 360 · recompilado para Android.");
         subtitle.setPadding(dp(8), 0, dp(8), dp(8));
         left.addView(subtitle);
 
@@ -288,6 +289,25 @@ public final class MainActivity extends AppCompatActivity {
                 selector(GameOptions.VOLUME, "Volume do jogo", "Acima de Normal o som pode distorcer nos picos.",
                         new String[] {"Normal", "Alto", "Muito alto", "Máximo"},
                         new String[] {"100", "125", "150", "200"}, false)));
+
+        // --- The project's page.
+        MaterialButton author = new MaterialButton(this, null, com.google.android.material.R.attr.borderlessButtonStyle);
+        author.setText("Gabrick75");
+        author.setAllCaps(false);
+        author.setTextColor(0xFF9E9E9E);
+        author.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        author.setOnClickListener(view -> {
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(PROJECT_URL)));
+            } catch (ActivityNotFoundException e) {
+                Toast.makeText(this, PROJECT_URL, Toast.LENGTH_LONG).show();
+            }
+        });
+        LinearLayout.LayoutParams authorParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        authorParams.gravity = android.view.Gravity.CENTER_HORIZONTAL;
+        authorParams.topMargin = dp(4);
+        right.addView(author, authorParams);
         right.addView(space(12));
     }
 

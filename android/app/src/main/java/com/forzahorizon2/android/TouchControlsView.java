@@ -141,8 +141,8 @@ public final class TouchControlsView extends View {
         add(new Control("dpad", DPAD, "", "", 0, TRIGGER_NONE, grey, .10f, .30f, .27f, true));
         add(new Control("lb", BUTTON, "LB", "", LB, TRIGGER_NONE, grey, .07f, .09f, .13f, true));
         // Right hand: pedals, A/B/X/Y diamond, RB.
-        add(new Control("rt", PEDAL, "RT", "", 0, TRIGGER_RIGHT, 0xFF1E5E3A, .92f, .70f, .42f, true));
-        add(new Control("lt", PEDAL, "LT", "", 0, TRIGGER_LEFT, 0xFF6B2323, .80f, .76f, .32f, true));
+        add(new Control("rt", PEDAL, "", "", 0, TRIGGER_RIGHT, 0xFF1E5E3A, .92f, .70f, .42f, true));
+        add(new Control("lt", PEDAL, "", "", 0, TRIGGER_LEFT, 0xFF6B2323, .80f, .76f, .32f, true));
         add(new Control("a", BUTTON, "A", "", A, TRIGGER_NONE, 0xFF2E7D32, .78f, .45f, .15f, true));
         add(new Control("b", BUTTON, "B", "", B, TRIGGER_NONE, 0xFFC62828, .87f, .36f, .15f, true));
         add(new Control("x", BUTTON, "X", "", X, TRIGGER_NONE, 0xFF1565C0, .69f, .36f, .15f, true));
