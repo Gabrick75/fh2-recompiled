@@ -43,20 +43,27 @@ namespace {
 
 constexpr size_t kMaxSamples = 1 << 20;
 uintptr_t g_samples[kMaxSamples];
+// The return address at the moment of the sample: [sp] on x86-64 (right for leaf functions such as memcpy, which
+// push nothing), the link register on aarch64. For "who calls memcpy".
+uintptr_t g_callers[kMaxSamples];
 std::atomic<size_t> g_sample_count{0};
 
 void OnSample(int, siginfo_t*, void* context) {
   auto* uc = static_cast<ucontext_t*>(context);
 #if defined(__x86_64__)
   const uintptr_t pc = uintptr_t(uc->uc_mcontext.gregs[REG_RIP]);
+  const uintptr_t caller = *reinterpret_cast<const uintptr_t*>(uc->uc_mcontext.gregs[REG_RSP]);
 #elif defined(__aarch64__)
   const uintptr_t pc = uintptr_t(uc->uc_mcontext.pc);
+  const uintptr_t caller = uintptr_t(uc->uc_mcontext.regs[30]);
 #else
   const uintptr_t pc = 0;
+  const uintptr_t caller = 0;
 #endif
   const size_t i = g_sample_count.fetch_add(1, std::memory_order_relaxed);
   if (i < kMaxSamples) {
     g_samples[i] = pc;
+    g_callers[i] = caller;
   }
 }
 
@@ -129,7 +136,33 @@ void Run() {
     }
   }
   fclose(out);
-  REXLOG_INFO("[perfil] {} samples written to fh2_perfil.txt", count);
+  // Callers of the samples that fell in libc (memcpy, memmove, memset...): "count library offset".
+  std::map<uintptr_t, uint32_t> callers;
+  for (size_t i = 0; i < count; ++i) {
+    Dl_info info{};
+    if (dladdr(reinterpret_cast<void*>(g_samples[i]), &info) && info.dli_fname &&
+        std::string(info.dli_fname).find("libc.so") != std::string::npos) {
+      ++callers[g_callers[i]];
+    }
+  }
+  std::vector<std::pair<uint32_t, uintptr_t>> sorted_callers;
+  for (const auto& [pc, n] : callers) {
+    sorted_callers.emplace_back(n, pc);
+  }
+  std::sort(sorted_callers.rbegin(), sorted_callers.rend());
+  if (FILE* calls = fopen("fh2_perfil_libc.txt", "w")) {
+    fprintf(calls, "# callers of the %zu-sample profile's libc samples\n", count);
+    for (const auto& [n, pc] : sorted_callers) {
+      Dl_info info{};
+      if (dladdr(reinterpret_cast<void*>(pc), &info) && info.dli_fname) {
+        fprintf(calls, "%u %s 0x%zx\n", n, info.dli_fname, size_t(pc - uintptr_t(info.dli_fbase)));
+      } else {
+        fprintf(calls, "%u ? 0x%zx\n", n, size_t(pc));
+      }
+    }
+    fclose(calls);
+  }
+  REXLOG_INFO("[perfil] {} samples written to fh2_perfil.txt (libc callers: fh2_perfil_libc.txt)", count);
 }
 
 }  // namespace
