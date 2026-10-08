@@ -258,6 +258,11 @@ REX_HOOK_RAW(sub_82417A20) {
 // height, MSAA level, tile count, tile rects): 0 "1280x720 4xMSAA Horizontal Split" (the default), 1 "1280x720
 // 2xMSAA Horizontal Split", 2 "1280x720 1xMSAA No Split", 3 "Largest 2xMSAA No Split" (1120x584). The index is at
 // +0x2438 of the structure sub_8247C2F8 gets in r3. fh2_modo_render >= 0 forces it.
+//
+// STATUS: forcing 2 (no MSAA, one tile: CPU of the command processor 24 ms per frame against 34 with fh2_uma_faixa)
+// or 3 (1120x584, a lower render resolution) draws the world's static geometry (road, ground, walls) black: in
+// those setups the scene's depth sits at EDRAM base 720 instead of 1024, over the screen-space shadow mask the game
+// drew there just before. Unsolved; off by default.
 REXCVAR_DEFINE_INT32(fh2_modo_render, -1, "FH2",
                      "Debug: force the game's render setup (0 4xMSAA 3 tiles, 1 2xMSAA 2 tiles, 2 no MSAA, 3 "
                      "1120x584 2xMSAA); -1 = the game's choice");
@@ -266,10 +271,6 @@ REXCVAR_DEFINE_INT32(fh2_modo_render, -1, "FH2",
 REX_EXTERN(__imp__sub_82482390);
 REX_HOOK_RAW(sub_82482390) {
   __imp__sub_82482390(ctx, base);
-  static std::atomic<int> logged{0};
-  if (logged.fetch_add(1) < 2) {
-    REXLOG_INFO("[fh2] modo de render da cena: {} (de {:08X})", ctx.r3.u32, static_cast<uint32_t>(ctx.lr));
-  }
   const int32_t forced = REXCVAR_GET(fh2_modo_render);
   if (forced >= 0 && forced <= 3) {
     ctx.r3.u64 = uint64_t(forced);
