@@ -2405,6 +2405,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
         const double wait_regs = count(g_cp_times.wait_regs);
         const double gpu_waits = count(g_cp_times.gpu_waits);
         const double submits = count(g_cp_times.submits);
+        const double bin_selects = count(g_cp_times.bin_selects);
+        const double predicated_skipped = count(g_cp_times.predicated_skipped);
+        REXGPU_INFO("faixas (predicated tiling) por quadro: {:.1f} SET_BIN_SELECT, {:.0f} pacotes pulados",
+                    bin_selects, predicated_skipped);
         REXGPU_INFO(
             "tempos por quadro: {:.1f} ms = ocioso {:.1f} + WAIT_REG_MEM {:.1f} ({:.1f}) + draws {:.1f} "
             "({:.0f}) + resolves {:.1f} ({:.0f}) + swap {:.1f} + resto {:.1f} | de ello: espera GPU {:.1f} "

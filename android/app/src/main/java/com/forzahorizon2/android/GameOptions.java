@@ -20,6 +20,7 @@ final class GameOptions {
     // Display
     static final String RESOLUTION = "resolution";          // "480p", "720p", "native": size of the presented buffer
     static final String SHOW_FPS = "show_fps";
+    static final String PRESENT_MODE = "present_mode";        // "fifo" (vsync) or "mailbox"
     // Graphics
     static final String RENDER_RESOLUTION = "render_resolution";  // not applied yet
     static final String FPS = "fps";                          // only picks the display refresh rate for now
@@ -52,6 +53,7 @@ final class GameOptions {
     static String defaultOf(String key) {
         switch (key) {
             case RESOLUTION: return RES_NATIVE;
+            case PRESENT_MODE: return "fifo";
             case RENDER_RESOLUTION: return "1280x720";
             case FPS: return "60";
             // The game's own MSAA 4x: without it shadows and reflections show artefacts.
@@ -130,6 +132,10 @@ final class GameOptions {
         // Forza Horizon 2 leaves vertex fetch constants with type 0 in some draws; without this the emulated GPU
         // drops them (same as tools/rodar_pc.sh on the PC).
         args.add("--gpu_allow_invalid_fetch_constants=true");
+        // FIFO presents with vsync. With MAILBOX the UI thread repaints the same guest frame as fast as it can: a
+        // whole core and GPU time taken from the game (event menu on the S23 Ultra: 7.0 fps MAILBOX, 11.0 FIFO).
+        args.add("--vulkan_allow_present_mode_mailbox=" + "mailbox".equals(get(context, PRESENT_MODE)));
+        args.add("--vulkan_allow_present_mode_immediate=false");
         // The view gives the aspect ratio (16:9 or stretched, GameActivity.layoutSurface) and the presenter
         // fills the whole buffer.
         args.add("--present_letterbox=false");

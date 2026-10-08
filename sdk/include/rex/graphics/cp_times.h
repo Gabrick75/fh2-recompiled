@@ -24,6 +24,10 @@ struct CpTimes {
   std::atomic<uint32_t> gpu_waits{0};
   std::atomic<uint64_t> submit_ns{0};    // vkQueueSubmit
   std::atomic<uint32_t> submits{0};
+  // Predicated tiling: SET_BIN_SELECT packets (one per tile pass) and predicated packets skipped because they
+  // do not touch the selected tile.
+  std::atomic<uint32_t> bin_selects{0};
+  std::atomic<uint32_t> predicated_skipped{0};
 };
 
 extern CpTimes g_cp_times;

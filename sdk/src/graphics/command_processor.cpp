@@ -432,7 +432,10 @@ void CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
 
   // Volatile for the WAIT_REG_MEM loop.
   const_cast<volatile uint32_t&>(regs.values[index]) = value;
-  if (!regs.GetRegisterInfo(index)) {
+  // GetRegisterInfo is a large switch, and this runs for every register the game writes (about 100 000 per
+  // frame in Forza Horizon 2): only with the GPU debug log on.
+  if (spdlog::logger* gpu_log = ::rex::GetLoggerRaw(::rex::log::gpu());
+      gpu_log && gpu_log->should_log(spdlog::level::debug) && !regs.GetRegisterInfo(index)) {
     REXGPU_DEBUG("GPU: Write to unknown register ({:04X} = {:08X})", index, value);
   }
 
@@ -909,6 +912,7 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
   if (packet & 1) {
     bool any_pass = (bin_select_ & bin_mask_) != 0;
     if (!any_pass || opcode == PM4_XE_SWAP) {
+      g_cp_times.predicated_skipped.fetch_add(1, std::memory_order_relaxed);
       reader->AdvanceRead(count * sizeof(uint32_t));
       return true;
     }
@@ -1001,6 +1005,7 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
       result = true;
     } break;
     case PM4_SET_BIN_SELECT_LO: {
+      g_cp_times.bin_selects.fetch_add(1, std::memory_order_relaxed);
       uint32_t value = reader->ReadAndSwap<uint32_t>();
       bin_select_ = (bin_select_ & 0xFFFFFFFF00000000ull) | value;
       result = true;
@@ -1018,6 +1023,7 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
       result = true;
     } break;
     case PM4_SET_BIN_SELECT: {
+      g_cp_times.bin_selects.fetch_add(1, std::memory_order_relaxed);
       assert_true(count == 2);
       uint64_t val_hi = reader->ReadAndSwap<uint32_t>();
       uint64_t val_lo = reader->ReadAndSwap<uint32_t>();

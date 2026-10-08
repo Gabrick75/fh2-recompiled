@@ -221,7 +221,11 @@ public final class MainActivity extends AppCompatActivity {
                         "Desligado: a imagem 16:9 do Xbox 360, com barras pretas. Ligado: preenche a tela, mas distorce a imagem.",
                         GameOptions.stretch(this), v -> GameOptions.stretch(this, v)),
                 toggle("Mostrar FPS", "Contador no canto: quadros por segundo e milissegundos por quadro.",
-                        GameOptions.flag(this, GameOptions.SHOW_FPS), v -> GameOptions.flag(this, GameOptions.SHOW_FPS, v))));
+                        GameOptions.flag(this, GameOptions.SHOW_FPS), v -> GameOptions.flag(this, GameOptions.SHOW_FPS, v)),
+                selector(GameOptions.PRESENT_MODE, "Modo de apresentação",
+                        "FIFO espera o vsync da tela: é o mais rápido (no S23 Ultra, 11 fps contra 7 no menu) e esquenta " +
+                                "menos. MAILBOX repinta sem parar: um pouco menos de atraso, mas tira CPU e GPU do jogo.",
+                        new String[] {"FIFO (vsync) · mais rápido", "MAILBOX"}, new String[] {"fifo", "mailbox"}, false)));
 
         // --- Graphics
         right.addView(card(section("Gráficos"),
