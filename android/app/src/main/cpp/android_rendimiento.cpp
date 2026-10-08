@@ -128,9 +128,10 @@ extern "C" JNIEXPORT jfloat JNICALL Java_com_forzahorizon2_android_GameActivity_
 //
 // Rules "name prefix=cores", first match wins, "*" for the rest; cores as "7", "3-6" or "3+5+6". A thread
 // ("fh2 afinidade") walks /proc/self/task every 2 s and sets each thread's mask, so threads created later, and masks
-// Android resets after a pause, are covered too. Empty (the default) leaves everything to fh2_android_nucleos_grandes.
-REXCVAR_DEFINE_STRING(fh2_android_afinidade, "", "FH2",
-                      "Android: pin threads to cores by name, 'GPU Commands=7;*=3-6' (empty = off)")
+// Android resets after a pause, are covered too. 'off' leaves everything to fh2_android_nucleos_grandes.
+REXCVAR_DEFINE_STRING(fh2_android_afinidade, "auto", "FH2",
+                      "Android: pin threads to cores by name, 'GPU Commands=7;*=3-6'; 'auto' = the command "
+                      "processor alone on the fastest core, the rest on the other fast cores; 'off' = no pinning")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 namespace {
@@ -211,9 +212,38 @@ void AffinityLoop(std::vector<AffinityRule> rules) {
 
 }  // namespace
 
+// 'auto': the command processor (the bottleneck) alone on the core with the highest top clock, every other thread
+// on the remaining cores whose top clock is at least 70 % of it. Measured on the S23 Ultra (Snapdragon 8 Gen 2, one
+// 3.36 GHz X3 at cpu7 and four 2.8 GHz cores): event menu 18.5 -> 21.5 fps (+16 %). Nothing when all the cores run
+// at the same top clock.
+std::string AutoAffinityRules() {
+  const int total = int(sysconf(_SC_NPROCESSORS_CONF));
+  int fastest = -1;
+  long fastest_khz = 0;
+  std::vector<long> khz(size_t(std::max(total, 0)), 0);
+  for (int cpu = 0; cpu < total; ++cpu) {
+    khz[size_t(cpu)] = RelojMaximoKhz(cpu);
+    if (khz[size_t(cpu)] > fastest_khz) {
+      fastest_khz = khz[size_t(cpu)];
+      fastest = cpu;
+    }
+  }
+  std::string others;
+  bool any_slower = false;
+  for (int cpu = 0; cpu < total; ++cpu) {
+    if (khz[size_t(cpu)] < fastest_khz) any_slower = true;
+    if (cpu != fastest && khz[size_t(cpu)] * 10 >= fastest_khz * 7) {
+      others += (others.empty() ? "" : "+") + std::to_string(cpu);
+    }
+  }
+  if (fastest < 0 || !any_slower || others.empty()) return "";
+  return "GPU Commands=" + std::to_string(fastest) + ";*=" + others;
+}
+
 extern "C" void fh2_android_afinidade_iniciar() {
-  const std::string text = REXCVAR_GET(fh2_android_afinidade);
-  if (text.empty()) return;
+  std::string text = REXCVAR_GET(fh2_android_afinidade);
+  if (text == "auto") text = AutoAffinityRules();
+  if (text.empty() || text == "off") return;
   auto rules = ParseRules(text);
   if (rules.empty()) {
     REXLOG_WARN("[afinidade] regras inválidas: '{}'", text);

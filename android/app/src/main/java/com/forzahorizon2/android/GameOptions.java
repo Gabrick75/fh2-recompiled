@@ -123,6 +123,8 @@ final class GameOptions {
         }
         args.add("--anisotropic_override=" + get(context, ANISOTROPIC));
         args.add("--fh2_android_nucleos_grandes=" + flag(context, PIN_THREADS));
+        // 'auto': the command processor alone on the fastest core (+16 % on the S23 Ultra), see android_rendimiento.cpp.
+        args.add("--fh2_android_afinidade=" + (flag(context, PIN_THREADS) ? "auto" : "off"));  // never empty: the cvar parser aborts on it
         // Emulated Xenos GPU on Android drivers (from nfsmw-android's "xenos" mode): ordinary descriptor sets,
         // host framebuffers, no geometry shader or non-solid fill required, shaders compiled before drawing.
         args.add("--gpu_plugin=xenos");
