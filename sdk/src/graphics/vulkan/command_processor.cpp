@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <atomic>
 #if defined(__linux__)
@@ -5391,6 +5392,12 @@ uint64_t VulkanCommandProcessor::NormalizeOcclusionSamples(uint64_t samples) con
   if (samples == 0 || !texture_cache_) {
     return samples;
   }
+  if (render_target_cache_ && render_target_cache_->IsRenderDownscaled()) {
+    // Fewer host samples than the guest's: scale the count back up (64 = 8 * 8 eighths).
+    uint64_t eighths = uint64_t(render_target_cache_->render_eighths_x()) *
+                       render_target_cache_->render_eighths_y();
+    return (samples * 64 + (eighths >> 1)) / eighths;
+  }
   uint64_t scale_x = texture_cache_->draw_resolution_scale_x();
   uint64_t scale_y = texture_cache_->draw_resolution_scale_y();
   uint64_t scale = scale_x * scale_y;
@@ -6153,13 +6160,21 @@ void VulkanCommandProcessor::UpdateDynamicState(const draw_util::ViewportInfo& v
   // https://github.com/freedreno/mesa/blob/master/src/mesa/drivers/dri/r200/r200_state.c
   auto pa_sc_window_offset = regs.Get<reg::PA_SC_WINDOW_OFFSET>();
 
+  // Below 1x (gpu_escala_render) the viewport info is in guest pixels and shrinks here, exactly in float (the
+  // render targets are smaller, the guest coordinates in the shaders are the same).
+  float render_scale_x = 1.0f, render_scale_y = 1.0f;
+  if (render_target_cache_ && render_target_cache_->IsRenderDownscaled()) {
+    render_scale_x = render_target_cache_->host_scale_x();
+    render_scale_y = render_target_cache_->host_scale_y();
+  }
+
   // Viewport.
   VkViewport viewport;
   if (viewport_info.xy_extent[0] && viewport_info.xy_extent[1]) {
-    viewport.x = float(viewport_info.xy_offset[0]);
-    viewport.y = float(viewport_info.xy_offset[1]);
-    viewport.width = float(viewport_info.xy_extent[0]);
-    viewport.height = float(viewport_info.xy_extent[1]);
+    viewport.x = float(viewport_info.xy_offset[0]) * render_scale_x;
+    viewport.y = float(viewport_info.xy_offset[1]) * render_scale_y;
+    viewport.width = float(viewport_info.xy_extent[0]) * render_scale_x;
+    viewport.height = float(viewport_info.xy_extent[1]) * render_scale_y;
   } else {
     // Vulkan viewport width must be greater than 0.0f, but the Xenia  viewport
     // may be empty for various reasons - set the viewport to outside the
@@ -6180,6 +6195,17 @@ void VulkanCommandProcessor::UpdateDynamicState(const draw_util::ViewportInfo& v
   scissor.offset[1] *= draw_resolution_scale_y;
   scissor.extent[0] *= draw_resolution_scale_x;
   scissor.extent[1] *= draw_resolution_scale_y;
+  if (render_scale_x != 1.0f || render_scale_y != 1.0f) {
+    // Every host pixel the guest rectangle touches: floor of the start, ceiling of the end.
+    uint32_t x0 = uint32_t(std::floor(float(scissor.offset[0]) * render_scale_x));
+    uint32_t y0 = uint32_t(std::floor(float(scissor.offset[1]) * render_scale_y));
+    uint32_t x1 = uint32_t(std::ceil(float(scissor.offset[0] + scissor.extent[0]) * render_scale_x));
+    uint32_t y1 = uint32_t(std::ceil(float(scissor.offset[1] + scissor.extent[1]) * render_scale_y));
+    scissor.offset[0] = x0;
+    scissor.offset[1] = y0;
+    scissor.extent[0] = x1 - x0;
+    scissor.extent[1] = y1 - y0;
+  }
   VkRect2D scissor_rect;
   scissor_rect.offset.x = int32_t(scissor.offset[0]);
   scissor_rect.offset.y = int32_t(scissor.offset[1]);
@@ -6200,8 +6226,10 @@ void VulkanCommandProcessor::UpdateDynamicState(const draw_util::ViewportInfo& v
     // reverted (slope only along the scaled axis), thus max. More bias is
     // better than less bias, because less bias means Z fighting with the
     // background is more likely.
-    depth_bias_slope_factor *= xenos::kPolygonOffsetScaleSubpixelUnit *
-                               float(std::max(draw_resolution_scale_x, draw_resolution_scale_y));
+    depth_bias_slope_factor *=
+        xenos::kPolygonOffsetScaleSubpixelUnit *
+        float(std::max(draw_resolution_scale_x, draw_resolution_scale_y)) *
+        std::max(render_scale_x, render_scale_y);
     // std::memcmp instead of != so in case of NaN, every draw won't be
     // invalidating it.
     dynamic_depth_bias_update_needed_ |=

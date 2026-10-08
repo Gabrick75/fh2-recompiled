@@ -1906,9 +1906,9 @@ RenderTargetCache::RenderTarget* VulkanRenderTargetCache::CreateRenderTarget(Ren
   image_create_info.pNext = nullptr;
   image_create_info.flags = 0;
   image_create_info.imageType = VK_IMAGE_TYPE_2D;
-  image_create_info.extent.width = key.GetWidth() * draw_resolution_scale_x();
+  image_create_info.extent.width = HostScaleX(key.GetWidth());
   image_create_info.extent.height =
-      GetRenderTargetHeight(key.pitch_tiles_at_32bpp, key.msaa_samples) * draw_resolution_scale_y();
+      HostScaleY(GetRenderTargetHeight(key.pitch_tiles_at_32bpp, key.msaa_samples));
   image_create_info.extent.depth = 1;
   image_create_info.mipLevels = 1;
   image_create_info.arrayLayers = 1;
@@ -2316,10 +2316,9 @@ VulkanRenderTargetCache::GetHostRenderTargetsFramebuffer(
   // Limiting to the device limit for the case of no attachments, for which
   // there's no limit imposed by the sizes of the attachments that have been
   // created successfully.
-  host_extent.width = std::min(host_extent.width * draw_resolution_scale_x(),
-                               device_properties.maxFramebufferWidth);
-  host_extent.height = std::min(host_extent.height * draw_resolution_scale_y(),
-                                device_properties.maxFramebufferHeight);
+  host_extent.width = std::min(HostScaleX(host_extent.width), device_properties.maxFramebufferWidth);
+  host_extent.height =
+      std::min(HostScaleY(host_extent.height), device_properties.maxFramebufferHeight);
   framebuffer_create_info.width = host_extent.width;
   framebuffer_create_info.height = host_extent.height;
   framebuffer_create_info.layers = 1;
@@ -2651,8 +2650,8 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(TransferShaderKey key)
   // Working with unsigned numbers for simplicity now, bitcasting to signed will
   // be done at texture fetch.
 
-  uint32_t tile_width_samples = xenos::kEdramTileWidthSamples * draw_resolution_scale_x();
-  uint32_t tile_height_samples = xenos::kEdramTileHeightSamples * draw_resolution_scale_y();
+  uint32_t tile_width_samples = HostScaleX(xenos::kEdramTileWidthSamples);
+  uint32_t tile_height_samples = HostScaleY(xenos::kEdramTileHeightSamples);
 
   // Split the destination pixel index into 32bpp tile and 32bpp-tile-relative
   // pixel index.
@@ -4610,14 +4609,10 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
   if (resolve_clear_needed) {
     // Assuming the rectangle is already clamped by the setup function from the
     // common render target cache.
-    resolve_clear_rect.rect.offset.x =
-        int32_t(resolve_clear_rectangle->x_pixels * draw_resolution_scale_x());
-    resolve_clear_rect.rect.offset.y =
-        int32_t(resolve_clear_rectangle->y_pixels * draw_resolution_scale_y());
-    resolve_clear_rect.rect.extent.width =
-        resolve_clear_rectangle->width_pixels * draw_resolution_scale_x();
-    resolve_clear_rect.rect.extent.height =
-        resolve_clear_rectangle->height_pixels * draw_resolution_scale_y();
+    resolve_clear_rect.rect.offset.x = int32_t(HostScaleX(resolve_clear_rectangle->x_pixels));
+    resolve_clear_rect.rect.offset.y = int32_t(HostScaleY(resolve_clear_rectangle->y_pixels));
+    resolve_clear_rect.rect.extent.width = HostScaleX(resolve_clear_rectangle->width_pixels);
+    resolve_clear_rect.rect.extent.height = HostScaleY(resolve_clear_rectangle->height_pixels);
     resolve_clear_rect.baseArrayLayer = 0;
     resolve_clear_rect.layerCount = 1;
   }
@@ -5037,13 +5032,13 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
             const Transfer::Rectangle& stencil_clear_rectangle =
                 transfer_stencil_clear_rectangles[j];
             stencil_clear_rect_write_ptr->rect.offset.x =
-                int32_t(stencil_clear_rectangle.x_pixels * draw_resolution_scale_x());
+                int32_t(HostScaleX(stencil_clear_rectangle.x_pixels));
             stencil_clear_rect_write_ptr->rect.offset.y =
-                int32_t(stencil_clear_rectangle.y_pixels * draw_resolution_scale_y());
+                int32_t(HostScaleY(stencil_clear_rectangle.y_pixels));
             stencil_clear_rect_write_ptr->rect.extent.width =
-                stencil_clear_rectangle.width_pixels * draw_resolution_scale_x();
+                HostScaleX(stencil_clear_rectangle.width_pixels);
             stencil_clear_rect_write_ptr->rect.extent.height =
-                stencil_clear_rectangle.height_pixels * draw_resolution_scale_y();
+                HostScaleY(stencil_clear_rectangle.height_pixels);
             stencil_clear_rect_write_ptr->baseArrayLayer = 0;
             stencil_clear_rect_write_ptr->layerCount = 1;
             ++stencil_clear_rect_write_ptr;
@@ -5065,8 +5060,8 @@ void VulkanRenderTargetCache::PerformTransfersAndResolveClears(
       transfer_viewport.minDepth = 0.0f;
       transfer_viewport.maxDepth = 1.0f;
       command_processor_.SetViewport(transfer_viewport);
-      float pixels_to_ndc_x = (2.0f / transfer_viewport.width) * float(draw_resolution_scale_x());
-      float pixels_to_ndc_y = (2.0f / transfer_viewport.height) * float(draw_resolution_scale_y());
+      float pixels_to_ndc_x = (2.0f / transfer_viewport.width) * host_scale_x();
+      float pixels_to_ndc_y = (2.0f / transfer_viewport.height) * host_scale_y();
       VkRect2D transfer_scissor;
       transfer_scissor.offset.x = 0;
       transfer_scissor.offset.y = 0;
@@ -5670,15 +5665,36 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
       builder.createBinOp(spv::OpUDiv, type_uint, source_tile_index, source_pitch_tiles);
   spv::Id source_tile_index_x =
       builder.createBinOp(spv::OpUMod, type_uint, source_tile_index, source_pitch_tiles);
-  // Combine the source tile offset and the sample index within the tile.
+  // Combine the source tile offset and the sample index within the tile. Below 1x (gpu_escala_render) the
+  // EDRAM buffer stays at 1x and the smaller host tile is read at the scaled position (nearest).
+  spv::Id source_tile_sample_x = tile_sample_x;
+  spv::Id source_tile_sample_y = tile_sample_y;
+  spv::Id const_source_tile_width = const_tile_width;
+  spv::Id const_source_tile_height = const_tile_height;
+  if (IsRenderDownscaled()) {
+    spv::Id const_uint_3 = builder.makeUintConstant(3);
+    source_tile_sample_x = builder.createBinOp(
+        spv::OpShiftRightLogical, type_uint,
+        builder.createBinOp(spv::OpIMul, type_uint, tile_sample_x,
+                            builder.makeUintConstant(render_eighths_x())),
+        const_uint_3);
+    source_tile_sample_y = builder.createBinOp(
+        spv::OpShiftRightLogical, type_uint,
+        builder.createBinOp(spv::OpIMul, type_uint, tile_sample_y,
+                            builder.makeUintConstant(render_eighths_y())),
+        const_uint_3);
+    const_source_tile_width =
+        builder.makeUintConstant(HostScaleX(xenos::kEdramTileWidthSamples >> uint32_t(format_is_64bpp)));
+    const_source_tile_height = builder.makeUintConstant(HostScaleY(xenos::kEdramTileHeightSamples));
+  }
   spv::Id source_sample_x = builder.createBinOp(
       spv::OpIAdd, type_uint,
-      builder.createBinOp(spv::OpIMul, type_uint, const_tile_width, source_tile_index_x),
-      tile_sample_x);
+      builder.createBinOp(spv::OpIMul, type_uint, const_source_tile_width, source_tile_index_x),
+      source_tile_sample_x);
   spv::Id source_sample_y = builder.createBinOp(
       spv::OpIAdd, type_uint,
-      builder.createBinOp(spv::OpIMul, type_uint, const_tile_height, source_tile_index_y),
-      tile_sample_y);
+      builder.createBinOp(spv::OpIMul, type_uint, const_source_tile_height, source_tile_index_y),
+      source_tile_sample_y);
   // Get the source pixel coordinate and the sample index within the pixel.
   spv::Id source_pixel_x = source_sample_x, source_pixel_y = source_sample_y;
   spv::Id source_sample_id = spv::NoResult;

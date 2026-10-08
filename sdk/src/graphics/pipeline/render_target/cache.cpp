@@ -41,7 +41,24 @@ REXCVAR_DEFINE_BOOL(direct_host_resolve, true, "GPU",
                     "Resolve from host render targets directly to shared memory when possible")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_INT32(gpu_escala_render, 100, "GPU",
+                     "Render resolution in percent of the game's (rounded to eighths: 12.5%, 25%... 100%). Below "
+                     "100 the 3D is drawn smaller and stretched back (nearest), much less GPU work")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DECLARE(bool, gpu_sin_msaa);
+REXCVAR_DECLARE(int32_t, gpu_msaa_muestras);
+
 namespace rex::graphics {
+
+uint32_t RenderTargetCache::GetConfigRenderEighths() {
+  int32_t percent = REXCVAR_GET(gpu_escala_render);
+  uint32_t eighths = uint32_t(std::clamp((percent * 8 + 50) / 100, 1, 8));
+  // A 64bpp render target with 4x MSAA has 20-pixel-wide tiles: whole host pixels only with even eighths.
+  if (eighths < 8 && !REXCVAR_GET(gpu_sin_msaa) && REXCVAR_GET(gpu_msaa_muestras) >= 4) {
+    eighths = std::max(eighths & ~UINT32_C(1), UINT32_C(2));
+  }
+  return eighths;
+}
 
 void RenderTargetCache::GetPSIColorFormatInfo(xenos::ColorRenderTargetFormat format,
                                               uint32_t write_mask, float& clamp_rgb_low,
@@ -432,8 +449,7 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
       xenos::kEdramTileWidthSamples;
   if (!interlock_barrier_only) {
     uint32_t pitch_pixels_tile_aligned_scaled =
-        pitch_tiles_at_32bpp * (xenos::kEdramTileWidthSamples >> msaa_samples_x_log2) *
-        draw_resolution_scale_x();
+        HostScaleX(pitch_tiles_at_32bpp * (xenos::kEdramTileWidthSamples >> msaa_samples_x_log2));
     uint32_t max_render_target_width = GetMaxRenderTargetWidth();
     if (pitch_pixels_tile_aligned_scaled > max_render_target_width) {
       // TODO(Triang3l): If really needed for some game on some device, clamp
@@ -800,10 +816,10 @@ uint32_t RenderTargetCache::GetRenderTargetHeight(uint32_t pitch_tiles_at_32bpp,
   static_assert(!(xenos::kTexture2DCubeMaxWidthHeight % xenos::kEdramTileHeightSamples),
                 "Maximum guest render target height is assumed to always be a multiple "
                 "of an EDRAM tile height");
-  uint32_t max_height_scaled = std::min(
-      xenos::kTexture2DCubeMaxWidthHeight * draw_resolution_scale_y(), GetMaxRenderTargetHeight());
+  uint32_t max_height_scaled = std::min(HostScaleY(xenos::kTexture2DCubeMaxWidthHeight),
+                                        GetMaxRenderTargetHeight());
   uint32_t msaa_samples_y_log2 = uint32_t(msaa_samples >= xenos::MsaaSamples::k2X);
-  uint32_t tile_height_samples_scaled = xenos::kEdramTileHeightSamples * draw_resolution_scale_y();
+  uint32_t tile_height_samples_scaled = HostScaleY(xenos::kEdramTileHeightSamples);
   tile_rows =
       std::min(tile_rows, (max_height_scaled << msaa_samples_y_log2) / tile_height_samples_scaled);
   assert_not_zero(tile_rows);
@@ -980,7 +996,7 @@ bool RenderTargetCache::PrepareHostRenderTargetsResolveClear(
   }
   uint32_t pitch_pixels =
       pitch_tiles_at_32bpp * (xenos::kEdramTileWidthSamples >> msaa_samples_x_log2);
-  uint32_t pitch_pixels_scaled = pitch_pixels * draw_resolution_scale_x();
+  uint32_t pitch_pixels_scaled = HostScaleX(pitch_pixels);
   uint32_t max_render_target_width = GetMaxRenderTargetWidth();
   if (pitch_pixels_scaled > max_render_target_width) {
     // TODO(Triang3l): If really needed for some game on some device, clamp the
@@ -1304,7 +1320,10 @@ void RenderTargetCache::ChangeOwnership(RenderTargetKey dest, uint32_t start_til
                 host_depth_encoding_different
                     ? it->second.GetHostDepthRenderTarget(dest.GetDepthFormat())
                     : RenderTargetKey();
-            if (transfer_host_depth_source == transfer_source) {
+            // The host depth store compute shaders (copying the destination's own host depth aside) only
+            // know whole scales: below 1x, the guest depth is used instead.
+            if (transfer_host_depth_source == transfer_source ||
+                (IsRenderDownscaled() && transfer_host_depth_source == dest)) {
               // Same render target, don't provide a separate host depth source.
               transfer_host_depth_source = RenderTargetKey();
             }

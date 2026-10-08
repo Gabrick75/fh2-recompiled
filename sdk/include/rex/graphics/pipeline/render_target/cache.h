@@ -164,6 +164,26 @@ class RenderTargetCache {
     return draw_resolution_scale_x() > 1 || draw_resolution_scale_y() > 1;
   }
 
+  // rex: rendering below 1x (gpu_escala_render). Only the host render targets shrink, to this many eighths of
+  // the guest size (8 = 1x): the EDRAM buffer, resolves and textures stay at 1x, the dump reading the render
+  // targets back stretches them (nearest). Eighths keep EDRAM tiles a whole number of host pixels (80x16
+  // samples become 10x2 per eighth). Only without draw_resolution_scale.
+  uint32_t render_eighths_x() const { return render_eighths_x_; }
+  uint32_t render_eighths_y() const { return render_eighths_y_; }
+  bool IsRenderDownscaled() const { return render_eighths_x_ < 8 || render_eighths_y_ < 8; }
+  // Guest pixels (or samples) to host render target pixels, with the scale up or down; exact for multiples of 8
+  // (the resolve granularity and every tile dimension).
+  uint32_t HostScaleX(uint32_t guest) const {
+    return guest * draw_resolution_scale_x_ * render_eighths_x_ / 8;
+  }
+  uint32_t HostScaleY(uint32_t guest) const {
+    return guest * draw_resolution_scale_y_ * render_eighths_y_ / 8;
+  }
+  float host_scale_x() const { return float(draw_resolution_scale_x_) * float(render_eighths_x_) / 8.0f; }
+  float host_scale_y() const { return float(draw_resolution_scale_y_) * float(render_eighths_y_) / 8.0f; }
+  // gpu_escala_render as eighths (8 when it is off or draw_resolution_scale is used).
+  static uint32_t GetConfigRenderEighths();
+
   // Virtual (both the common code and the implementation may do something
   // here), don't call from destructors (does work not needed for shutdown
   // also).
@@ -189,6 +209,9 @@ class RenderTargetCache {
         draw_resolution_scale_y_(draw_resolution_scale_y) {
     assert_not_zero(draw_resolution_scale_x);
     assert_not_zero(draw_resolution_scale_y);
+    if (draw_resolution_scale_x == 1 && draw_resolution_scale_y == 1) {
+      render_eighths_x_ = render_eighths_y_ = GetConfigRenderEighths();
+    }
   }
 
   const RegisterFile& register_file() const { return register_file_; }
@@ -552,6 +575,8 @@ class RenderTargetCache {
   const RegisterFile& register_file_;
   uint32_t draw_resolution_scale_x_;
   uint32_t draw_resolution_scale_y_;
+  uint32_t render_eighths_x_ = 8;
+  uint32_t render_eighths_y_ = 8;
 
   DrawExtentEstimator draw_extent_estimator_;
 
