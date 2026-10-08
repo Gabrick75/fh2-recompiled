@@ -451,7 +451,48 @@ public final class GameActivity extends SDLActivity
                 args.add(option);
             }
         }
+        writeSessionHeader(args);
         return args.toArray(new String[0]);
+    }
+
+    // The session's settings at the top of its game log (written before the game opens it, which then appends)
+    // and of its usage log: device, every launcher and touch-control option the player set, and the arguments
+    // the game really got.
+    private void writeSessionHeader(List<String> args) {
+        StringBuilder header = new StringBuilder();
+        header.append("===== partida ").append(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss",
+                java.util.Locale.ROOT).format(new java.util.Date())).append(" =====\n");
+        try {
+            header.append(Diagnostics.summary(this));
+        } catch (RuntimeException e) {
+            header.append("aparelho: ").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append('\n');
+        }
+        header.append("-- opções do launcher\n");
+        for (java.util.Map.Entry<String, ?> option :
+                new java.util.TreeMap<>(GameOptions.prefs(this).getAll()).entrySet()) {
+            header.append(option.getKey()).append(" = ").append(option.getValue()).append('\n');
+        }
+        header.append("-- controles de toque\n");
+        for (java.util.Map.Entry<String, ?> option : new java.util.TreeMap<>(
+                getSharedPreferences("fh2_controls", MODE_PRIVATE).getAll()).entrySet()) {
+            String value = String.valueOf(option.getValue());
+            // The layout of each control is long and says nothing about performance.
+            header.append(option.getKey()).append(" = ")
+                    .append(value.length() > 60 ? value.substring(0, 60) + "…" : value).append('\n');
+        }
+        header.append("-- argumentos do jogo\n");
+        for (String argument : args) {
+            header.append(argument).append('\n');
+        }
+        header.append("=====\n");
+        for (String path : new String[] {sessionLogBase() + ".log", sessionLogBase() + "_uso.log"}) {
+            try (java.io.FileWriter writer = new java.io.FileWriter(path, true)) {
+                writer.write(header.toString());
+            } catch (IOException ignored) {
+                // No log; the game still starts.
+            }
+        }
+        Log.i("fh2", header.toString());
     }
 
     // ---- Physical gamepads ---------------------------------------------------------------------------------

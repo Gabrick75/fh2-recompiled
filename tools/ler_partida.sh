@@ -17,6 +17,8 @@ mkdir -p "$OUT"
 "$ADB" pull "$DIR/$BASE" "$OUT/" > /dev/null 2>&1
 "$ADB" pull "$DIR/${BASE%.log}_uso.log" "$OUT/" > /dev/null 2>&1 || true
 echo "== $BASE"
+# The settings GameActivity wrote at the top (device, launcher options, game arguments).
+sed -n '/^===== partida/,/^=====$/p' "$OUT/$BASE" | grep -v "^--app_data\|^--game_data_root\|^--user_data_root\|^--cache_root"
 echo "-- FPS (every 5 s): time, fps, worst frame, command processor CPU per frame"
 grep "fps: " "$OUT/$BASE" | sed -E 's/^\[[0-9-]+ ([0-9:]+)\.[0-9]+\].*fps: ([0-9.]+) .*worst ([0-9.]+) ms, CPU do processador de comandos ([-0-9.]+).*/\1  \2 fps  pior \3 ms  CP \4 ms/'
 if [ -f "$OUT/${BASE%.log}_uso.log" ]; then
