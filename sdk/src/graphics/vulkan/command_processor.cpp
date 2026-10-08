@@ -132,6 +132,9 @@ float RegFloat(const rex::graphics::RegisterFile& regs, uint32_t index) {
 // The game's FPS and frame time over the last half second, with a C name and default visibility so the Android
 // app finds them with dlsym and draws them on screen (android/app/src/main/cpp/android_rendimiento.cpp).
 extern "C" __attribute__((visibility("default"))) std::atomic<float> rex_fps_guest{-1.0f};
+// Whether the frame trace is recording (the generic command processor adds its packets to it).
+std::atomic<bool> rex_frame_trace_active{false};
+std::atomic<uint32_t> rex_frame_trace_draw{0};
 extern "C" __attribute__((visibility("default"))) std::atomic<float> rex_frame_ms_guest{-1.0f};
 
 namespace rex::graphics::vulkan {
@@ -2477,6 +2480,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
                   frontbuffer_height);
       if (--g_frame_trace.frames_left <= 0) {
         g_frame_trace.active = false;
+        rex_frame_trace_active.store(false, std::memory_order_relaxed);
         g_frame_trace.done = true;
         g_frame_trace.dump_in_swaps = 2;
       }
@@ -2484,6 +2488,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
                                              g_frame_trace.start)
                    .count() >= REXCVAR_GET(gpu_traco_quadro_s)) {
       g_frame_trace.active = true;
+      rex_frame_trace_active.store(true, std::memory_order_relaxed);
       g_frame_trace.frames_left = std::max(1, int(REXCVAR_GET(gpu_traco_quadros)));
       g_frame_trace.draw_index = 0;
       REXGPU_INFO("[traco] ---- start ----");
@@ -4065,7 +4070,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
         "[traco] {:4} DRAW prim {} n {} VS {:016X} PS {:016X} pitch {} msaa {} zbase {} zfmt {} depth {:08X} "
         "woff {:08X} wsc {:08X}-{:08X} ssc {:08X}-{:08X} blend0 {:08X} colorctl {:08X}{} | c0 ({:.4g} {:.4g} {:.4g} {:.4g}) c1 ({:.4g} {:.4g} {:.4g} {:.4g}) c2 "
         "({:.4g} {:.4g} {:.4g} {:.4g}) |{}",
-        g_frame_trace.draw_index++, uint32_t(prim_type), index_count,
+        (rex_frame_trace_draw.store(g_frame_trace.draw_index + 1), g_frame_trace.draw_index++),
+        uint32_t(prim_type), index_count,
         vertex_shader->ucode_data_hash(), pixel_shader ? pixel_shader->ucode_data_hash() : 0,
         regs.Get<reg::RB_SURFACE_INFO>().surface_pitch, (regs[XE_GPU_REG_RB_SURFACE_INFO] >> 16) & 3,
         regs[XE_GPU_REG_RB_DEPTH_INFO] & 0xFFF, (regs[XE_GPU_REG_RB_DEPTH_INFO] >> 16) & 1,

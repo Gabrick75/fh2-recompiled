@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cinttypes>
 #include <climits>
+#include <map>
 #include <cmath>
 #include <cstring>
 #include <string_view>
@@ -123,6 +124,9 @@ void PublishReadPointer() {
 #endif
 }
 }  // namespace
+
+extern std::atomic<bool> rex_frame_trace_active;   // src/graphics/vulkan/command_processor.cpp
+extern std::atomic<uint32_t> rex_frame_trace_draw;
 
 namespace rex::graphics {
 
@@ -921,13 +925,63 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
   // & 1 == predicate - when set, we do bin check to see if we should execute
   // the packet. Only type 3 packets are affected.
   // We also skip predicated swaps, as they are never valid (probably?).
-  // gpu_ignorar_predicacao: draws run whatever the bin select; the other predicated packets (per-tile state the
-  // game recorded, such as window offsets) still follow it, so the single pass keeps the first tile's state.
-  if ((packet & 1) && !(REXCVAR_GET(gpu_ignorar_predicacao) &&
-                        (opcode == PM4_DRAW_INDX || opcode == PM4_DRAW_INDX_2))) {
+  // gpu_ignorar_predicacao (predicated tiling played back in one pass over the whole scene): predicated packets run
+  // whatever the bin select, except two kinds, which the game records once per tile in tile terms:
+  //  - the window offset and scissor (SET_CONSTANT of PA_SC_WINDOW_OFFSET..SCISSOR_BR): always skipped, so the
+  //    single pass keeps the whole-scene window the one-tile playback set;
+  //  - resolves (draws in EDRAM copy mode): they follow the bin select, so only the first tile's runs.
+  bool follow_predicate = (packet & 1) != 0;
+  if (follow_predicate && REXCVAR_GET(gpu_ignorar_predicacao) && opcode != PM4_XE_SWAP) {
+    if (opcode == PM4_SET_CONSTANT) {
+      const auto start = reader->read_offset();
+      const uint32_t offset_type = reader->ReadAndSwap<uint32_t>();
+      reader->set_read_offset(start);
+      const uint32_t first = offset_type & 0x7FF;
+      if (((offset_type >> 16) & 0xFF) == 4 && first <= XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR - 0x2000 &&
+          first + (count - 1) > XE_GPU_REG_PA_SC_WINDOW_OFFSET - 0x2000) {
+        reader->AdvanceRead(count * sizeof(uint32_t));
+        return true;
+      }
+      follow_predicate = false;
+    } else if (!((opcode == PM4_DRAW_INDX || opcode == PM4_DRAW_INDX_2) &&
+                 register_file_->Get<reg::RB_MODECONTROL>().edram_mode == xenos::EdramMode::kCopy)) {
+      follow_predicate = false;
+    }
+  }
+  if (follow_predicate) {
     bool any_pass = (bin_select_ & bin_mask_) != 0;
     if (!any_pass || opcode == PM4_XE_SWAP) {
       g_cp_times.predicated_skipped.fetch_add(1, std::memory_order_relaxed);
+      if (REXCVAR_GET(gpu_sonda_faixas) > 0) {
+        // Debug probe: skipped packets by opcode, logged every 20000.
+        static uint32_t by_opcode[128] = {};
+        static uint32_t total = 0;
+        ++by_opcode[opcode & 0x7F];
+        if (++total % 20000 == 0) {
+          std::string text;
+          for (int i = 0; i < 128; ++i) {
+            if (by_opcode[i]) text += fmt::format(" op{:02X}:{}", i, by_opcode[i]);
+          }
+          REXGPU_INFO("[sonda] pulados por opcode:{} (modo {})", text,
+                      uint32_t(register_file_->Get<reg::RB_MODECONTROL>().edram_mode));
+        }
+        if (opcode == PM4_SET_CONSTANT) {
+          // Which constants: type and first index, counted.
+          static std::map<uint32_t, uint32_t> kinds;
+          static uint32_t seen = 0;
+          const uint32_t offset_type = reader->ReadAndSwap<uint32_t>();
+          reader->AdvanceRead((count - 1) * sizeof(uint32_t));
+          ++kinds[((offset_type >> 16) & 0xFF) << 16 | (offset_type & 0x7FF) << 4 | std::min(count - 1, 15u)];
+          if (++seen % 50000 == 0) {
+            std::string text;
+            for (const auto& [k, n] : kinds) {
+              text += fmt::format(" t{}:{:03X}x{}={}", k >> 16, (k >> 4) & 0x7FF, k & 15, n);
+            }
+            REXGPU_INFO("[sonda] SET_CONSTANT pulados:{}", text);
+          }
+          return true;
+        }
+      }
       reader->AdvanceRead(count * sizeof(uint32_t));
       return true;
     }
@@ -1013,6 +1067,9 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
       uint32_t value = reader->ReadAndSwap<uint32_t>();
       bin_mask_ = (bin_mask_ & 0xFFFFFFFF00000000ull) | value;
       result = true;
+      if (rex_frame_trace_active.load(std::memory_order_relaxed) && !(packet & 1)) {
+        REXGPU_INFO("[traco] {:4} MASK_LO {:016X}", rex_frame_trace_draw.load(), bin_mask_);
+      }
     } break;
     case PM4_SET_BIN_MASK_HI: {
       uint32_t value = reader->ReadAndSwap<uint32_t>();
@@ -1024,6 +1081,9 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
       uint32_t value = reader->ReadAndSwap<uint32_t>();
       bin_select_ = (bin_select_ & 0xFFFFFFFF00000000ull) | value;
       result = true;
+      if (rex_frame_trace_active.load(std::memory_order_relaxed) && !(packet & 1)) {
+        REXGPU_INFO("[traco] {:4} SELECT_LO {:016X}", rex_frame_trace_draw.load(), bin_select_);
+      }
       {
         static uint32_t seen_lo = 0;
         static int logged_lo = 0;

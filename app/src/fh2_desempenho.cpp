@@ -126,17 +126,16 @@ REX_HOOK_RAW(sub_82B72A90) {
 // ignores the predication (gpu_ignorar_predicacao): every draw marked for any tile runs in that single pass. Idea
 // from NFSMW-Recompiled-Mobile (ganchos.cpp, nfsmw_una_franja), which hooks its game's BeginTiling.
 //
-// The recording side is left alone (the game keeps culling and marking for three tiles): rewriting the tiling it
-// records with made it drop most of the world, which it culls per tile.
+// The game keeps culling and marking for three tiles; only the D3D is handed one tile, for the length of each call.
 //
 // sub_8247A868 is the BeginTiling of the playback (called by sub_8247C2F8): r5 tile count, r6 tile rects
 // { x1, y1, x2, y2 }, both from a global table of tiling setups at 0x833F9380 + index * 0x4D0 (count at +0x10,
 // rects at +0x20). The hook hands it one tile, the union, through that table entry, and restores the entry right
 // after the call.
-// STATUS: unfinished, off by default. Measured on the S23 Ultra (event menu, no MSAA): 8.4 -> 11.15 fps. The picture
-// is still wrong: the recording side keeps the first tile's window scissor and viewport (1280x256), and handing
-// the recording one tile too made the game drop most of the world (culled per tile). See the commit message.
-REXCVAR_DEFINE_BOOL(fh2_uma_faixa, false, "FH2",
+// The window offset and scissor the game records per tile, predicated, and its per-tile resolves are handled in
+// the command processor (src/graphics/command_processor.cpp, gpu_ignorar_predicacao). PC, in race: ~3100-4200
+// -> ~1900 draws per frame, 19 -> 22 fps; picture identical.
+REXCVAR_DEFINE_BOOL(fh2_uma_faixa, true, "FH2",
                     "Play the scene back in one tile instead of three when the MSAA cap leaves one sample "
                     "(gpu_sin_msaa=true or gpu_msaa_muestras=1); app/src/fh2_desempenho.cpp");
 
@@ -172,18 +171,10 @@ bool OneTile() {
 constexpr uint32_t kTilingSetupCount = 0x10;
 constexpr uint32_t kTilingSetupRects = 0x20;
 
-}  // namespace
-
-REX_EXTERN(__imp__sub_8247A868);
-
-REX_HOOK_RAW(sub_8247A868) {
-  const uint32_t count = ctx.r5.u32;
-  if (count < 2 || count > 15 || !OneTile()) {
-    __imp__sub_8247A868(ctx, base);
-    return;
-  }
-  const uint32_t rects = ctx.r6.u32;
-  const uint32_t count_field = rects - kTilingSetupRects + kTilingSetupCount;
+// Rewrites the first of 'count' tile rects at 'rects' to their union for the duration of 'call', then restores it.
+// Notes the original first tile and the union for the Clear hook.
+template <typename Call>
+void WithOneTile(uint8_t* base, uint32_t rects, uint32_t count, Call call) {
   uint32_t saved[4];
   uint32_t x1 = UINT32_MAX, y1 = UINT32_MAX, x2 = 0, y2 = 0;
   for (uint32_t i = 0; i < count; ++i) {
@@ -196,7 +187,6 @@ REX_HOOK_RAW(sub_8247A868) {
   for (uint32_t i = 0; i < 4; ++i) {
     saved[i] = LoadGuestU32(base, rects + 4 * i);
   }
-  const uint32_t saved_count = LoadGuestU32(base, count_field);
   if (saved[0] == 0 && saved[1] == 0 && x1 == 0 && y1 == 0) {
     g_first_tile_xy2.store(uint64_t(saved[2]) << 32 | saved[3], std::memory_order_relaxed);
     g_union_xy2.store(uint64_t(x2) << 32 | y2, std::memory_order_relaxed);
@@ -205,12 +195,43 @@ REX_HOOK_RAW(sub_8247A868) {
   StoreGuestU32(base, rects + 4, y1);
   StoreGuestU32(base, rects + 8, x2);
   StoreGuestU32(base, rects + 12, y2);
-  StoreGuestU32(base, count_field, 1);
-  ctx.r5.u64 = 1;
-  __imp__sub_8247A868(ctx, base);
+  call();
   for (uint32_t i = 0; i < 4; ++i) {
     StoreGuestU32(base, rects + 4 * i, saved[i]);
   }
+}
+
+}  // namespace
+
+// The recording side (sub_82478390: r9 tile count, r8 tile rects, from the game's renderer structure at +0x60,
+// called from 0x82F66F50): the D3D gets one tile only for the call, so the window scissor and viewport it records
+// cover the whole scene; the game's own structure is left as it was (rewriting it made the game cull most of the
+// world, which it does per tile).
+REX_EXTERN(__imp__sub_82478390);
+
+REX_HOOK_RAW(sub_82478390) {
+  const uint32_t count = ctx.r9.u32;
+  if (count < 2 || count > 15 || !OneTile()) {
+    __imp__sub_82478390(ctx, base);
+    return;
+  }
+  ctx.r9.u64 = 1;
+  WithOneTile(base, ctx.r8.u32, count, [&] { __imp__sub_82478390(ctx, base); });
+}
+
+REX_EXTERN(__imp__sub_8247A868);
+
+REX_HOOK_RAW(sub_8247A868) {
+  const uint32_t count = ctx.r5.u32;
+  if (count < 2 || count > 15 || !OneTile()) {
+    __imp__sub_8247A868(ctx, base);
+    return;
+  }
+  const uint32_t count_field = ctx.r6.u32 - kTilingSetupRects + kTilingSetupCount;
+  const uint32_t saved_count = LoadGuestU32(base, count_field);
+  StoreGuestU32(base, count_field, 1);
+  ctx.r5.u64 = 1;
+  WithOneTile(base, ctx.r6.u32, count, [&] { __imp__sub_8247A868(ctx, base); });
   StoreGuestU32(base, count_field, saved_count);
 }
 
