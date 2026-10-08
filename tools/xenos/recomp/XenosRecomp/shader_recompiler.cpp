@@ -98,6 +98,10 @@ static constexpr DeclUsageLocation USAGE_LOCATIONS[] =
     { DeclUsage::Color, 0, 8 },
     { DeclUsage::BlendIndices, 0, 9 },
     { DeclUsage::BlendWeight, 0, 10 },
+#ifdef FH2_RECOMP
+    // FH2's vertex declarations use NORMAL1 (34 shaders), never COLOR1, which also has location 11.
+    { DeclUsage::Normal, 1, 11 },
+#endif
     { DeclUsage::Color, 1, 11 },
     { DeclUsage::TexCoord, 4, 12 },
     { DeclUsage::TexCoord, 5, 13 },
@@ -1212,6 +1216,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
     assert((shaderContainer->flags & 0xFFFF0000) == 0x102A0000);
     assert(shaderContainer->constantTableOffset != NULL);
 
+#ifdef FH2_RECOMP
+    // FH2's vertex shaders sample textures: shader_common.h samples at level 0 there (Vulkan allows the implicit
+    // level only in pixel and compute shaders).
+    if ((shaderContainer->flags & 0x1) != 0)
+        out += "#define FH2_SOMBREADOR_VERTICES\n";
+#endif
     out += include;
     out += '\n';
 
@@ -1259,7 +1269,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
             if (constantInfo->registerCount > 1)
             {
-                uint32_t tailCount = (isPixelShader ? 224 : 256) - constantInfo->registerIndex;
+                uint32_t tailCount = (isPixelShader ? FH2_CONSTANTES_PS : 256) - constantInfo->registerIndex;
 
                 // NFSMW: dynamic UBO or pointer, depending on SPEC_CONSTANT_CONSTANTES_UBO.
                 println("#define {}(INDEX) select((INDEX) < {}, (NFSMW_UBO ? g_Ubo{}.v[{} + min(INDEX, {})] : vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + ({} + min(INDEX, {})) * 16, 0x10)), 0.0)",
@@ -1350,7 +1360,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
             if (constantInfo->registerCount > 1)
             {
-                uint32_t tailCount = (isPixelShader ? 224 : 256) - constantInfo->registerIndex;
+                uint32_t tailCount = (isPixelShader ? FH2_CONSTANTES_PS : 256) - constantInfo->registerIndex;
                 println("#define {0}(INDEX) select((INDEX) < {1}, {0}[min(INDEX, {2})], 0.0)", constantName, tailCount, tailCount - 1);
             }
         }

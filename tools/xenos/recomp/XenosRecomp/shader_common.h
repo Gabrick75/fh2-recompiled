@@ -62,6 +62,8 @@
 // FH2: where the textures of each fetch constant slot (0-31: pixel shader samplers 0-15, vertex shader samplers
 // 16-19) are in the shared constants, after NFSMW's fields (which end before byte 512): the descriptor index of each
 // texture dimension (2D, 3D, cube; 128 bytes each), the sampler's, and 1/size of the 2D image (8 bytes per slot).
+// FH2: pixel shaders use all 256 float constants (c254 and c255 too); NFSMW stopped at 224.
+#define FH2_CONSTANTES_PS         256
 #define FH2_COMPARTIDA_TEXTURAS   512
 #define FH2_COMPARTIDA_SAMPLERS   896
 #define FH2_COMPARTIDA_INV_TAMANO 1024
@@ -98,7 +100,7 @@ struct PushConstants
 // -fvk-use-dx-layout each float4 takes 16 contiguous bytes, so any 4-byte word of the shared block is
 // a component: v[B / 16][(B % 16) / 4], and asuint reads it without changing a bit.
 struct NfsmwBloqueVs { float4 v[256]; };
-struct NfsmwBloquePs { float4 v[224]; };
+struct NfsmwBloquePs { float4 v[FH2_CONSTANTES_PS]; };
 struct NfsmwBloqueCompartidas { float4 v[FH2_COMPARTIDA_BYTES / 16]; };  // FH2: was 23
 [[vk::binding(0, 4)]] ConstantBuffer<NfsmwBloqueVs> g_UboVertex;
 [[vk::binding(1, 4)]] ConstantBuffer<NfsmwBloquePs> g_UboPixel;
@@ -255,6 +257,11 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
     texture.GetDimensions(dimensions.x, dimensions.y);
     return dimensions;
 }
+
+#ifdef FH2_SOMBREADOR_VERTICES
+// FH2: in vertex shaders every sample below is at level 0 (no implicit level outside pixel shaders).
+#define Sample(SAMPLER, COORD) SampleLevel(SAMPLER, COORD, 0)
+#endif
 
 float4 tfetch2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset, float2 invSize)
 {
