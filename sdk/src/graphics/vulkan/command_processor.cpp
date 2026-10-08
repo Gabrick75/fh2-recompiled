@@ -13,6 +13,9 @@
 #include <array>
 #include <cstdint>
 #include <atomic>
+#if defined(__linux__)
+#include <sys/resource.h>
+#endif
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -2384,9 +2387,25 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
       }
       const double fps_seconds = std::chrono::duration<double>(fps_now - fps_since).count();
       if (fps_seconds >= 5.0) {
-        REXGPU_INFO("fps: {:.1f} ({} frames in {:.1f} s, {:.1f} ms average, worst {:.1f} ms)",
+        // CPU time of this (command processor) thread per frame: the work, without the waits, which is what
+        // decides the frame rate where this thread is the bottleneck (the phones).
+        double cp_cpu_ms = -1.0;
+#if defined(__linux__)
+        {
+          static double cpu_before = -1.0;
+          rusage usage{};
+          if (getrusage(RUSAGE_THREAD, &usage) == 0) {
+            const double cpu_now = usage.ru_utime.tv_sec * 1000.0 + usage.ru_utime.tv_usec / 1000.0 +
+                                   usage.ru_stime.tv_sec * 1000.0 + usage.ru_stime.tv_usec / 1000.0;
+            if (cpu_before >= 0.0) cp_cpu_ms = (cpu_now - cpu_before) / fps_frames;
+            cpu_before = cpu_now;
+          }
+        }
+#endif
+        REXGPU_INFO("fps: {:.1f} ({} frames in {:.1f} s, {:.1f} ms average, worst {:.1f} ms, CPU do processador "
+                    "de comandos {:.1f} ms por quadro)",
                     fps_frames / fps_seconds, fps_frames, fps_seconds,
-                    fps_seconds * 1000.0 / fps_frames, fps_worst_ms);
+                    fps_seconds * 1000.0 / fps_frames, fps_worst_ms, cp_cpu_ms);
         // Where the command processor's time went, per frame (include/rex/graphics/cp_times.h).
         const double per_frame = 1.0 / fps_frames;
         auto ms = [per_frame](std::atomic<uint64_t>& ns) {
