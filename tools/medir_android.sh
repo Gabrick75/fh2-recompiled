@@ -1,34 +1,36 @@
 #!/bin/bash
 # Measures the game's FPS on the connected Android phone ("medir" means "measure"), without touching it:
-# installs the APK, starts the game through the launcher's test bench with a button script (START / A every
-# 2 s until it is in game, then B and the throttle), and prints the "fps:" lines of the log.
+# installs the APK, starts the game through the launcher's test bench and prints the "fps:" lines of the log.
 #
-#   tools/medir_android.sh                  install, run 180 s, print the fps lines
-#   SEGUNDOS=200 tools/medir_android.sh --gpu_teste_constante=...   longer, with extra game options
+# The measuring scene is the event menu the player's save opens on ("Festival Race / Horizon Heats", the 3D world
+# behind it): the button script only presses START on the title screen (three times, the later ones land on the
+# loading screen) and never A, so nothing is chosen and the save is never touched. The menu shows at about 45 s.
+#
+#   tools/medir_android.sh                  install, run 120 s, print the fps lines and the menu average
+#   tools/medir_android.sh --gpu_sin_msaa=true          with extra game options
 #   INSTALAR=0 tools/medir_android.sh       do not reinstall the APK
+#   ROTEIRO="10:start;16:start;22:start;60:a" tools/medir_android.sh    another button script
 #
 # The phone heats up fast and its clocks drop with it: the script prints the thermal status before and after.
-# Compare two builds only from a similar thermal status.
+# Compare two builds only from a similar thermal status (tools/esfriar_android.sh waits for it).
 set -e
 RAIZ=$(cd "$(dirname "$0")/.." && pwd)
 ADB=${ADB:-$HOME/Android/Sdk/platform-tools/adb}
 PKG=com.forzahorizon2.android
 APK=$RAIZ/android/app/build/outputs/apk/release/app-release.apk
-SEGUNDOS=${SEGUNDOS:-180}
+SEGUNDOS=${SEGUNDOS:-120}
 SAIDA=$RAIZ/app/out/medicao_android_$(date +%Y%m%d_%H%M%S).log
 
 if [ "${INSTALAR:-1}" = 1 ]; then
   "$ADB" install -r "$APK" | tail -1
 fi
+# Screen on while plugged in (a dozing screen pauses the game and ruins the measurement), and awake now.
+"$ADB" shell svc power stayon usb
+"$ADB" shell input keyevent KEYCODE_WAKEUP
 termico() { "$ADB" shell dumpsys thermalservice 2>/dev/null | grep -m1 "Thermal Status" | tr -d '\r'; }
 echo "antes: $(termico)"
 
-ROTEIRO=""
-# The phone loads slower than the PC: keep skipping until 90 s.
-for t in $(seq 6 2 90); do
-  if [ $((t % 4)) -eq 2 ]; then ROTEIRO="$ROTEIRO$t:start;"; else ROTEIRO="$ROTEIRO$t:a;"; fi
-done
-ROTEIRO="${ROTEIRO}92:b;94:b;96-$((SEGUNDOS - 5)):rt"
+ROTEIRO=${ROTEIRO:-"10:start;16:start;22:start"}
 
 ARGS=("--fh2_teste_botoes=$ROTEIRO" "$@")
 "$ADB" shell am force-stop "$PKG"
@@ -40,6 +42,8 @@ JUNTOS=$(IFS=,; echo "${ARGS[*]}")
 # Waits by reading the log for SEGUNDOS seconds (timeout ends it), keeping the lines that matter.
 timeout "$SEGUNDOS" "$ADB" logcat -v time 2>/dev/null |
   grep --line-buffered -E "fps: |MSAA|Unhandled guest|Fatal signal|\[FATAL\]|\[fh2\]|\[teste\] script pad with" > "$SAIDA" || true
+# The last screen, to check what was measured (a video runs at 30 fps and looks like a good result).
+"$ADB" exec-out screencap -p > "${SAIDA%.log}.png"
 "$ADB" shell am force-stop "$PKG"
 echo "depois: $(termico)"
 grep -E "Unhandled guest|Fatal signal|\[FATAL\]" "$SAIDA" | head -3 || true
@@ -47,8 +51,8 @@ grep "fps: " "$SAIDA" | sed -E 's/^.*fps: /fps: /'
 python3 - "$SAIDA" <<'EOF'
 import re, sys
 values = [float(m.group(1)) for line in open(sys.argv[1]) if (m := re.search(r"fps: ([0-9.]+)", line))]
-tail = values[-6:]
+tail = values[-8:]
 if tail:
-    print(f"média das últimas {len(tail)} medições (~{5 * len(tail)} s finais): {sum(tail) / len(tail):.1f} fps")
+    print(f"média das últimas {len(tail)} medições (~{5 * len(tail)} s finais, no menu): {sum(tail) / len(tail):.1f} fps")
 EOF
-echo "log: $SAIDA"
+echo "log: $SAIDA (tela final: ${SAIDA%.log}.png)"

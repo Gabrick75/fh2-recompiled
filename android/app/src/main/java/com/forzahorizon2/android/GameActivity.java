@@ -14,6 +14,8 @@ import android.hardware.input.InputManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.util.Log;
@@ -62,7 +64,12 @@ public final class GameActivity extends SDLActivity
     private SensorManager sensorManager;
     private Sensor gravity;
 
-    private static native void nativeSetStretch(boolean stretch);
+    private static native float nativeFps();
+    private static native float nativeFrameMs();
+
+    private final Handler clock = new Handler(Looper.getMainLooper());
+    private boolean stretched = true;
+    private TextView fpsLabel;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -80,6 +87,7 @@ public final class GameActivity extends SDLActivity
             Log.w(TAG, "REX_APP_FOLDER", e);
         }
         installSettings();
+        backUpSaves();
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
         super.onCreate(state);
         useWholeScreen();
@@ -95,6 +103,11 @@ public final class GameActivity extends SDLActivity
         FrameLayout.LayoutParams barParams = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
         root.addView(toolbar, barParams);
+        stretched = controls.stretch;
+        layoutSurface();
+        if (GameOptions.flag(this, GameOptions.SHOW_FPS)) {
+            showFpsCounter(root);
+        }
 
         inputManager = (InputManager) getSystemService(Context.INPUT_SERVICE);
         sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
@@ -104,6 +117,68 @@ public final class GameActivity extends SDLActivity
                 gravity = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
             }
         }
+    }
+
+    /*
+     * Safety copy of the player's progress before the game runs: the profile folders (16 hex digits, the XUID, with
+     * the saves of every title inside) and achievements, about 8 MB. To Internal storage/jogos/ForzaHorizon2-saves/
+     * <date>, keeping the newest SAVE_BACKUPS. A failure only logs: it never stops the game.
+     */
+    private static final int SAVE_BACKUPS = 10;
+
+    private void backUpSaves() {
+        File[] entries = new File(userRoot).listFiles(f -> f.isDirectory() &&
+                (f.getName().matches("[0-9A-Fa-f]{16}") || f.getName().equals("achievements")));
+        if (entries == null || entries.length == 0) {
+            return;
+        }
+        File backups = new File(Environment.getExternalStorageDirectory(), MainActivity.GAME_FOLDER_NAME + "-saves");
+        String stamp = new java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", java.util.Locale.ROOT)
+                .format(new java.util.Date());
+        File target = new File(backups, stamp);
+        try {
+            for (File entry : entries) {
+                copyTree(entry, new File(target, entry.getName()));
+            }
+            File[] old = backups.listFiles(File::isDirectory);
+            if (old != null && old.length > SAVE_BACKUPS) {
+                java.util.Arrays.sort(old);  // the names are dates, so they sort by age
+                for (int i = 0; i < old.length - SAVE_BACKUPS; i++) {
+                    deleteTree(old[i]);
+                }
+            }
+            Log.i(TAG, "Cópia do save em " + target);
+        } catch (IOException e) {
+            Log.w(TAG, "Não foi possível copiar o save para " + target, e);
+        }
+    }
+
+    private static void copyTree(File source, File target) throws IOException {
+        if (source.isDirectory()) {
+            if (!target.mkdirs() && !target.isDirectory()) {
+                throw new IOException("mkdir " + target);
+            }
+            File[] children = source.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    copyTree(child, new File(target, child.getName()));
+                }
+            }
+        } else {
+            java.nio.file.Files.copy(source.toPath(), target.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private static void deleteTree(File file) {
+        File[] children = file.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                deleteTree(child);
+            }
+        }
+        //noinspection ResultOfMethodCallIgnored
+        file.delete();
     }
 
     // SDL picks an orientation from the window size when it creates its window; the game is landscape only.
@@ -120,6 +195,9 @@ public final class GameActivity extends SDLActivity
             attrs.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
         }
         int fps = Integer.parseInt(GameOptions.get(this, GameOptions.FPS));
+        if (fps <= 0) {
+            fps = 240;  // "Unlimited": the fastest mode the panel has.
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             Display display = getWindowManager().getDefaultDisplay();
             Display.Mode best = null;
@@ -152,12 +230,102 @@ public final class GameActivity extends SDLActivity
         applyStretch(controls.stretch);
     }
 
-    private static void applyStretch(boolean stretch) {
-        try {
-            nativeSetStretch(stretch);
-        } catch (UnsatisfiedLinkError e) {
-            Log.w(TAG, "libmain não carregada", e);
+    private void applyStretch(boolean stretch) {
+        stretched = stretch;
+        if (mLayout != null) {
+            mLayout.requestLayout();
+            resizeSurface(mLayout.getWidth(), mLayout.getHeight());
         }
+    }
+
+    /*
+     * Display size and aspect, as NFSMW-Recompiled-Mobile does (GameActivity.ajustarSuperficie):
+     *  - the view is the screen rectangle the game takes: the largest 16:9 that fits, centred on black, or the
+     *    whole screen when stretched;
+     *  - the buffer is the pixels presented: 720x480, 1280x720 or the view's own. Android's compositor scales it to
+     *    the view for free, so 720x480 in a 16:9 view is anamorphic, like the Xbox 360's widescreen 480p.
+     * The presenter fills the whole buffer (present_letterbox=false, GameOptions.arguments).
+     *
+     * SDL adds its surface with WRAP_CONTENT, and a SurfaceView with setFixedSize in WRAP_CONTENT measures as its
+     * buffer (SurfaceView.onMeasure): the view shrank to a corner. So the view always gets an exact size here.
+     */
+    private void layoutSurface() {
+        if (mSurface == null || mLayout == null) {
+            return;
+        }
+        mLayout.setBackgroundColor(Color.BLACK);
+        int[] buffer = GameOptions.bufferSize(GameOptions.get(this, GameOptions.RESOLUTION));
+        if (buffer[0] > 0) {
+            mSurface.getHolder().setFixedSize(buffer[0], buffer[1]);
+        } else {
+            mSurface.getHolder().setSizeFromLayout();
+        }
+        // The real room Android leaves (camera cutout, system bars) is only known at layout, and may change.
+        mLayout.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> resizeSurface(r - l, b - t));
+    }
+
+    private int lastWidth = -1;
+    private int lastHeight = -1;
+    private boolean lastStretched;
+
+    private void resizeSurface(int width, int height) {
+        if (width <= 0 || height <= 0 || (width == lastWidth && height == lastHeight && stretched == lastStretched)) {
+            return;
+        }
+        lastWidth = width;
+        lastHeight = height;
+        lastStretched = stretched;
+        int w = width;
+        int h = height;
+        if (!stretched) {
+            if (width * 9 > height * 16) {
+                w = height * 16 / 9;
+            } else {
+                h = width * 9 / 16;
+            }
+        }
+        android.widget.RelativeLayout.LayoutParams lp = new android.widget.RelativeLayout.LayoutParams(w, h);
+        lp.addRule(android.widget.RelativeLayout.CENTER_IN_PARENT);
+        // A layout change made from its own listener only applies on the next pass: post it.
+        mLayout.post(() -> mSurface.setLayoutParams(lp));
+        Log.i(TAG, "Superfície: vista " + w + "x" + h + (stretched ? " (esticada)" : " (16:9)"));
+    }
+
+    // A corner label with the game's FPS and frame time, every half second (NFSMW-Recompiled-Mobile's counter).
+    private void showFpsCounter(ViewGroup root) {
+        fpsLabel = new TextView(this);
+        fpsLabel.setTextColor(Color.WHITE);
+        fpsLabel.setBackgroundColor(0x99000000);
+        fpsLabel.setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD);
+        fpsLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        fpsLabel.setPadding(dp(6), dp(3), dp(6), dp(3));
+        fpsLabel.setText("-- fps");
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
+        lp.setMargins(dp(12), dp(12), 0, 0);
+        root.addView(fpsLabel, lp);
+        clock.post(new Runnable() {
+            // setText relayouts the label even with the same text, and a steady FPS is the usual case.
+            private String last = "";
+
+            @Override
+            public void run() {
+                float fps;
+                float ms;
+                try {
+                    fps = nativeFps();
+                    ms = nativeFrameMs();
+                } catch (UnsatisfiedLinkError e) {
+                    fps = ms = -1;
+                }
+                String text = fps < 0 ? "-- fps" : String.format(java.util.Locale.ROOT, "%.0f fps  %.1f ms", fps, ms);
+                if (!text.equals(last)) {
+                    fpsLabel.setText(text);
+                    last = text;
+                }
+                clock.postDelayed(this, 500);
+            }
+        });
     }
 
     @Override
@@ -182,11 +350,6 @@ public final class GameActivity extends SDLActivity
         args.add("--cache_root=" + cacheRoot);
         // The launcher's options win over fh2.toml.
         args.addAll(GameOptions.arguments(this));
-        if (getSharedPreferences("fh2_controls", MODE_PRIVATE).getBoolean("stretch", true)) {
-            args.add("--present_letterbox=false");
-            args.add("--present_safe_area_x=100");
-            args.add("--present_safe_area_y=100");
-        }
         // Test bench (MainActivity.startBenchIfAsked): each option replaces the one of the same name.
         String[] extra = getIntent() != null ? getIntent().getStringArrayExtra("fh2.args") : null;
         if (extra != null) {
@@ -434,6 +597,12 @@ public final class GameActivity extends SDLActivity
         });
         box.addView(bar);
         return box;
+    }
+
+    @Override
+    protected void onDestroy() {
+        clock.removeCallbacksAndMessages(null);
+        super.onDestroy();
     }
 
     private int dp(int value) {

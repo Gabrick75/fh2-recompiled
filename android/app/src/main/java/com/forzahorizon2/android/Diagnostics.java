@@ -91,7 +91,9 @@ final class Diagnostics {
                     .append("\nRAM total: ").append(memory.totalMem).append("\nRAM disponível: ").append(memory.availMem)
                     .append("\nÚltima tentativa de iniciar: ").append(context.getSharedPreferences("fh2_diagnostics", 0)
                             .getLong("last_launch_ms", 0)).append("\n\nOpções:\n");
-            for (GameOptions.Option option : GameOptions.ALL) info.append(option.key).append('=').append(GameOptions.get(context, option.key)).append('\n');
+            for (java.util.Map.Entry<String, ?> option : new java.util.TreeMap<>(GameOptions.prefs(context).getAll()).entrySet()) {
+                info.append(option.getKey()).append('=').append(option.getValue()).append('\n');
+            }
             info.append("\nArgumentos efetivos:\n");
             for (String argument : GameOptions.arguments(context)) info.append(argument).append('\n');
             info.append("\nDescreva o que aconteceu e como reproduzir.\n");

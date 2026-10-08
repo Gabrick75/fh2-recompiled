@@ -25,6 +25,7 @@
         </provider>
         <activity
             android:name=".MainActivity"
+            android:theme="@style/Theme.FH2.Launcher"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:screenOrientation="sensorLandscape"
             android:exported="true">

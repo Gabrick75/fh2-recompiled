@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -126,6 +127,11 @@ float RegFloat(const rex::graphics::RegisterFile& regs, uint32_t index) {
   return value;
 }
 }  // namespace
+
+// The game's FPS and frame time over the last half second, with a C name and default visibility so the Android
+// app finds them with dlsym and draws them on screen (android/app/src/main/cpp/android_rendimiento.cpp).
+extern "C" __attribute__((visibility("default"))) std::atomic<float> rex_fps_guest{-1.0f};
+extern "C" __attribute__((visibility("default"))) std::atomic<float> rex_frame_ms_guest{-1.0f};
 
 namespace rex::graphics::vulkan {
 
@@ -2347,14 +2353,26 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
     // processor thread, so the statics need no lock.
     using FpsClock = std::chrono::steady_clock;
     static FpsClock::time_point fps_since{};
+    static FpsClock::time_point fps_since_short{};
     static FpsClock::time_point fps_previous{};
     static uint32_t fps_frames = 0;
+    static uint32_t fps_frames_short = 0;
     static double fps_worst_ms = 0.0;
     const auto fps_now = FpsClock::now();
     if (fps_since == FpsClock::time_point{}) {
       fps_since = fps_now;
+      fps_since_short = fps_now;
     } else {
       ++fps_frames;
+      ++fps_frames_short;
+      // Every half second, for the on-screen counter (rex_fps_guest below).
+      const double fps_short = std::chrono::duration<double>(fps_now - fps_since_short).count();
+      if (fps_short >= 0.5) {
+        rex_fps_guest.store(float(fps_frames_short / fps_short), std::memory_order_relaxed);
+        rex_frame_ms_guest.store(float(fps_short * 1000.0 / fps_frames_short), std::memory_order_relaxed);
+        fps_frames_short = 0;
+        fps_since_short = fps_now;
+      }
       if (fps_previous != FpsClock::time_point{}) {
         fps_worst_ms = std::max(
             fps_worst_ms, std::chrono::duration<double, std::milli>(fps_now - fps_previous).count());

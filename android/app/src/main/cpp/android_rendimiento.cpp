@@ -7,10 +7,13 @@
 // At startup, before the game creates its threads (they inherit the mask), every thread of the process is
 // limited to the cores whose top clock is at least 70 % of the fastest one. SoCs without a slow cluster
 // (Snapdragon 8 Elite: 4.32 and 3.53 GHz) keep every core.
+#include <dlfcn.h>
+#include <jni.h>
 #include <sched.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -81,4 +84,34 @@ extern "C" void fh2_android_nucleos_grandes_aplicar() {
   }
   REXLOG_INFO("[android] juego en los nucleos {} de {} (reloj >= 70 % de {} MHz); {} hilos movidos", lista,
               total, maximo / 1000, hilos);
+}
+
+// On-screen FPS counter (GameActivity.showFpsCounter): the GPU plugin publishes the game's FPS and frame time
+// over the last half second (vulkan/command_processor.cpp, IssueSwap). Looked up once the plugin is loaded;
+// -1 before that.
+namespace {
+
+std::atomic<float>* PluginCounter(const char* name, std::atomic<float>*& cache) {
+  if (!cache) {
+    void* plugin = dlopen("librexgpu-xenos.so", RTLD_NOW | RTLD_NOLOAD);
+    if (!plugin) {
+      return nullptr;
+    }
+    cache = static_cast<std::atomic<float>*>(dlsym(plugin, name));
+  }
+  return cache;
+}
+
+}  // namespace
+
+extern "C" JNIEXPORT jfloat JNICALL Java_com_forzahorizon2_android_GameActivity_nativeFps(JNIEnv*, jclass) {
+  static std::atomic<float>* fps = nullptr;
+  auto* value = PluginCounter("rex_fps_guest", fps);
+  return value ? value->load(std::memory_order_relaxed) : -1.0f;
+}
+
+extern "C" JNIEXPORT jfloat JNICALL Java_com_forzahorizon2_android_GameActivity_nativeFrameMs(JNIEnv*, jclass) {
+  static std::atomic<float>* ms = nullptr;
+  auto* value = PluginCounter("rex_frame_ms_guest", ms);
+  return value ? value->load(std::memory_order_relaxed) : -1.0f;
 }
