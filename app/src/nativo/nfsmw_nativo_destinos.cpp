@@ -45,6 +45,7 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
 #include <chrono>
 
 #if REX_PLATFORM_SWITCH
@@ -1466,25 +1467,57 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                       formato_color, sesgo_color, formato_destino, sesgo_copia);
         }
       }
+      // The host format of the resolved texture and log2 of the guest bytes per texel; VK_FORMAT_UNDEFINED if
+      // the copy format is not supported.
+      VkFormat formato_host_copia = VK_FORMAT_UNDEFINED;
+      uint32_t bytes_log2_copia = 2;
+      switch (xenos::ColorFormat(formato_destino)) {
+        case xenos::ColorFormat::k_8_8_8_8:
+        case xenos::ColorFormat::k_8_8_8_8_A:
+        case xenos::ColorFormat::k_8_8_8_8_AS_16_16_16_16:
+          formato_host_copia = kFormatoColor;
+          break;
+#if defined(FH2_RECOMP)
+        // FH2 resolves its HDR scene and post-processing to these (the exponent bias of the copy is not
+        // applied yet).
+        case xenos::ColorFormat::k_2_10_10_10:
+          formato_host_copia = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+          break;
+        case xenos::ColorFormat::k_16_16_16_16:
+          formato_host_copia = VK_FORMAT_R16G16B16A16_UNORM;
+          bytes_log2_copia = 3;
+          break;
+        case xenos::ColorFormat::k_16_16_16_16_FLOAT:
+          formato_host_copia = VK_FORMAT_R16G16B16A16_SFLOAT;
+          bytes_log2_copia = 3;
+          break;
+        case xenos::ColorFormat::k_16_16_FLOAT:
+          formato_host_copia = VK_FORMAT_R16G16_SFLOAT;
+          break;
+        case xenos::ColorFormat::k_32_FLOAT:
+          formato_host_copia = VK_FORMAT_R32_SFLOAT;
+          break;
+#endif
+        default:
+          break;
+      }
       if ((info_destino >> 3) & 0x1) {
         Rechazar(3, "copia a textura 3D o array: todavia no");
-      } else if (formato_destino != uint32_t(xenos::ColorFormat::k_8_8_8_8) &&
-                 formato_destino != uint32_t(xenos::ColorFormat::k_8_8_8_8_A) &&
-                 formato_destino != uint32_t(xenos::ColorFormat::k_8_8_8_8_AS_16_16_16_16)) {
+      } else if (formato_host_copia == VK_FORMAT_UNDEFINED) {
         Rechazar(200 + formato_destino, "formato de copia todavia no soportado");
       } else {
         const uint32_t pitch_destino = reg.rb_copy_dest_pitch & 0x3FFF;
         const uint32_t alto_destino = (reg.rb_copy_dest_pitch >> 16) & 0x3FFF;
-        // 4 bytes per texel: base in multiples of 32 texels (GetResolveInfo).
+        // Base in multiples of 32 texels (GetResolveInfo), tiled with the texel size of the copy format.
         const uint32_t base_x = uint32_t(x0) & ~uint32_t(31);
         const uint32_t base_y = uint32_t(y0) & ~uint32_t(31);
         const uint32_t base =
             reg.rb_copy_dest_base +
-            uint32_t(DesplazamientoMosaico2D(int32_t(base_x), int32_t(base_y), pitch_destino, 2));
+            uint32_t(DesplazamientoMosaico2D(int32_t(base_x), int32_t(base_y), pitch_destino, bytes_log2_copia));
         dx = uint32_t(x0) - base_x;
         dy = uint32_t(y0) - base_y;
         resuelta = ObtenerResuelta(base & 0x1FFFFFFF, pitch_destino, alto_destino, formato_destino,
-                                   (info_destino >> 24) & 0x1);
+                                   (info_destino >> 24) & 0x1, formato_host_copia);
         base_resuelta = base & 0x1FFFFFFF;
         if (resuelta) {
           AnotarCopia(base & 0x1FFFFFFF, pitch_destino, alto_destino, dibujos_antes);
@@ -3861,6 +3894,15 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
  private:
   bool Rechazar(uint32_t causa, const char* texto) {
     ++rechazos_;
+#if defined(FH2_RECOMP)
+    // FH2 diagnostics: rejections by cause, logged every 2000.
+    ++rechazos_por_causa_[causa];
+    if (rechazos_ % 2000 == 0) {
+      std::string texto_causas;
+      for (const auto& [c, n] : rechazos_por_causa_) texto_causas += fmt::format(" {}={}", c, n);
+      REXLOG_INFO("[fh2 nativo] copias rechazadas por causa:{}", texto_causas);
+    }
+#endif
     if (avisados_.insert(causa).second) {
       REXLOG_WARN("[nativo] C2: {} (causa {})", texto, causa);
     }
@@ -6235,6 +6277,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   uint64_t borrados_ = 0;
   uint64_t presentados_ = 0;
   uint64_t rechazos_ = 0;
+#if defined(FH2_RECOMP)
+  std::map<uint32_t, uint64_t> rechazos_por_causa_;
+#endif
   std::unordered_set<uint32_t> avisados_;
 };
 
