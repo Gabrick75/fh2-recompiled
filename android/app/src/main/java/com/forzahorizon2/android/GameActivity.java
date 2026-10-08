@@ -105,8 +105,18 @@ public final class GameActivity extends SDLActivity
         root.addView(toolbar, barParams);
         stretched = controls.stretch;
         layoutSurface();
-        if (GameOptions.flag(this, GameOptions.SHOW_FPS)) {
-            showFpsCounter(root);
+        boolean showFps = GameOptions.flag(this, GameOptions.SHOW_FPS);
+        boolean showUsage = GameOptions.flag(this, GameOptions.SHOW_USAGE) ||
+                (getIntent() != null && getIntent().getBooleanExtra("fh2.uso", false));
+        if (showFps || showUsage) {
+            LinearLayout overlay = new LinearLayout(this);
+            overlay.setOrientation(LinearLayout.VERTICAL);
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
+            lp.setMargins(dp(12), dp(12), 0, 0);
+            root.addView(overlay, lp);
+            if (showFps) showFpsCounter(overlay);
+            if (showUsage) showUsage(overlay);
         }
 
         inputManager = (InputManager) getSystemService(Context.INPUT_SERVICE);
@@ -294,19 +304,43 @@ public final class GameActivity extends SDLActivity
         Log.i(TAG, "Superfície: vista " + w + "x" + h + (stretched ? " (esticada)" : " (16:9)"));
     }
 
+    private TextView overlayLabel(String text) {
+        TextView label = new TextView(this);
+        label.setTextColor(Color.WHITE);
+        label.setBackgroundColor(0x99000000);
+        label.setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD);
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        label.setPadding(dp(6), dp(3), dp(6), dp(3));
+        label.setText(text);
+        return label;
+    }
+
+    // A line under the FPS with the GPU, CPU and RAM use, every second, read off the UI thread.
+    private void showUsage(LinearLayout overlay) {
+        TextView usageLabel = overlayLabel("GPU --  CPU --  RAM --");
+        overlay.addView(usageLabel, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        UsageMonitor monitor = new UsageMonitor(this);
+        Thread reader = new Thread(() -> {
+            while (!isFinishing() && !isDestroyed()) {
+                String text = monitor.sample();
+                clock.post(() -> usageLabel.setText(text));
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+        }, "fh2 uso");
+        reader.setDaemon(true);
+        reader.start();
+    }
+
     // A corner label with the game's FPS and frame time, every half second (NFSMW-Recompiled-Mobile's counter).
-    private void showFpsCounter(ViewGroup root) {
-        fpsLabel = new TextView(this);
-        fpsLabel.setTextColor(Color.WHITE);
-        fpsLabel.setBackgroundColor(0x99000000);
-        fpsLabel.setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD);
-        fpsLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        fpsLabel.setPadding(dp(6), dp(3), dp(6), dp(3));
-        fpsLabel.setText("-- fps");
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
-        lp.setMargins(dp(12), dp(12), 0, 0);
-        root.addView(fpsLabel, lp);
+    private void showFpsCounter(LinearLayout overlay) {
+        fpsLabel = overlayLabel("-- fps");
+        overlay.addView(fpsLabel, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         clock.post(new Runnable() {
             // setText relayouts the label even with the same text, and a steady FPS is the usual case.
             private String last = "";

@@ -20,6 +20,7 @@ final class GameOptions {
     // Display
     static final String RESOLUTION = "resolution";          // "480p", "720p", "native": size of the presented buffer
     static final String SHOW_FPS = "show_fps";
+    static final String SHOW_USAGE = "show_usage";            // GPU, CPU and RAM use under the FPS (UsageMonitor)
     static final String PRESENT_MODE = "present_mode";        // "fifo" (vsync) or "mailbox"
     // Graphics
     static final String RENDER_SCALE = "render_scale";        // gpu_escala_render: percent of 1280x720
