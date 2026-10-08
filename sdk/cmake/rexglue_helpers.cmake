@@ -51,9 +51,13 @@ function(rexglue_apply_target_settings target_name)
             target_link_options(${target_name} PRIVATE -Wl,--no-relax)
             target_compile_options(${target_name} PRIVATE -mcmodel=large)
         elseif(ANDROID)
-            # Use armv8-a for compatibility with ARMv8.0 devices (e.g. Snapdragon 665 / Cortex-A73/A53)
-            # as well as newer ARMv8.2+ processors.
-            target_compile_options(${target_name} PRIVATE -march=armv8-a)
+            # armv8-a by default, for ARMv8.0 devices (e.g. Snapdragon 665 / Cortex-A73/A53) as well as newer
+            # ones. REXGLUE_ANDROID_MARCH picks another (armv8.2-a: inline LSE atomics, for Snapdragon 845 and
+            # newer).
+            if(NOT REXGLUE_ANDROID_MARCH)
+                set(REXGLUE_ANDROID_MARCH armv8-a)
+            endif()
+            target_compile_options(${target_name} PRIVATE -march=${REXGLUE_ANDROID_MARCH})
         elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64")
             target_compile_options(${target_name} PRIVATE -march=armv8-a)
         endif()

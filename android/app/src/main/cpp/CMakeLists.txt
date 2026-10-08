@@ -16,6 +16,14 @@ target_compile_options(fh2_diagnostics PRIVATE -march=armv8-a)
 target_link_libraries(fh2_diagnostics PRIVATE vulkan)
 target_link_options(fh2_diagnostics PRIVATE "-Wl,-z,max-page-size=16384")
 
+# CPU target of all the native code (the game, the SDK, the GPU plugin). armv8.2-a: inline LSE atomics instead of
+# the outline helpers (__aarch64_ldadd4_acq_rel and friends showed up in simpleperf) and newer instructions;
+# Snapdragon 845 and newer. armv8-a for older phones.
+set(FH2_ANDROID_MARCH "armv8.2-a" CACHE STRING "-march of the Android native code")
+set(REXGLUE_ANDROID_MARCH "${FH2_ANDROID_MARCH}" CACHE STRING "" FORCE)
+string(APPEND CMAKE_C_FLAGS " -march=${FH2_ANDROID_MARCH}")
+string(APPEND CMAKE_CXX_FLAGS " -march=${FH2_ANDROID_MARCH}")
+
 get_filename_component(FH2_REXSDK_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../../../sdk" ABSOLUTE)
 set(REXSDK_DIR "${FH2_REXSDK_DIR}" CACHE PATH "ReXGlue SDK source tree")
 set(REXGLUE_USE_VULKAN ON CACHE BOOL "Build ReXGlue's Vulkan backend" FORCE)
