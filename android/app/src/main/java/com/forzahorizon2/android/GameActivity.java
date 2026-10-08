@@ -119,6 +119,9 @@ public final class GameActivity extends SDLActivity
             if (showFps) showFpsCounter(overlay);
             if (showUsage) showUsage(overlay);
         }
+        if (!showUsage) {
+            startUsageMonitor(null);
+        }
 
         inputManager = (InputManager) getSystemService(Context.INPUT_SERVICE);
         sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
@@ -321,11 +324,39 @@ public final class GameActivity extends SDLActivity
         TextView usageLabel = overlayLabel("GPU --  CPU --  RAM --");
         overlay.addView(usageLabel, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        startUsageMonitor(usageLabel);
+    }
+
+    // GPU, CPU and RAM use: on the overlay every second when it is shown, and in the session's usage log
+    // (<session>_uso.log, next to the game log) every 5 seconds in any case, so every play session can be read
+    // back afterwards.
+    private void startUsageMonitor(TextView usageLabel) {
         UsageMonitor monitor = new UsageMonitor(this);
+        String usageLog = sessionLogBase() + "_uso.log";
         Thread reader = new Thread(() -> {
+            int tick = 0;
             while (!isFinishing() && !isDestroyed()) {
                 String text = monitor.sample();
-                clock.post(() -> usageLabel.setText(text));
+                if (usageLabel != null) {
+                    clock.post(() -> usageLabel.setText(text));
+                }
+                if (++tick % 5 == 0) {
+                    float fps;
+                    try {
+                        fps = nativeFps();
+                    } catch (UnsatisfiedLinkError e) {
+                        fps = -1;
+                    }
+                    String line = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT)
+                            .format(new java.util.Date()) +
+                            String.format(java.util.Locale.ROOT, "  %.1f fps  ", fps) + text + "\n";
+                    try (java.io.FileWriter writer = new java.io.FileWriter(usageLog, true)) {
+                        writer.write(line);
+                    } catch (IOException ignored) {
+                        // No log, the overlay still works.
+                    }
+                    Log.i("fh2", "[uso] " + line.trim());
+                }
                 try {
                     Thread.sleep(1000);
                 } catch (InterruptedException e) {
@@ -335,6 +366,27 @@ public final class GameActivity extends SDLActivity
         }, "fh2 uso");
         reader.setDaemon(true);
         reader.start();
+    }
+
+    private String sessionLogBase;
+
+    // Internal storage/jogos/fh2-logs/fh2_<date>_<time>: one game log and one usage log per session, readable with
+    // adb (the SDK's own log file is in the app's private folder). Keeps the newest 40 files.
+    private String sessionLogBase() {
+        if (sessionLogBase == null) {
+            File dir = new File(Environment.getExternalStorageDirectory(), "jogos/fh2-logs");
+            dir.mkdirs();
+            File[] old = dir.listFiles();
+            if (old != null && old.length > 40) {
+                java.util.Arrays.sort(old, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
+                for (int i = 0; i < old.length - 40; i++) {
+                    old[i].delete();
+                }
+            }
+            sessionLogBase = new File(dir, "fh2_" + new java.text.SimpleDateFormat("yyyyMMdd_HHmmss",
+                    java.util.Locale.ROOT).format(new java.util.Date())).getPath();
+        }
+        return sessionLogBase;
     }
 
     // A corner label with the game's FPS and frame time, every half second (NFSMW-Recompiled-Mobile's counter).
@@ -388,6 +440,7 @@ public final class GameActivity extends SDLActivity
         args.add("--cache_root=" + cacheRoot);
         // The launcher's options win over fh2.toml.
         args.addAll(GameOptions.arguments(this));
+        args.add("--log_file=" + sessionLogBase() + ".log");
         // Test bench (MainActivity.startBenchIfAsked): each option replaces the one of the same name.
         String[] extra = getIntent() != null ? getIntent().getStringArrayExtra("fh2.args") : null;
         if (extra != null) {

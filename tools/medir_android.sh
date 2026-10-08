@@ -29,6 +29,8 @@ if [ "${INSTALAR:-1}" = 1 ]; then
     "$ADB" uninstall "$PKG" > /dev/null 2>&1 || true
     "$ADB" install "$APK" | tail -1
   fi
+  # The launcher reads the game files from shared storage (All files access).
+  "$ADB" shell appops set "$PKG" MANAGE_EXTERNAL_STORAGE allow
 fi
 # Screen on while plugged in (a dozing screen pauses the game and ruins the measurement), and awake now.
 "$ADB" shell svc power stayon usb
