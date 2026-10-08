@@ -30,21 +30,24 @@ bool build_attn(BuilderContext& ctx) {
   return true;
 }
 
+// Memory barriers. They were no-ops ("x86 has strong ordering"), but the host compiler may still reorder the
+// guest memory accesses around them, and ARM (Android) reorders loads and stores itself: data published by one
+// guest thread behind a lwsync could be read stale by another (the game's physics runs on several threads).
+// The fences cost a dmb on ARM and nothing but a compiler barrier on x86 (except the full one, an mfence).
 bool build_sync(BuilderContext& ctx) {
-  // Memory barrier, x86 has strong ordering so this is a no-op
-  (void)ctx;
+  ctx.println("\t__atomic_thread_fence(__ATOMIC_SEQ_CST);");
   return true;
 }
 
 bool build_lwsync(BuilderContext& ctx) {
-  // Lightweight memory barrier, x86 has strong ordering so this is a no-op
-  (void)ctx;
+  // Orders load-load, load-store and store-store: acquire plus release.
+  ctx.println("\t__atomic_thread_fence(__ATOMIC_ACQ_REL);");
   return true;
 }
 
 bool build_eieio(BuilderContext& ctx) {
-  // Enforce in-order execution of I/O, x86 has strong ordering so this is a no-op
-  (void)ctx;
+  // Orders stores (to memory as well as I/O) with each other.
+  ctx.println("\t__atomic_thread_fence(__ATOMIC_RELEASE);");
   return true;
 }
 
