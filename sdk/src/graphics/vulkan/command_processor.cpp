@@ -141,6 +141,11 @@ std::atomic<bool> rex_frame_trace_active{false};
 std::atomic<uint32_t> rex_frame_trace_draw{0};
 extern "C" __attribute__((visibility("default"))) std::atomic<float> rex_frame_ms_guest{-1.0f};
 
+REXCVAR_DEFINE_INT32(gpu_log_quadros, 0, "GPU",
+                     "Debug: log this many frames of resolves, texture loads and swaps in order ([quadro] lines), "
+                     "starting gpu_log_quadros_apos_s seconds after the first frame");
+REXCVAR_DEFINE_INT32(gpu_log_quadros_apos_s, 90, "GPU", "Debug: see gpu_log_quadros");
+
 namespace rex::graphics::vulkan {
 
 namespace {
@@ -2355,6 +2360,19 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
                                        uint32_t frontbuffer_height) {
   SCOPE_profile_cpu_f("gpu");
   CpTimer swap_timer(g_cp_times.swap_ns);
+  if (REXCVAR_GET(gpu_log_quadros) > 0) {
+    static const auto first_swap = std::chrono::steady_clock::now();
+    static bool started = false;
+    if (!started && std::chrono::steady_clock::now() - first_swap >=
+                        std::chrono::seconds(REXCVAR_GET(gpu_log_quadros_apos_s))) {
+      started = true;
+      g_cp_times.frames_to_log.store(REXCVAR_GET(gpu_log_quadros), std::memory_order_relaxed);
+    }
+    if (g_cp_times.frames_to_log.load(std::memory_order_relaxed) > 0) {
+      REXGPU_INFO("[quadro] swap {:08X} {}x{}", frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
+      g_cp_times.frames_to_log.fetch_sub(1, std::memory_order_relaxed);
+    }
+  }
   {
     // Frames the GAME presents: one info line every 5 s with the average and the worst frame time.
     // A phone has no overlay to read and some ROMs cap logcat; one line every 5 s costs nothing.
@@ -2438,6 +2456,9 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
                     count(g_cp_times.texture_loads),
                     double(g_cp_times.texture_load_pixels.exchange(0, std::memory_order_relaxed)) / 1e6 *
                         per_frame);
+        REXGPU_INFO("atalho de resolve por quadro: {:.1f} resolves, {:.1f} texturas preenchidas, {:.2f} perdidos",
+                    count(g_cp_times.atalho_resolves), count(g_cp_times.atalho_hits),
+                    count(g_cp_times.atalho_misses));
         REXGPU_INFO(
             "tempos por quadro: {:.1f} ms = ocioso {:.1f} + WAIT_REG_MEM {:.1f} ({:.1f}) + draws {:.1f} "
             "({:.0f}) + resolves {:.1f} ({:.0f}) + swap {:.1f} + resto {:.1f} | de ello: espera GPU {:.1f} "

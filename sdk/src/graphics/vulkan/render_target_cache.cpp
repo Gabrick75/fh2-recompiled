@@ -73,6 +73,14 @@ extern "C" bool RexSwitchPerfSkip(unsigned bit);
 
 REXCVAR_DECLARE(int32_t, gpu_sonda_faixas);
 
+REXCVAR_DEFINE_BOOL(gpu_atalho_resolve, false, "GPU",
+                    "Resolve shortcut: a resolve read back only by one texture of the same format and size copies "
+                    "the render target straight into that texture (at the render scale), skipping the EDRAM dump, "
+                    "the copy to guest memory and the texture load at 1x (VulkanTextureCache::Atalho)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_INT32(gpu_teste_sem_dump_apos_s, 0, "GPU",
+                     "Test only (wrong image): like gpu_teste_sem_copia_apos_s, for the dump of the render targets "
+                     "into the EDRAM buffer alone");
 REXCVAR_DEFINE_INT32(gpu_teste_sem_copia_apos_s, 0, "GPU",
                      "Test only (wrong image): from this many seconds after the first resolve (0 = never), 10 s on, "
                      "10 s off: no resolve copies to guest memory, to measure their cost in the same scene (the "
@@ -1160,6 +1168,14 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
   if (!resolve_info.coordinate_info.width_div_8 || !resolve_info.height_div_8) {
     return true;
   }
+  if (g_cp_times.frames_to_log.load(std::memory_order_relaxed) > 0) {
+    REXGPU_INFO("[quadro] resolve {}x{} edram {} {} -> {:08X} escreve {:08X}+{} fmt {} copia {} limpa {}",
+                resolve_info.coordinate_info.width_div_8 * 8, resolve_info.height_div_8 * 8,
+                resolve_info.coordinate_info.edram_offset_x_div_8 * 8,
+                resolve_info.coordinate_info.edram_offset_y_div_8 * 8, resolve_info.copy_dest_base,
+                resolve_info.copy_dest_extent_start, resolve_info.copy_dest_extent_length, uint32_t(resolve_info.copy_dest_info.copy_dest_format),
+                resolve_info.copy_dest_extent_length != 0, resolve_info.IsClearingDepth() || resolve_info.IsClearingColor());
+  }
   g_cp_times.resolve_pixels.fetch_add(
       uint64_t(resolve_info.coordinate_info.width_div_8) * resolve_info.height_div_8 * 64,
       std::memory_order_relaxed);
@@ -1204,7 +1220,120 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
     }
   }
   bool copied = false;
-  if (resolve_info.copy_dest_extent_length && !skip_copies) {
+  // Resolve shortcut (VulkanTextureCache::Atalho): which render target region this resolve copies, when it
+  // can be blitted as it is into a texture.
+  VulkanTextureCache::Atalho atalho;
+  VulkanRenderTarget* atalho_rt = nullptr;
+  uint32_t atalho_rt_x = 0, atalho_rt_y = 0;
+  if (REXCVAR_GET(gpu_atalho_resolve) && resolve_info.copy_dest_extent_length && !skip_copies &&
+      GetPath() == Path::kHostRenderTargets && !draw_resolution_scaled && !resolve_info.IsCopyingDepth()) {
+    const draw_util::ResolveEdramInfo edram = resolve_info.color_edram_info;
+    const auto dest_coordinates = resolve_info.copy_dest_coordinate_info;
+    const auto dest_format = xenos::ColorFormat(resolve_info.copy_dest_info.copy_dest_format);
+    if (edram.msaa_samples == xenos::MsaaSamples::k1X && !resolve_info.copy_dest_info.copy_dest_exp_bias &&
+        !resolve_info.copy_dest_info.copy_dest_array &&
+        xenos::IsSingleCopySampleSelected(dest_coordinates.copy_sample_select) &&
+        xenos::IsColorResolveFormatBitwiseEquivalent(xenos::ColorRenderTargetFormat(edram.format),
+                                                     dest_format) &&
+        !dest_coordinates.offset_x_div_8 && !dest_coordinates.offset_y_div_8) {
+      uint32_t span_base, span_row_length, span_rows, span_pitch;
+      resolve_info.GetCopyEdramTileSpan(span_base, span_row_length, span_rows, span_pitch);
+      GetResolveCopyRectanglesToDump(span_base, span_row_length, span_rows, span_pitch, dump_rectangles_);
+      if (dump_rectangles_.size() == 1 && span_pitch) {
+        auto* rt = static_cast<VulkanRenderTarget*>(dump_rectangles_[0].render_target);
+        const RenderTargetKey rt_key = rt->key();
+        const uint32_t tile_offset =
+            (edram.base_tiles - rt_key.base_tiles) & (xenos::kEdramTileCount - 1);
+        const uint32_t width = resolve_info.coordinate_info.width_div_8 * 8;
+        const uint32_t height = resolve_info.height_div_8 * 8;
+        const uint32_t rt_x = (tile_offset % span_pitch) *
+                                  (xenos::kEdramTileWidthSamples >> uint32_t(edram.format_is_64bpp)) +
+                              resolve_info.coordinate_info.edram_offset_x_div_8 * 8;
+        const uint32_t rt_y = (tile_offset / span_pitch) * xenos::kEdramTileHeightSamples +
+                              resolve_info.coordinate_info.edram_offset_y_div_8 * 8;
+        if (!rt_key.is_depth && rt_key.msaa_samples == xenos::MsaaSamples::k1X &&
+            rt_key.pitch_tiles_at_32bpp == span_pitch && rt_key.Is64bpp() == bool(edram.format_is_64bpp) &&
+            rt_x + width <= rt_key.GetWidth() &&
+            rt_y + height <= GetRenderTargetHeight(rt_key.pitch_tiles_at_32bpp, rt_key.msaa_samples)) {
+          atalho_rt = rt;
+          atalho_rt_x = rt_x;
+          atalho_rt_y = rt_y;
+          atalho.dest_base = resolve_info.copy_dest_base;
+          atalho.extent_start = resolve_info.copy_dest_extent_start;
+          atalho.extent_length = resolve_info.copy_dest_extent_length;
+          atalho.pitch_div_32 = dest_coordinates.pitch_aligned_div_32;
+          atalho.width = width;
+          atalho.height = height;
+          atalho.format = xenos::TextureFormat(dest_format);
+          atalho.vk_format = GetColorVulkanFormat(rt_key.GetColorFormat());
+          // Not blitted into A2B10G10R10: the resolve packs blue into the low bits there (red and blue came
+          // out swapped on the PC), which a blit cannot do.
+          atalho.to_a2b10g10r10 = false;
+          atalho.host_width = HostScaleX(width);
+          atalho.host_height = HostScaleY(height);
+        }
+      }
+    }
+  }
+  if (REXCVAR_GET(gpu_atalho_resolve) && resolve_info.copy_dest_extent_length && !atalho_rt) {
+    static int logged = 0;
+    if (logged < 60) {
+      ++logged;
+      const draw_util::ResolveEdramInfo edram = resolve_info.color_edram_info;
+      uint32_t span_base, span_row_length, span_rows, span_pitch;
+      resolve_info.GetCopyEdramTileSpan(span_base, span_row_length, span_rows, span_pitch);
+      GetResolveCopyRectanglesToDump(span_base, span_row_length, span_rows, span_pitch, dump_rectangles_);
+      const RenderTargetKey rt_key = dump_rectangles_.size() == 1
+                                         ? dump_rectangles_[0].render_target->key()
+                                         : RenderTargetKey();
+      REXGPU_INFO("[atalho] {}x{} -> {:08X} inelegivel: profundidade {} msaa {} expbias {} array {} amostra {} "
+                  "rt fmt {} dest fmt {} offset {} {} rts {} rt base {} edram base {} pitch rt {} span {}",
+                  resolve_info.coordinate_info.width_div_8 * 8, resolve_info.height_div_8 * 8,
+                  resolve_info.copy_dest_base, resolve_info.IsCopyingDepth(), uint32_t(edram.msaa_samples),
+                  uint32_t(resolve_info.copy_dest_info.copy_dest_exp_bias),
+                  uint32_t(resolve_info.copy_dest_info.copy_dest_array),
+                  uint32_t(resolve_info.copy_dest_coordinate_info.copy_sample_select), uint32_t(edram.format),
+                  uint32_t(resolve_info.copy_dest_info.copy_dest_format),
+                  uint32_t(resolve_info.copy_dest_coordinate_info.offset_x_div_8),
+                  uint32_t(resolve_info.copy_dest_coordinate_info.offset_y_div_8), dump_rectangles_.size(),
+                  rt_key.base_tiles, uint32_t(edram.base_tiles), rt_key.pitch_tiles_at_32bpp, span_pitch);
+    }
+  }
+  if (atalho_rt &&
+      texture_cache.GetAtalhoEstado(atalho.dest_base) == VulkanTextureCache::AtalhoEstado::kBom) {
+    VkImage atalho_image;
+    atalho.image = texture_cache.AcquireAtalhoImage(atalho.vk_format, atalho.host_width,
+                                                    atalho.host_height, atalho_image);
+    if (atalho.image >= 0) {
+      command_processor_.PushImageMemoryBarrier(
+          atalho_rt->image(), ui::vulkan::util::InitializeSubresourceRange(),
+          atalho_rt->current_stage_mask(), VK_PIPELINE_STAGE_TRANSFER_BIT,
+          atalho_rt->current_access_mask(), VK_ACCESS_TRANSFER_READ_BIT, atalho_rt->current_layout(),
+          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+      atalho_rt->SetUsage(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+      command_processor_.SubmitBarriers(true);
+      VkImageBlit region = {};
+      region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      region.srcOffsets[0] = {int32_t(HostScaleX(atalho_rt_x)), int32_t(HostScaleY(atalho_rt_y)), 0};
+      region.srcOffsets[1] = {int32_t(HostScaleX(atalho_rt_x) + atalho.host_width),
+                              int32_t(HostScaleY(atalho_rt_y) + atalho.host_height), 1};
+      region.dstOffsets[1] = {int32_t(atalho.host_width), int32_t(atalho.host_height), 1};
+      command_buffer.CmdVkBlitImage(atalho_rt->image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, atalho_image,
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region, VK_FILTER_NEAREST);
+      texture_cache.AtalhoImageWritten(atalho.image);
+      texture_cache.AddAtalho(atalho);
+      // The guest memory is not written: the textures over it reload, from the shortcut.
+      texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
+                                        resolve_info.copy_dest_extent_length);
+      g_cp_times.atalho_resolves.fetch_add(1, std::memory_order_relaxed);
+      written_address_out = resolve_info.copy_dest_extent_start;
+      written_length_out = resolve_info.copy_dest_extent_length;
+      copied = true;
+    }
+  }
+  if (resolve_info.copy_dest_extent_length && !skip_copies && !copied) {
     draw_util::ResolveCopyShaderConstants copy_shader_constants;
     uint32_t copy_group_count_x, copy_group_count_y;
     draw_util::ResolveCopyShaderIndex copy_shader =
@@ -1343,6 +1472,15 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
           // Invalidate textures and mark the range as scaled if needed.
           texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
                                             resolve_info.copy_dest_extent_length);
+          if (REXCVAR_GET(gpu_atalho_resolve)) {
+            texture_cache.AtalhoNormalWrite(resolve_info.copy_dest_extent_start,
+                                            resolve_info.copy_dest_extent_length);
+            if (atalho_rt && texture_cache.GetAtalhoEstado(atalho.dest_base) ==
+                                 VulkanTextureCache::AtalhoEstado::kDesconhecido) {
+              // Resolved the usual way while watching who reads it.
+              texture_cache.AddAtalho(atalho);
+            }
+          }
           written_address_out = resolve_info.copy_dest_extent_start;
           written_length_out = resolve_info.copy_dest_extent_length;
           copied = true;
@@ -1961,6 +2099,10 @@ RenderTargetCache::RenderTarget* VulkanRenderTargetCache::CreateRenderTarget(Ren
       image_create_info.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
     }
     image_create_info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if (REXCVAR_GET(gpu_atalho_resolve)) {
+      // Blitted into the resolve shortcut images.
+      image_create_info.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    }
   }
   if (image_create_info.format == VK_FORMAT_UNDEFINED) {
     REXGPU_ERROR("VulkanRenderTargetCache: Unknown {} render target format {}",
@@ -6118,6 +6260,25 @@ bool VulkanRenderTargetCache::TryResolveCopyDirectly(const draw_util::ResolveInf
 bool VulkanRenderTargetCache::DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used,
                                                 uint32_t dump_rows, uint32_t dump_pitch) {
   assert_true(GetPath() == Path::kHostRenderTargets);
+
+  // gpu_teste_sem_dump_apos_s (test only, wrong image): 10 s on, 10 s off without the dump, the copy still
+  // running from the stale EDRAM buffer, to split the resolve cost between the two passes.
+  if (REXCVAR_GET(gpu_teste_sem_dump_apos_s) > 0) {
+    static const auto first_dump = std::chrono::steady_clock::now();
+    const int64_t since = std::chrono::duration_cast<std::chrono::seconds>(
+                              std::chrono::steady_clock::now() - first_dump)
+                              .count() -
+                          REXCVAR_GET(gpu_teste_sem_dump_apos_s);
+    const bool skip = since >= 0 && (since / 10) % 2 == 0;
+    static bool was_on = false;
+    if (skip != was_on) {
+      was_on = skip;
+      REXGPU_INFO("[fh2] teste sem dump: {}", skip ? "LIGADO" : "desligado");
+    }
+    if (skip) {
+      return true;
+    }
+  }
 
   GetResolveCopyRectanglesToDump(dump_base, dump_row_length_used, dump_rows, dump_pitch,
                                  dump_rectangles_);

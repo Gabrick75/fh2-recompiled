@@ -79,6 +79,39 @@ class VulkanTextureCache final : public TextureCache {
   void BeginFrame() override;
   void EndFrame();
 
+  // rex: resolve shortcut (gpu_atalho_resolve). A resolve whose copy is read back only by one texture of the
+  // same format and size skips the copy to guest memory: the render target region is kept in a small image
+  // (at the render scale) and blitted into the texture when it loads, instead of the dump, the copy and the
+  // texture load at 1x. Each destination address is first resolved normally while its readers are watched;
+  // any other reader marks it bad for good (the guest CPU never reads resolves back with readback_resolve off).
+  enum class AtalhoEstado : int8_t { kDesconhecido, kBom, kRuim };
+  struct Atalho {
+    uint32_t dest_base = 0;
+    uint32_t extent_start = 0;
+    uint32_t extent_length = 0;
+    uint32_t pitch_div_32 = 0;
+    uint32_t width = 0;   // guest pixels resolved
+    uint32_t height = 0;
+    xenos::TextureFormat format = xenos::TextureFormat(0);
+    VkFormat vk_format = VK_FORMAT_UNDEFINED;
+    // The render target keeps 2:10:10:10 as 8:8:8:8 values: the blit converts them into the texture's
+    // A2B10G10R10 (both normalized, so the values carry over).
+    bool to_a2b10g10r10 = false;
+    int32_t image = -1;  // atalho image pool index, -1 = only watching the readers
+    uint32_t host_width = 0;  // of the region stored in the image
+    uint32_t host_height = 0;
+    uint64_t frame = 0;
+  };
+  AtalhoEstado GetAtalhoEstado(uint32_t dest_base) const;
+  // A pool image of this format and size, with a barrier into the transfer destination layout pushed (not
+  // submitted); -1 if there is none (format without blit support, creation failure).
+  int32_t AcquireAtalhoImage(VkFormat format, uint32_t width, uint32_t height, VkImage& image_out);
+  // After writing the image: the barrier into the transfer source layout.
+  void AtalhoImageWritten(int32_t index);
+  void AddAtalho(const Atalho& atalho);
+  // A resolve copied to guest memory the usual way: shortcuts over that memory are stale.
+  void AtalhoNormalWrite(uint32_t start, uint32_t length);
+
   // Must be called within a frame - creates and untiles textures needed by
   // shaders, and enqueues transitioning them into the sampled usage. This may
   // bind compute pipelines (notifying the command processor about that), and
@@ -328,6 +361,24 @@ class VulkanTextureCache final : public TextureCache {
   xenos::ClampMode NormalizeClampMode(xenos::ClampMode clamp_mode) const;
 
   VulkanCommandProcessor& command_processor_;
+
+  struct AtalhoImage {
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    bool in_use = false;
+  };
+  // Fills the texture from a shortcut if one covers it exactly (returns true), and updates the shortcut
+  // states with what the load shows about the readers of the resolves.
+  bool LoadTextureFromAtalho(VulkanTexture& texture, bool load_base, bool load_mips, VkFormat image_format);
+  void ReleaseAtalho(size_t index);
+  std::vector<AtalhoImage> atalho_images_;
+  std::vector<Atalho> atalhos_;
+  std::unordered_map<uint32_t, AtalhoEstado> atalho_estados_;
+  std::unordered_map<VkFormat, bool> atalho_format_blit_;
   VkPipelineStageFlags guest_shader_pipeline_stages_;
 
   // Using the Vulkan Memory Allocator because texture count in games is

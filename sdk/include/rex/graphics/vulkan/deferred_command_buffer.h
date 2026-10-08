@@ -203,6 +203,19 @@ class DeferredCommandBuffer {
     args.region_count = region_count;
     return reinterpret_cast<VkBufferImageCopy*>(args_ptr + header_size);
   }
+  // One region (rex: the resolve shortcut copies render targets into textures with it).
+  void CmdVkBlitImage(VkImage src_image, VkImageLayout src_image_layout, VkImage dst_image,
+                      VkImageLayout dst_image_layout, const VkImageBlit& region, VkFilter filter) {
+    auto& args = *reinterpret_cast<ArgsVkBlitImage*>(
+        WriteCommand(Command::kVkBlitImage, sizeof(ArgsVkBlitImage)));
+    args.src_image = src_image;
+    args.src_image_layout = src_image_layout;
+    args.dst_image = dst_image;
+    args.dst_image_layout = dst_image_layout;
+    args.region = region;
+    args.filter = filter;
+  }
+
   void CmdVkCopyBufferToImage(VkBuffer src_buffer, VkImage dst_image,
                               VkImageLayout dst_image_layout, uint32_t region_count,
                               const VkBufferImageCopy* regions) {
@@ -359,6 +372,7 @@ class DeferredCommandBuffer {
     kVkBindIndexBuffer,
     kVkBindPipeline,
     kVkBindVertexBuffers,
+    kVkBlitImage,
     kVkClearAttachments,
     kVkClearColorImage,
     kVkCopyBuffer,
@@ -473,6 +487,15 @@ class DeferredCommandBuffer {
     uint32_t region_count;
     // Followed by aligned VkBufferCopy[].
     static_assert(alignof(VkBufferCopy) <= alignof(uintmax_t));
+  };
+
+  struct ArgsVkBlitImage {
+    VkImage src_image;
+    VkImageLayout src_image_layout;
+    VkImage dst_image;
+    VkImageLayout dst_image_layout;
+    VkImageBlit region;
+    VkFilter filter;
   };
 
   struct ArgsVkCopyBufferToImage {

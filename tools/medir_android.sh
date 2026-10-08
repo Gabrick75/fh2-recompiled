@@ -28,6 +28,8 @@ fi
 # Screen on while plugged in (a dozing screen pauses the game and ruins the measurement), and awake now.
 "$ADB" shell svc power stayon usb
 "$ADB" shell input keyevent KEYCODE_WAKEUP
+# Past the lock screen (no PIN on the test phones): behind it the game starts paused, with no surface.
+"$ADB" shell wm dismiss-keyguard 2>/dev/null || true
 termico() { "$ADB" shell dumpsys thermalservice 2>/dev/null | grep -m1 "Thermal Status" | tr -d '\r'; }
 echo "antes: $(termico)"
 
@@ -46,7 +48,7 @@ EXTRA_RES=${RESOLUCAO:+--es fh2.resolucao $RESOLUCAO}
 "$ADB" shell "am start -n $PKG/.MainActivity --ez fh2.banco true $EXTRA_RES --esa fh2.args '$JUNTOS'" > /dev/null
 # Waits by reading the log for SEGUNDOS seconds (timeout ends it), keeping the lines that matter.
 timeout "$SEGUNDOS" "$ADB" logcat -v time 2>/dev/null |
-  grep --line-buffered -E "fps: |tempos por quadro|faixas \(|MSAA|Unhandled guest|Fatal signal|\[FATAL\]|\[fh2\]|\[teste\] script pad|\[entrada\]" > "$SAIDA" || true
+  grep --line-buffered -E "fps: |tempos por quadro|faixas \(|MSAA|Unhandled guest|Fatal signal|\[FATAL\]|\[fh2\]|\[teste\] script pad|\[entrada\]|\[quadro\]" > "$SAIDA" || true
 # The last screen, to check what was measured (a video runs at 30 fps and looks like a good result).
 "$ADB" exec-out screencap -p > "${SAIDA%.log}.png"
 "$ADB" shell am force-stop "$PKG"

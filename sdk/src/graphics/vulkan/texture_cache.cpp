@@ -469,6 +469,12 @@ VulkanTextureCache::~VulkanTextureCache() {
 
   ShutdownScaledResolveBuffer();
 
+  for (const AtalhoImage& atalho_image : atalho_images_) {
+    dfn.vkDestroyImage(device, atalho_image.image, nullptr);
+    dfn.vkFreeMemory(device, atalho_image.memory, nullptr);
+  }
+  atalho_images_.clear();
+
   if (null_image_view_3d_ != VK_NULL_HANDLE) {
     dfn.vkDestroyImageView(device, null_image_view_3d_, nullptr);
   }
@@ -1263,6 +1269,10 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
     }
   }
   g_cp_times.texture_loads.fetch_add(1, std::memory_order_relaxed);
+  if (g_cp_times.frames_to_log.load(std::memory_order_relaxed) > 0) {
+    REXGPU_INFO("[quadro] carga {:08X} {}x{}x{} formato {}", texture_key.base_page << 12, texture_key.GetWidth(),
+                texture_key.GetHeight(), texture_key.GetDepthOrArraySize(), uint32_t(texture_key.format));
+  }
   if (REXCVAR_GET(gpu_log_cargas_texturas) > 0) {
     static uint32_t seen = 0;
     static int32_t logged = 0;
@@ -1288,6 +1298,9 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
   }
   const HostFormat& host_format =
       host_format_is_signed ? host_format_pair.format_signed : host_format_pair.format_unsigned;
+  if (LoadTextureFromAtalho(vulkan_texture, load_base, load_mips, host_format.format)) {
+    return true;
+  }
   LoadShaderIndex load_shader = host_format.load_shader;
   if (load_shader == kLoadShaderIndexUnknown) {
     return false;
@@ -3325,4 +3338,228 @@ xenos::ClampMode VulkanTextureCache::NormalizeClampMode(xenos::ClampMode clamp_m
   return clamp_mode;
 }
 
+VulkanTextureCache::AtalhoEstado VulkanTextureCache::GetAtalhoEstado(uint32_t dest_base) const {
+  auto it = atalho_estados_.find(dest_base);
+  return it != atalho_estados_.end() ? it->second : AtalhoEstado::kDesconhecido;
+}
+
+int32_t VulkanTextureCache::AcquireAtalhoImage(VkFormat format, uint32_t width, uint32_t height,
+                                               VkImage& image_out) {
+  const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
+  auto blit_it = atalho_format_blit_.find(format);
+  if (blit_it == atalho_format_blit_.end()) {
+    VkFormatProperties properties;
+    vulkan_device->vulkan_instance()->functions().vkGetPhysicalDeviceFormatProperties(
+        vulkan_device->physical_device(), format, &properties);
+    constexpr VkFormatFeatureFlags kBlit = VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+    blit_it = atalho_format_blit_
+                  .emplace(format, (properties.optimalTilingFeatures & kBlit) == kBlit)
+                  .first;
+  }
+  if (!blit_it->second) {
+    return -1;
+  }
+  int32_t index = -1;
+  for (size_t i = 0; i < atalho_images_.size(); ++i) {
+    const AtalhoImage& candidate = atalho_images_[i];
+    if (!candidate.in_use && candidate.format == format && candidate.width == width &&
+        candidate.height == height) {
+      index = int32_t(i);
+      break;
+    }
+  }
+  if (index < 0) {
+    // A bound on the pool; past it the resolve goes the usual way.
+    if (atalho_images_.size() >= 128) {
+      return -1;
+    }
+    VkImageCreateInfo create_info = {};
+    create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    create_info.imageType = VK_IMAGE_TYPE_2D;
+    create_info.format = format;
+    create_info.extent = {width, height, 1};
+    create_info.mipLevels = 1;
+    create_info.arrayLayers = 1;
+    create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    create_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    AtalhoImage created;
+    if (!ui::vulkan::util::CreateDedicatedAllocationImage(vulkan_device, create_info,
+                                                          ui::vulkan::util::MemoryPurpose::kDeviceLocal,
+                                                          created.image, created.memory)) {
+      return -1;
+    }
+    created.format = format;
+    created.width = width;
+    created.height = height;
+    index = int32_t(atalho_images_.size());
+    atalho_images_.push_back(created);
+  }
+  AtalhoImage& atalho_image = atalho_images_[index];
+  atalho_image.in_use = true;
+  // The previous contents were last read by a blit into a texture (or never written).
+  command_processor_.PushImageMemoryBarrier(
+      atalho_image.image, ui::vulkan::util::InitializeSubresourceRange(), VK_PIPELINE_STAGE_TRANSFER_BIT,
+      VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+      VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+  atalho_image.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  image_out = atalho_image.image;
+  return index;
+}
+
+void VulkanTextureCache::AtalhoImageWritten(int32_t index) {
+  AtalhoImage& atalho_image = atalho_images_[index];
+  command_processor_.PushImageMemoryBarrier(
+      atalho_image.image, ui::vulkan::util::InitializeSubresourceRange(), VK_PIPELINE_STAGE_TRANSFER_BIT,
+      VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+  atalho_image.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+}
+
+void VulkanTextureCache::ReleaseAtalho(size_t index) {
+  if (atalhos_[index].image >= 0) {
+    atalho_images_[atalhos_[index].image].in_use = false;
+  }
+  atalhos_[index] = atalhos_.back();
+  atalhos_.pop_back();
+}
+
+void VulkanTextureCache::AddAtalho(const Atalho& atalho) {
+  const uint64_t frame = command_processor_.GetCurrentFrame();
+  const uint32_t end = atalho.extent_start + atalho.extent_length;
+  for (size_t i = atalhos_.size(); i-- > 0;) {
+    const Atalho& old = atalhos_[i];
+    // Overwritten before anything read it (a resolve nobody used), or not read for a few frames.
+    if ((old.extent_start < end && atalho.extent_start < old.extent_start + old.extent_length) ||
+        old.frame + 4 < frame) {
+      ReleaseAtalho(i);
+    }
+  }
+  atalhos_.push_back(atalho);
+  atalhos_.back().frame = frame;
+}
+
+void VulkanTextureCache::AtalhoNormalWrite(uint32_t start, uint32_t length) {
+  for (size_t i = atalhos_.size(); i-- > 0;) {
+    const Atalho& old = atalhos_[i];
+    if (old.extent_start < start + length && start < old.extent_start + old.extent_length) {
+      if (old.image >= 0) {
+        // Its memory was never written, and now part of it is: a reader of the whole range would mix both.
+        atalho_estados_[old.dest_base] = AtalhoEstado::kRuim;
+      }
+      ReleaseAtalho(i);
+    }
+  }
+}
+
+bool VulkanTextureCache::LoadTextureFromAtalho(VulkanTexture& texture, bool load_base, bool load_mips,
+                                               VkFormat image_format) {
+  if (atalhos_.empty()) {
+    return false;
+  }
+  const TextureKey& key = texture.key();
+  const uint32_t start = key.base_page << 12;
+  const uint32_t end = start + std::max(texture.GetGuestBaseSize(), UINT32_C(1));
+  size_t found = SIZE_MAX;
+  uint32_t overlapping = 0;
+  for (size_t i = 0; i < atalhos_.size(); ++i) {
+    const Atalho& a = atalhos_[i];
+    if (a.extent_start < end && start < a.extent_start + a.extent_length) {
+      ++overlapping;
+      found = i;
+    }
+  }
+  if (!overlapping) {
+    return false;
+  }
+  if (overlapping == 1) {
+    const Atalho& a = atalhos_[found];
+    bool match = load_base && !load_mips && key.base_page != 0 && key.mip_max_level == 0 &&
+                       key.dimension == xenos::DataDimension::k2DOrStacked &&
+                       key.GetDepthOrArraySize() == 1 && key.tiled && !key.scaled_resolve &&
+                       !key.signed_separate && a.dest_base == start && a.format == key.format &&
+                       a.pitch_div_32 == key.pitch && key.GetWidth() <= a.width &&
+                       key.GetHeight() <= a.height &&
+                       (a.vk_format == image_format ||
+                        (a.to_a2b10g10r10 && image_format == VK_FORMAT_A2B10G10R10_UNORM_PACK32));
+    if (match && a.vk_format != image_format) {
+      // The texture's format must take blits too.
+      auto blit_it = atalho_format_blit_.find(image_format);
+      if (blit_it == atalho_format_blit_.end()) {
+        const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
+        VkFormatProperties properties;
+        vulkan_device->vulkan_instance()->functions().vkGetPhysicalDeviceFormatProperties(
+            vulkan_device->physical_device(), image_format, &properties);
+        blit_it = atalho_format_blit_
+                      .emplace(image_format,
+                               (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT) != 0)
+                      .first;
+      }
+      match = blit_it->second;
+    }
+    if (match) {
+      atalho_estados_[a.dest_base] = AtalhoEstado::kBom;
+      if (a.image < 0) {
+        ReleaseAtalho(found);
+        return false;
+      }
+      AtalhoImage& source = atalho_images_[a.image];
+      texture.MarkAsUsed();
+      VulkanTexture::Usage old_usage = texture.SetUsage(VulkanTexture::Usage::kTransferDestination);
+      if (old_usage != VulkanTexture::Usage::kTransferDestination) {
+        VkPipelineStageFlags src_stage, dst_stage;
+        VkAccessFlags src_access, dst_access;
+        VkImageLayout old_layout, new_layout;
+        GetTextureUsageMasks(old_usage, src_stage, src_access, old_layout);
+        GetTextureUsageMasks(VulkanTexture::Usage::kTransferDestination, dst_stage, dst_access,
+                             new_layout);
+        command_processor_.PushImageMemoryBarrier(texture.image(),
+                                                  ui::vulkan::util::InitializeSubresourceRange(),
+                                                  src_stage, dst_stage, src_access, dst_access,
+                                                  old_layout, new_layout);
+      }
+      command_processor_.SubmitBarriers(true);
+      VkImageBlit region = {};
+      region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      region.srcOffsets[1] = {
+          int32_t(std::max(UINT32_C(1), (a.host_width * key.GetWidth() + a.width / 2) / a.width)),
+          int32_t(std::max(UINT32_C(1), (a.host_height * key.GetHeight() + a.height / 2) / a.height)), 1};
+      region.dstOffsets[1] = {int32_t(key.GetWidth()), int32_t(key.GetHeight()), 1};
+      command_processor_.deferred_command_buffer().CmdVkBlitImage(
+          source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, texture.image(),
+          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region, VK_FILTER_NEAREST);
+      g_cp_times.atalho_hits.fetch_add(1, std::memory_order_relaxed);
+      ReleaseAtalho(found);
+      return true;
+    }
+  }
+  // Read in another way (another size or format, several resolves at once, mips...): those addresses keep
+  // the usual path. A shortcut already taken leaves this texture stale once.
+  for (size_t i = atalhos_.size(); i-- > 0;) {
+    const Atalho& a = atalhos_[i];
+    if (a.extent_start < end && start < a.extent_start + a.extent_length) {
+      static int logged = 0;
+      if (logged < 40) {
+        ++logged;
+        REXGPU_INFO("[atalho] {:08X} ruim: lido por textura {:08X} {}x{} fmt {} pitch {} mips {} tiled {} dim {} "
+                    "(resolve {}x{} fmt {} pitch {} vk {} / {}; {} resolves sobrepostos)",
+                    a.dest_base, start, key.GetWidth(), key.GetHeight(), uint32_t(key.format), key.pitch,
+                    key.mip_max_level, key.tiled, uint32_t(key.dimension), a.width, a.height,
+                    uint32_t(a.format), a.pitch_div_32, uint32_t(a.vk_format), uint32_t(image_format),
+                    overlapping);
+      }
+      atalho_estados_[a.dest_base] = AtalhoEstado::kRuim;
+      if (a.image >= 0) {
+        g_cp_times.atalho_misses.fetch_add(1, std::memory_order_relaxed);
+      }
+      ReleaseAtalho(i);
+    }
+  }
+  return false;
+}
+
 }  // namespace rex::graphics::vulkan
+

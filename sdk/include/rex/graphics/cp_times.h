@@ -33,6 +33,13 @@ struct CpTimes {
   std::atomic<uint64_t> resolve_pixels{0};
   std::atomic<uint32_t> texture_loads{0};
   std::atomic<uint64_t> texture_load_pixels{0};
+  // Debug (gpu_log_quadros): frames left to log every resolve, texture load and swap in order, with "[quadro]".
+  std::atomic<int32_t> frames_to_log{0};
+  // Resolve shortcut (gpu_atalho_resolve): resolves taken by it, textures filled from it, and shortcuts lost
+  // to an unexpected reader.
+  std::atomic<uint32_t> atalho_resolves{0};
+  std::atomic<uint32_t> atalho_hits{0};
+  std::atomic<uint32_t> atalho_misses{0};
 };
 
 extern CpTimes g_cp_times;
