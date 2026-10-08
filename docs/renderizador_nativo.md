@@ -62,6 +62,24 @@ renderizador nativo do FH2 precisa também de um dos dois:
    correções que o XDK aplica neles), guardando uma versão nativa de cada um; ou
 2. interpretar os pacotes PM4 desses buffers (um processador de comandos próprio, sem a emulação da EDRAM).
 
+## Quem executa os buffers pré-gravados
+
+Os pacotes `INDIRECT_BUFFER` (cabeçalho `0xC0013F00`/`0xC0003F00`) são montados por `sub_824191B0` e por
+**`sub_82426800`, chamada 487 vezes por quadro** com o device em `r3` e um objeto de buffer de comandos em `r4`: é
+o `RunCommandBuffer` da biblioteca. Antes de chamar o buffer, ela grava o estado pendente do device, cruzando as
+máscaras "sujas" do device (`+0`, `+8`, `+16`, `+24`, `+32`) com as máscaras do objeto (`+24` a `+56`):
+
+| Grupo | Registrador Xenos | No device |
+|---|---|---|
+| Constantes float de vértice | `0x4000` | `+1920` |
+| Constantes float de pixel | `0x4400` | `+6016` |
+| Constantes bool/loop | `0x4900` | `+10112` |
+| Estado de render | `0x2000`, `0x2080`, `0x2100`, `0x2180`, `0x2280`, `0x2380` | `+10368` em diante |
+
+São as mesmas posições que o fork documentou no NFSMW (`docs/NATIVE_RENDERER.md` dele): é a mesma biblioteca do
+XDK, e o mapeamento dele vale para o FH2. O objeto com tipo `10` no primeiro campo (`lwz r11,0(r4)`, 4 bits) segue
+outro caminho (`sub_82B6EF10`).
+
 ## Próximos passos
 
 - Achar as funções de gravação e execução dos buffers pré-gravados (quem monta os `INDIRECT_BUFFER`) e medir
