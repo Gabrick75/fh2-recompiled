@@ -255,7 +255,9 @@ public final class GameActivity extends SDLActivity
             return;
         }
         mLayout.setBackgroundColor(Color.BLACK);
-        int[] buffer = GameOptions.bufferSize(GameOptions.get(this, GameOptions.RESOLUTION));
+        String resolution = getIntent() != null ? getIntent().getStringExtra("fh2.resolucao") : null;
+        int[] buffer = GameOptions.bufferSize(resolution != null ? resolution
+                                                                 : GameOptions.get(this, GameOptions.RESOLUTION));
         if (buffer[0] > 0) {
             mSurface.getHolder().setFixedSize(buffer[0], buffer[1]);
         } else {

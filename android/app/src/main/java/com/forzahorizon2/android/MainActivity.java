@@ -113,6 +113,8 @@ public final class MainActivity extends AppCompatActivity {
         Intent game = new Intent(this, GameActivity.class);
         String[] extra = intent.getStringArrayExtra("fh2.args");
         if (extra != null) game.putExtra("fh2.args", extra);
+        String resolution = intent.getStringExtra("fh2.resolucao");  // 480p, 720p or native, for this run only
+        if (resolution != null) game.putExtra("fh2.resolucao", resolution);
         startActivity(game);
     }
 

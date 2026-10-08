@@ -39,7 +39,9 @@ ARGS=("--fh2_teste_botoes=$ROTEIRO" "$@")
 # am splits --esa on commas (the button script separates its steps with ';' for that reason); the single
 # quotes keep the phone's shell away from the ';'.
 JUNTOS=$(IFS=,; echo "${ARGS[*]}")
-"$ADB" shell "am start -n $PKG/.MainActivity --ez fh2.banco true --esa fh2.args '$JUNTOS'" > /dev/null
+# RESOLUCAO=480p|720p|native overrides the display resolution for this run.
+EXTRA_RES=${RESOLUCAO:+--es fh2.resolucao $RESOLUCAO}
+"$ADB" shell "am start -n $PKG/.MainActivity --ez fh2.banco true $EXTRA_RES --esa fh2.args '$JUNTOS'" > /dev/null
 # Waits by reading the log for SEGUNDOS seconds (timeout ends it), keeping the lines that matter.
 timeout "$SEGUNDOS" "$ADB" logcat -v time 2>/dev/null |
   grep --line-buffered -E "fps: |tempos por quadro|faixas \(|MSAA|Unhandled guest|Fatal signal|\[FATAL\]|\[fh2\]|\[teste\] script pad with" > "$SAIDA" || true
