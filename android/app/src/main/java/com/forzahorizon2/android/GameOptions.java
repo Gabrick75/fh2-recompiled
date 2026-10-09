@@ -11,8 +11,9 @@ import java.util.List;
  * GameActivity passes on the command line, which wins over fh2.toml; the display ones are applied by GameActivity
  * itself. Some are only stored for now: their option row says so (see MainActivity.notYet).
  *
- * Forza Horizon 2 runs on the emulated Xenos GPU (there is no native renderer yet), so the fixed arguments are the
- * ones nfsmw-android found the emulation needs on Android drivers.
+ * Forza Horizon 2 runs on the emulated Xenos GPU by default, so the fixed arguments are the ones nfsmw-android found
+ * the emulation needs on Android drivers. The native renderer (RENDERER) replaces it; it needs the translated shader
+ * library, fh2_shaders.nfsp, next to the game files.
  */
 final class GameOptions {
     private static final String PREFS = "fh2_game";
@@ -23,6 +24,7 @@ final class GameOptions {
     static final String SHOW_USAGE = "show_usage";            // GPU, CPU and RAM use under the FPS (UsageMonitor)
     static final String PRESENT_MODE = "present_mode";        // "fifo" (vsync) or "mailbox"
     // Graphics
+    static final String RENDERER = "renderer";                // "emulated" (Xenos) or "native" (nfsmw_renderizador)
     static final String RENDER_SCALE = "render_scale";        // gpu_escala_render: percent of 1280x720
     static final String FPS = "fps";                          // only picks the display refresh rate for now
     static final String ANTI_ALIASING = "anti_aliasing";      // "off", "msaa", "fxaa"
@@ -57,6 +59,7 @@ final class GameOptions {
     static String defaultOf(String key) {
         switch (key) {
             case RESOLUTION: return RES_NATIVE;
+            case RENDERER: return "emulated";
             case PRESENT_MODE: return "fifo";
             case RENDER_SCALE: return "100";
             case FPS: return "60";
@@ -138,6 +141,11 @@ final class GameOptions {
     static List<String> arguments(Context context) {
         List<String> args = new ArrayList<>();
         args.add("--audio_ganancia_pct=" + get(context, VOLUME));
+        if ("native".equals(get(context, RENDERER))) {
+            // NFSMW Android Evolved's renderer built for FH2 (app/src/nativo): the ring is drawn with translated
+            // shaders, no EDRAM emulation. The emulated GPU's arguments below are then ignored.
+            args.add("--nfsmw_renderizador=nativo");
+        }
         switch (get(context, ANTI_ALIASING)) {
             case "off":
                 args.add("--gpu_sin_msaa=true");

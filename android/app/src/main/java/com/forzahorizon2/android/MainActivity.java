@@ -241,6 +241,11 @@ public final class MainActivity extends AppCompatActivity {
 
         // --- Graphics
         right.addView(card(section("Gráficos"),
+                selector(GameOptions.RENDERER, "Renderizador",
+                        "Emulado: a GPU do Xbox 360 emulada, o modo testado. Nativo (experimental): desenha os comandos " +
+                                "do jogo direto em Vulkan, com os shaders traduzidos; bem mais rápido, mas precisa do " +
+                                "arquivo fh2_shaders.nfsp junto dos arquivos do jogo e ainda tem erros de imagem.",
+                        new String[] {"Emulado", "Nativo (experimental)"}, new String[] {"emulated", "native"}, false),
                 renderScale(),
                 notYet(dropdown(GameOptions.FPS, "Limite de FPS",
                         "O teto do jogo. 90, 120 e Sem limite são experimentais e pedem uma tela com essa taxa. Por enquanto só escolhe a taxa de atualização da tela.",
