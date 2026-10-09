@@ -235,6 +235,28 @@ Próximo: achar onde a cena se perde, entre o alvo HDR (`2_10_10_10_FLOAT` e a v
 precisou unir), o viés de expoente e a composição final. O mosaico de diagnóstico (`nfsmw_nativo_diag_resueltas`) só
 mostra texturas 8888.
 
+### Etapa 2, estado (2026-10-09, madrugada)
+
+No PC, com `--nfsmw_renderizador=nativo`:
+- o menu de eventos sai como na emulação, com o fundo 3D desfocado;
+- **a corrida renderiza**: carro, cenário e interface completa.
+
+Correções do caminho até aqui, além das anteriores:
+- **Texturas:** pixel shaders no layout do NFSMW.
+- **Tiling:** faixa única no modo nativo, com as regras do `gpu_ignorar_predicacao`; cópias de faixa vão para a textura
+  da base, e as limpezas de faixa são adiadas até a última.
+- **Shaders internos do D3D:** contêineres sintéticos e biblioteca sem tabela de constantes.
+- **Vertex shaders:** os copiados para o anel são identificados por endereço ou conteúdo; os de esqueleto e de
+  instancing leem os buffers diretamente (storage buffer no set 4, parâmetros modificados pelo D3D por elemento).
+- **Listas de retângulos:** 4º canto em formatos de 16 e 8 bits.
+- **Amostragem:** coordenadas de textura não normalizadas; samplers tirados do microcódigo.
+
+Falta, na corrida:
+- imagem estourada: viés de expoente das cópias (−2 na cena, −4 nos desfoques) ainda não aplicado;
+- rastro forte de desfoque e granulado em muros e árvores;
+- faixa verde na borda;
+- desempenho no PC, hoje com 60–100 ms por quadro.
+
 ### Etapas
 
 1. Biblioteca de shaders do FH2: XenosRecomp + DXC no PC sobre os `.fxobj` (e o XEX); medir quantos traduzem e quantos
