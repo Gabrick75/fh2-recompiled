@@ -289,7 +289,18 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
         break;
     }
 
+#ifdef FH2_RECOMP
+    // FH2: every float input at locations 0-15 goes through fh2Entrada (shader_common.h): it may come in k_10_11_11.
+    {
+        if (remapLocation >= 0 && remapLocation < 16)
+            print("fh2Entrada(i{}{}, {})", USAGE_VARIABLES[uint32_t(findResult->second.usage)],
+                uint32_t(findResult->second.usageIndex), remapLocation);
+        else
+            print("i{}{}", USAGE_VARIABLES[uint32_t(findResult->second.usage)], uint32_t(findResult->second.usageIndex));
+    }
+#else
     print("i{}{}", USAGE_VARIABLES[uint32_t(findResult->second.usage)], uint32_t(findResult->second.usageIndex));
+#endif
 
     switch (findResult->second.usage)
     {

@@ -1883,6 +1883,11 @@ struct EntradaVertices {
 #endif
   uint32_t especializacion = 0;
   uint64_t huella = 0;
+#if defined(FH2_RECOMP)
+  // Locations whose input comes in k_10_11_11 (bit L) and signed (bit 16 + L): specialization constant 1, carried
+  // in the pipeline key's "relleno" word.
+  uint32_t fh2_entradas_1011 = 0;
+#endif
 };
 
 // Copy of the SPIR-V without the writes to the color targets (output variables with Location 0..3).
@@ -3458,6 +3463,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                                       control_z_coches);
     }
     clave.especializacion = especializacion;
+#if defined(FH2_RECOMP)
+    clave.relleno = entrada->fh2_entradas_1011;
+#endif
     std::copy(std::begin(pase_formatos_), std::end(pase_formatos_), std::begin(clave.formatos));
     static constexpr uint32_t kMezcla[4] = {
         gr::XE_GPU_REG_RB_BLENDCONTROL0, gr::XE_GPU_REG_RB_BLENDCONTROL1,
@@ -8630,10 +8638,41 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                     vs.numero, NombreUso(elemento.uso), elemento.indice_uso, formato, original,
                     d1 & 0xFFF, codigo);
       }
+#if defined(FH2_RECOMP)
+      {
+        // FH2 diagnostics: which vertex formats each usage comes in.
+        static std::set<uint32_t> vistos;
+        const uint32_t par = (uint32_t(elemento.uso) << 16) | (uint32_t(elemento.indice_uso) << 8) | formato;
+        if (vistos.size() < 64 && vistos.insert(par).second) {
+          REXLOG_INFO("[fh2 nativo] elemento {}{} en formato {} (con signo {}, entero {})", NombreUso(elemento.uso),
+                      elemento.indice_uso, formato, (d1 >> 12) & 0x1, (d1 >> 13) & 0x1);
+        }
+      }
+#endif
       bool r11g11b10 = false;
-      const VkFormat vk = FormatoAtributo(formato, EntradaEntera(elemento.uso), (d1 >> 12) & 0x1,
-                                          (d1 >> 13) & 0x1, false, r11g11b10);
+      VkFormat vk = FormatoAtributo(formato, EntradaEntera(elemento.uso), (d1 >> 12) & 0x1,
+                                    (d1 >> 13) & 0x1, false, r11g11b10);
+#if defined(FH2_RECOMP)
+      // k_10_11_11 at a float input: bound as R32_SFLOAT (only the 32 bits) and decoded by the shader
+      // (fh2Entrada in tools/xenos/recomp's shader_common.h), as told by specialization constant 1.
+      if (vk == VK_FORMAT_UNDEFINED && formato == 16 && !EntradaEntera(elemento.uso) && ubicacion >= 0 &&
+          ubicacion < 16) {
+        vk = VK_FORMAT_R32_SFLOAT;
+        entrada_.fh2_entradas_1011 |= uint32_t(1) << ubicacion;
+        if ((d1 >> 12) & 0x1) {
+          entrada_.fh2_entradas_1011 |= uint32_t(1) << (16 + ubicacion);
+        }
+      }
+#endif
       if (vk == VK_FORMAT_UNDEFINED) {
+#if defined(FH2_RECOMP)
+        static std::set<uint32_t> fh2_vistos;
+        if (fh2_vistos.size() < 32 &&
+            fh2_vistos.insert((uint32_t(elemento.uso) << 16) | (uint32_t(ubicacion & 0xFF) << 8) | formato).second) {
+          REXLOG_INFO("[fh2 nativo] formato de vertice {} rechazado: {}{} en la ubicacion {} (entrada entera {})",
+                      formato, NombreUso(elemento.uso), elemento.indice_uso, ubicacion, EntradaEntera(elemento.uso));
+        }
+#endif
         Rechazar(300 + formato, "formato de vertice todavia no soportado");
         return nullptr;
       }
@@ -11900,8 +11939,15 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   VkResult CrearPipelineVulkan(const ClavePipeline& clave, const EntradaVertices& entrada, VkShaderModule vs,
                                VkShaderModule ps, VkRenderPass pase, bool avisar, VkPipeline& pipeline,
                                uint32_t& n_colores_salida) {
+#if defined(FH2_RECOMP)
+    // Constant 1: FH2's k_10_11_11 vertex inputs (EntradaVertices::fh2_entradas_1011, in the key's "relleno").
+    const uint32_t valores[2] = {clave.especializacion, clave.relleno};
+    const VkSpecializationMapEntry mapas[2] = {{0, 0, sizeof(uint32_t)}, {1, sizeof(uint32_t), sizeof(uint32_t)}};
+    const VkSpecializationInfo especializacion{2, mapas, sizeof(valores), valores};
+#else
     const VkSpecializationMapEntry mapa{0, 0, sizeof(uint32_t)};
     const VkSpecializationInfo especializacion{1, &mapa, sizeof(uint32_t), &clave.especializacion};
+#endif
     VkPipelineShaderStageCreateInfo etapas[2]{};
     for (auto& etapa : etapas) {
       etapa.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

@@ -133,8 +133,33 @@ struct NfsmwBloqueCompartidas { float4 v[FH2_COMPARTIDA_BYTES / 16]; };  // FH2:
 #define g_InputRemap(LOC)          (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT(296 + (LOC) * 4) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 296 + (LOC) * 4))
 
 [[vk::constant_id(0)]] const uint g_SpecConstants = 0;
+// FH2: vertex inputs in k_10_11_11, which Vulkan has no format for (FH2 uses it for positions and texture
+// coordinates). The renderer binds them as R32_SFLOAT, which only carries the 32 bits, and sets bit L (decode) and
+// 16 + L (signed) for vertex input location L (0-15) in this constant (the pipeline key's word "relleno").
+[[vk::constant_id(1)]] const uint g_Fh2Entradas1011 = 0;
 
 #define g_SpecConstants() g_SpecConstants
+
+// FH2: a vertex input that may come in k_10_11_11 (see g_Fh2Entradas1011): its 32 bits back
+// and decoded as the SDK's translator does (x 11 bits, y 11, z 10 from the low bits; normalized, signed clamped to
+// -1; the missing w is 0).
+float4 fh2Entrada(float4 valor, uint ubicacion)
+{
+    if (((g_Fh2Entradas1011 >> ubicacion) & 1) == 0)
+        return valor;
+    const uint w = asuint(valor.x);
+    float3 r;
+    if (((g_Fh2Entradas1011 >> (16 + ubicacion)) & 1) != 0)
+    {
+        const int3 x = int3(int(w << 21) >> 21, int(w << 10) >> 21, int(w) >> 22);
+        r = max(float3(x) / float3(1023.0, 1023.0, 511.0), -1.0);
+    }
+    else
+    {
+        r = float3(uint3(w & 0x7FFu, (w >> 11) & 0x7FFu, w >> 22)) / float3(2047.0, 2047.0, 1023.0);
+    }
+    return float4(r, 0.0);
+}
 
 // FH2: the buffers of the vertex fetch constants that the vertex shaders read without a declaration, copied by the
 // renderer as they are in guest memory (the GPU's byte order is applied here, from the fetch constant).

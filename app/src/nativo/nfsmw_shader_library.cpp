@@ -23,7 +23,12 @@
 namespace nfsmw::native {
 namespace {
 constexpr std::array<uint8_t, 8> kFirma{'N','F','S','S','P','V',0,0};
+#if defined(FH2_RECOMP)
+// FH2's library has about 3,700 shaders and ~65 MB of SPIR-V (NFSMW's ~200 and 1.5 MB).
+constexpr size_t kMaxArchivo = 256 * 1024 * 1024;
+#else
 constexpr size_t kMaxArchivo = 64 * 1024 * 1024;
+#endif
 constexpr size_t kMaxShaders = 4096;
 constexpr size_t kMaxOriginal = 64 * 1024;
 constexpr size_t kMaxSpirv = 4 * 1024 * 1024;

@@ -3,7 +3,7 @@
 # of the shaders the game really loaded (the emulator's shader storage, .xsh) it covers:
 #   1. unpacks the track .fxobj from the zips and extracts every shader container;
 #   2. translates them to HLSL with XenosRecomp as changed by nfsmw-nx and this project (tools/xenos/recomp);
-#   3. compiles to SPIR-V with DXC and validates with spirv-val;
+#   3. compiles to SPIR-V with DXC, strips the debug names (spirv-opt) and validates with spirv-val;
 #   4. packs the library the native renderer loads (fh2_shaders.nfsp, also copied next to the PC build);
 #   5. coverage (cobertura.py).
 # Output in app/out/shaders_fh2 (made from the game's data: never commit or share it).
@@ -16,6 +16,7 @@ R=$REC
 S=$RAIZ/app/out/shaders_fh2; B=$RAIZ/app/out/xenos_bin
 DXC=${DXC:-$(ls -d $HOME/.local/share/fh2-tools/dxc-*/*/bin/dxc | tail -1)}
 VAL=${SPIRV_VAL:-$(ls $HOME/Android/Sdk/ndk/*/shader-tools/linux-x86_64/spirv-val | tail -1)}
+OPT=${SPIRV_OPT:-$(dirname "$VAL")/spirv-opt}
 XSH=${XSH:-$RAIZ/app/out/run/user/cache/shaders/shareable/4D530AA4.xsh}
 COMUN=${COMUN:-$R/XenosRecomp/shader_common.h}
 TP=$RAIZ/sdk/thirdparty; M=$TP/libmspack/libmspack/mspack
@@ -37,6 +38,7 @@ for f in $S/hlsl/*.hlsl; do
   if [[ $b == p_* ]]; then t=ps_6_6; e=(); else t=vs_6_6; e=(-fvk-invert-y); fi
   if "$DXC" -spirv -T $t -E main -HV 2021 -fspv-target-env=vulkan1.2 -fvk-use-dx-layout "${e[@]}" \
        -Fo $S/spirv/$b.spv $f >> $S/dxc.log 2>&1 &&
+     "$OPT" --strip-debug --strip-nonsemantic $S/spirv/$b.spv -o $S/spirv/$b.spv >> $S/dxc.log 2>&1 &&
      "$VAL" --target-env vulkan1.2 --scalar-block-layout $S/spirv/$b.spv >> $S/dxc.log 2>&1; then
     ok=$((ok + 1))
   else
@@ -45,7 +47,7 @@ for f in $S/hlsl/*.hlsl; do
 done
 echo "spirv ok=$ok falhou=$fail"
 grep -h "error:" $S/dxc.log | sed -E 's/.*error: //' | sort | uniq -c | sort -rn | head -6
-g++ -std=c++23 -O1 -I$RAIZ/app/src/nativo -I$TP/xxHash -I$TP/fmt/include -DFMT_HEADER_ONLY \
+g++ -std=c++23 -O1 -DFH2_RECOMP -I$RAIZ/app/src/nativo -I$TP/xxHash -I$TP/fmt/include -DFMT_HEADER_ONLY \
   $RAIZ/tools/xenos/empaquetar.cpp $RAIZ/app/src/nativo/nfsmw_shader_library.cpp -o $B/empaquetar || exit 1
 $B/empaquetar $S/contenedores $S/spirv $S/fh2_shaders.nfsp && cp $S/fh2_shaders.nfsp $RAIZ/app/out/linux/
 python3 $RAIZ/tools/xenos/cobertura.py "$XSH" $S/contenedores $S/spirv
