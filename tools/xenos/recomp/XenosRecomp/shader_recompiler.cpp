@@ -1356,21 +1356,21 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         {
         #ifdef FH2_RECOMP
             // FH2: the slot is the fetch constant the microcode reads: pixel shader samplers 0-15, vertex shader
-            // samplers 16-19 (register + 16; FH2's vertex shaders sample cube maps). Their descriptor indices and
-            // 1/size live in their own area of the shared constants, FH2_COMPARTIDA_* in shader_common.h, so the
-            // vertex and pixel shader samplers of a draw never share a word.
+            // samplers 16-19 (register + 16; FH2's vertex shaders sample cube maps). Pixel shader ones keep NFSMW's
+            // layout, vertex shader ones have their own area (FH2_BYTES_* in shader_common.h), so the two kinds of
+            // a draw never share a word.
             {
                 const uint32_t slot = constantInfo->registerIndex + (isPixelShader ? 0 : 16);
                 for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
                 {
-                    const uint32_t b = FH2_COMPARTIDA_TEXTURAS + uint32_t(j) * 128 + slot * 4;
+                    const uint32_t b = FH2_BYTES_TEXTURA(slot, uint32_t(j));
                     println("#define {}_Texture{}DescriptorIndex (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT({}) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {}))",
                         constantName, TEXTURE_DIMENSIONS[j], b, b);
                 }
-                const uint32_t bs = FH2_COMPARTIDA_SAMPLERS + slot * 4;
+                const uint32_t bs = FH2_BYTES_SAMPLER(slot);
                 println("#define {}_SamplerDescriptorIndex (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT({}) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {}))",
                     constantName, bs, bs);
-                const uint32_t bi = FH2_COMPARTIDA_INV_TAMANO + slot * 8;
+                const uint32_t bi = FH2_BYTES_INV_TAMANO(slot);
                 println("#define {}_InvTamano (NFSMW_UBO ? float2(NFSMW_COMPARTIDA_FLOAT({}), NFSMW_COMPARTIDA_FLOAT({})) : vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + {}))",
                     constantName, bi, bi + 4, bi);
                 fh2Textura1D(out, constantName);
@@ -1405,20 +1405,20 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 #ifdef FH2_RECOMP
     // FH2: fetches whose slot has no sampler in the constant table (the D3D library's own shaders have no table) are
     // named s<slot>; they read the same per-slot words as the named ones.
-    for (uint32_t slot = 0; slot < 32; slot++)
+    for (uint32_t slot = 0; slot < 20; slot++)
     {
         if (samplers.count(slot))
             continue;
         for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
         {
-            const uint32_t b = FH2_COMPARTIDA_TEXTURAS + uint32_t(j) * 128 + slot * 4;
+            const uint32_t b = FH2_BYTES_TEXTURA(slot, uint32_t(j));
             println("#define s{}_Texture{}DescriptorIndex (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT({}) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {}))",
                 slot, TEXTURE_DIMENSIONS[j], b, b);
         }
-        const uint32_t bs = FH2_COMPARTIDA_SAMPLERS + slot * 4;
+        const uint32_t bs = FH2_BYTES_SAMPLER(slot);
         println("#define s{}_SamplerDescriptorIndex (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT({}) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {}))",
             slot, bs, bs);
-        const uint32_t bi = FH2_COMPARTIDA_INV_TAMANO + slot * 8;
+        const uint32_t bi = FH2_BYTES_INV_TAMANO(slot);
         println("#define s{}_InvTamano (NFSMW_UBO ? float2(NFSMW_COMPARTIDA_FLOAT({}), NFSMW_COMPARTIDA_FLOAT({})) : vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + {}))",
             slot, bi, bi + 4, bi);
         fh2Textura1D(out, fmt::format("s{}", slot));

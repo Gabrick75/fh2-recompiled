@@ -5340,10 +5340,17 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     std::string lista;
     for (size_t i = 0; i < bases.size() && i < 16; ++i) {
       const auto it = resueltas_.find(bases[i]);
+#if defined(FH2_RECOMP)
+      // FH2 resolves to several color formats: every color one is blitted, depth is not.
+      if (it == resueltas_.end() || !it->second.imagen.preparada || EsProfundidadFormato(it->second.imagen.formato)) {
+        continue;
+      }
+#else
       if (it == resueltas_.end() || !it->second.imagen.preparada ||
           it->second.imagen.formato != kFormatoColor) {
         continue;  // depth ones do not support blits to color
       }
+#endif
       const Imagen& imagen = it->second.imagen;
       const int32_t x = int32_t(i % 4) * 320;
       const int32_t y = int32_t(i / 4) * 180;
@@ -5354,9 +5361,10 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       copia.dstOffsets[0] = {x + 2, y + 2, 0};
       copia.dstOffsets[1] = {x + 318, y + 178, 1};
       blit_(comandos_trabajo_, imagen.imagen, VK_IMAGE_LAYOUT_GENERAL, mosaico_.imagen,
-            VK_IMAGE_LAYOUT_GENERAL, 1, &copia, VK_FILTER_LINEAR);
-      lista += fmt::format(" {}{}:{:08X} {}x{}", i, bases[i] == base_swap ? "*" : "", bases[i],
-                           imagen.ancho, imagen.alto);
+            VK_IMAGE_LAYOUT_GENERAL, 1, &copia,
+            imagen.formato == VK_FORMAT_R32_SFLOAT ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+      lista += fmt::format(" {}{}:{:08X} {}x{} f{}", i, bases[i] == base_swap ? "*" : "", bases[i],
+                           imagen.ancho, imagen.alto, int(imagen.formato));
     }
     const auto ahora = std::chrono::steady_clock::now();
     if (ahora - ultimo_aviso_mosaico_ >= std::chrono::seconds(10)) {

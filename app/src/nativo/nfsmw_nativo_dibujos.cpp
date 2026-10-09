@@ -1162,7 +1162,17 @@ constexpr size_t kMaxRegistrosLista = 4096;
 // (68) and function (69), NDC (64-73) and g_InputRemap for the 16 locations (74-89).
 // 90 words up to g_InputRemap (bytes 296..359) and 32 more for 1/size of the 16 texture slots (bytes
 // 360..487), which avoid querying the texture size on every sample.
-#if defined(NFSC_RECOMP) || defined(FH2_RECOMP)
+#if defined(FH2_RECOMP)
+// FH2: NFS Carbon's 128 words, then FH2's own area up to byte 896 (FH2_COMPARTIDA_BYTES in tools/xenos/recomp's
+// shader_common.h): vertex shader samplers at 512, direct vertex fetches at 640, loop constants at 768.
+constexpr uint32_t kPalabrasCompartidas = 224;
+constexpr uint32_t kPalabraRemapeosAltos = 122;
+constexpr uint32_t kPalabraFh2TexturasVs = 128;     // 512: dimension * 4 + slot - 16
+constexpr uint32_t kPalabraFh2SamplersVs = 140;     // 560
+constexpr uint32_t kPalabraFh2InvTamanoVs = 144;    // 576: (slot - 16) * 2
+constexpr uint32_t kPalabraFh2Buscas = 160;         // 640: 4 words per vertex fetch constant 88-95
+constexpr uint32_t kPalabraFh2Bucles = 192;         // 768: the 32 loop constants
+#elif defined(NFSC_RECOMP)
 // NFS Carbon: 6 more words (bytes 488..511) for g_InputRemap of locations 16-21 (its extra positions and TEXCOORD8;
 // its shader_common.h reads them there).
 constexpr uint32_t kPalabrasCompartidas = 128;
@@ -1289,7 +1299,9 @@ constexpr VkDeviceSize kUboBytesPs = 256 * 16;
 #else
 constexpr VkDeviceSize kUboBytesPs = 224 * 16;
 #endif
-#if defined(NFSC_RECOMP) || defined(FH2_RECOMP)
+#if defined(FH2_RECOMP)
+constexpr VkDeviceSize kUboBytesCompartidas = kPalabrasCompartidas * 4;  // 224 words
+#elif defined(NFSC_RECOMP)
 constexpr VkDeviceSize kUboBytesCompartidas = 32 * 16;  // 128 words
 #else
 constexpr VkDeviceSize kUboBytesCompartidas = 31 * 16;

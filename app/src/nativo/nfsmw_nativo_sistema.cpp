@@ -204,6 +204,10 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_im_inmediato_cache, true, "NFSMW",
 // Game frames, one per Swap (nfsmw_d3d_trace.cpp). Only for the AnotarJuegoPorDelante measurement.
 extern std::atomic<uint64_t> g_nfsmw_fotogramas_juego;
 
+#if defined(FH2_RECOMP)
+bool Fh2UmaFaixaAtiva();  // app/src/fh2_desempenho.cpp
+#endif
+
 namespace nfsmw::nativo {
 namespace {
 
@@ -1875,6 +1879,34 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   void PaqueteTipo3(Lector& datos, uint32_t paquete, uint32_t palabras, int profundidad) {
     const uint32_t opcode = (paquete >> 8) & 0x7F;
     SumarSoloAnillo(opcodes_[opcode]);
+#if defined(FH2_RECOMP)
+    // FH2: with its one-tile hook (fh2_uma_faixa) the scene's predicated tiling is played back in one pass, as the
+    // emulation's gpu_ignorar_predicacao does: predicated packets run whatever the bin select, except the window
+    // offset and scissor the game records per tile (always skipped, so the whole-scene window stays) and the
+    // resolves (draws in EDRAM copy mode), which follow the bin select so only the first tile's runs.
+    static const bool una_faixa = Fh2UmaFaixaAtiva();
+    if ((paquete & 0x1) && una_faixa && opcode != xenos::PM4_XE_SWAP) {
+      bool seguir = false;
+      if (opcode == xenos::PM4_SET_CONSTANT) {
+        if (palabras >= 1) {
+          const uint32_t tipo_desplazamiento = datos.Mirar();
+          const uint32_t primero = tipo_desplazamiento & 0x7FF;
+          if (((tipo_desplazamiento >> 16) & 0xFF) == 4 &&
+              primero <= rex::graphics::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR - 0x2000 &&
+              primero + (palabras - 2) >= rex::graphics::XE_GPU_REG_PA_SC_WINDOW_OFFSET - 0x2000) {
+            return;
+          }
+        }
+      } else if ((opcode == xenos::PM4_DRAW_INDX || opcode == xenos::PM4_DRAW_INDX_2) &&
+                 (Registro(rex::graphics::XE_GPU_REG_RB_MODECONTROL) & 0x7) ==
+                     uint32_t(xenos::EdramMode::kCopy)) {
+        seguir = true;
+      }
+      if (seguir && !(bin_select_ & bin_mask_)) {
+        return;
+      }
+    } else
+#endif
     if ((paquete & 0x1) && (!(bin_select_ & bin_mask_) || opcode == xenos::PM4_XE_SWAP)) {
       return;  // predicate fails; predicated Swaps are always dropped
     }
@@ -2420,7 +2452,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   // One line per draw: shaders, render targets, state and the textures of the PS samplers
   // (address / format / dimension; ! if the fetch constant is not a texture).
   void TrazarDibujo() {
-    if (!trazando_ || trazas_ >= 4000) {
+    if (!trazando_ || trazas_ >= 40000) {
       return;
     }
     ++trazas_;
@@ -2478,7 +2510,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   // textures, as they are in guest memory.
   void TrazarVertices(uint32_t iniciador) {
     namespace g = rex::graphics;
-    if (!vs_dibujo_ || !ps_dibujo_ || trazas_ >= 4000 ||
+    if (!vs_dibujo_ || !ps_dibujo_ || trazas_ >= 40000 ||
         vs_microcodigo_.size() != vs_dibujo_->microcodigo.size()) {
       return;
     }
@@ -2636,7 +2668,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   }
 
   void TrazarCopia(const RegistrosCopia& r) {
-    if (!trazando_ || trazas_ >= 4000) {
+    if (!trazando_ || trazas_ >= 40000) {
       return;
     }
     ++trazas_;

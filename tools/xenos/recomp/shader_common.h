@@ -59,21 +59,22 @@
  */
 #define NFSMW_MARCA_SOMBRA_MINIMO       0x5E3B1A84u
 
-// FH2: where the textures of each fetch constant slot (0-31: pixel shader samplers 0-15, vertex shader samplers
-// 16-19) are in the shared constants, after NFSMW's fields (which end before byte 512): the descriptor index of each
-// texture dimension (2D, 3D, cube; 128 bytes each), the sampler's, and 1/size of the 2D image (8 bytes per slot).
 // FH2: pixel shaders use all 256 float constants (c254 and c255 too); NFSMW stopped at 224.
 #define FH2_CONSTANTES_PS         256
-#define FH2_COMPARTIDA_TEXTURAS   512
-#define FH2_COMPARTIDA_SAMPLERS   896
-#define FH2_COMPARTIDA_INV_TAMANO 1024
+// FH2: where the textures of each fetch constant slot are in the shared constants. Pixel shader samplers (slots
+// 0-15) keep NFSMW's layout, which the native renderer fills: the descriptor index of each texture dimension (2D, 3D,
+// cube) at dim * 64 + slot * 4, the sampler's at 192 + slot * 4 and 1/size at 360 + slot * 8. Vertex shader samplers
+// (slots 16-19: register + 16) are FH2's own, after NFS Carbon's high input remaps (488-511).
+#define FH2_BYTES_TEXTURA(SLOT, DIM)  ((SLOT) < 16 ? (DIM) * 64 + (SLOT) * 4 : 512 + (DIM) * 16 + ((SLOT) - 16) * 4)
+#define FH2_BYTES_SAMPLER(SLOT)       ((SLOT) < 16 ? 192 + (SLOT) * 4 : 560 + ((SLOT) - 16) * 4)
+#define FH2_BYTES_INV_TAMANO(SLOT)    ((SLOT) < 16 ? 360 + (SLOT) * 8 : 576 + ((SLOT) - 16) * 8)
 // FH2: the vertex fetches without a declared element (instance data, vertex fetch constants 88-95): per constant,
 // 16 bytes: where its buffer starts in g_Fh2Buscas (in dwords), its size in dwords and its xenos::Endian.
-#define FH2_COMPARTIDA_BUSCAS     1280
+#define FH2_COMPARTIDA_BUSCAS     640
 // FH2: the 32 loop constants as the game set them (xenos: count in bits 0-7, start 8-15, step 16-23), for shaders
 // without literal ones.
-#define FH2_COMPARTIDA_BUCLES     1408
-#define FH2_COMPARTIDA_BYTES      1536
+#define FH2_COMPARTIDA_BUCLES     768
+#define FH2_COMPARTIDA_BYTES      896
 #define SPEC_CONSTANT_ALPHA_FUNC_SHIFT  16
 #define SPEC_CONSTANT_ALPHA_FUNC_MASK   (7 << 16)
 
@@ -130,7 +131,9 @@ struct NfsmwBloqueCompartidas { float4 v[FH2_COMPARTIDA_BYTES / 16]; };  // FH2:
 #define g_NdcOffset                (NFSMW_UBO ? float2(NFSMW_COMPARTIDA_FLOAT(288), NFSMW_COMPARTIDA_FLOAT(292)) : vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 288))
 // NFSMW: where each component of the vertex input at that location comes from
 // (D3D patches the fetch swizzle according to the declaration). 0xFFF = as is.
-#define g_InputRemap(LOC)          (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT(296 + (LOC) * 4) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 296 + (LOC) * 4))
+// FH2: locations 16-21 (its extra positions) at 488-511, as NFS Carbon's renderer writes them.
+#define FH2_BYTES_REMAPEO(LOC)     ((LOC) < 16 ? 296 + (LOC) * 4 : 488 + ((LOC) - 16) * 4)
+#define g_InputRemap(LOC)          (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT(FH2_BYTES_REMAPEO(LOC)) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + FH2_BYTES_REMAPEO(LOC)))
 
 [[vk::constant_id(0)]] const uint g_SpecConstants = 0;
 // FH2: vertex inputs in k_10_11_11, which Vulkan has no format for (FH2 uses it for positions and texture

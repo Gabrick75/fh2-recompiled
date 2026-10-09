@@ -154,8 +154,11 @@ std::atomic<uint64_t> g_union_xy2{0};       // union's x2 << 32 | y2
 // whole scene fits in the EDRAM. The first time it is, the CP is told to ignore the predication.
 bool OneTile() {
   static const bool one = [] {
+    // The native renderer (nfsmw_renderizador = nativo) draws MSAA targets with one sample and its render targets
+    // have no EDRAM limit: one tile always fits, as NFSMW's nfsmw_render_sin_mosaico does for that game.
     const bool one_sample = rex::cvar::GetFlagByName("gpu_sin_msaa") == "true" ||
-                            rex::cvar::GetFlagByName("gpu_msaa_muestras") == "1";
+                            rex::cvar::GetFlagByName("gpu_msaa_muestras") == "1" ||
+                            rex::cvar::GetFlagByName("nfsmw_renderizador") == "nativo";
     const bool result = REXCVAR_GET(fh2_uma_faixa) && one_sample;
     if (result) {
       rex::cvar::SetFlagByName("gpu_ignorar_predicacao", "true");
@@ -167,6 +170,14 @@ bool OneTile() {
   }();
   return one;
 }
+
+}  // namespace
+
+// The native renderer's ring asks whether the scene is played back in one tile (src/nativo, FH2_RECOMP): then it
+// treats predicated packets as gpu_ignorar_predicacao does in the emulation.
+bool Fh2UmaFaixaAtiva() { return OneTile(); }
+
+namespace {
 
 constexpr uint32_t kTilingSetupCount = 0x10;
 constexpr uint32_t kTilingSetupRects = 0x20;
