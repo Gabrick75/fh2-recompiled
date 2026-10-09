@@ -2287,24 +2287,27 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   void Fh2AnotarConstantesVs() {
     const std::string& texto = REXCVAR_GET(fh2_nativo_diag_vs_c);
     if (texto.empty() || !vs_dibujo_) return;
-    uint32_t vs = 0, c = 0;
-    if (std::sscanf(texto.c_str(), "%u:%u", &vs, &c) != 2 || vs_dibujo_->numero != vs || c > 252) return;
+    uint32_t vs = 0, c = 0, n = 4;
+    // "pN:C" for a pixel shader's constants; an optional ":K" logs K registers instead of 4.
+    const bool pixel = texto[0] == 'p';
+    if (std::sscanf(texto.c_str() + (pixel ? 1 : 0), "%u:%u:%u", &vs, &c, &n) < 2 || c + n > 256) return;
+    if (pixel ? (!ps_dibujo_ || ps_dibujo_->numero != vs) : vs_dibujo_->numero != vs) return;
     static auto ultimo = Reloj::now();
     const auto ahora = Reloj::now();
     if (ahora - ultimo < std::chrono::milliseconds(100)) return;
     ultimo = ahora;
     std::string valores;
-    for (uint32_t k = c; k < c + 4; ++k) {
+    for (uint32_t k = c; k < c + n; ++k) {
       valores += fmt::format(" c{}=(", k);
       for (uint32_t j = 0; j < 4; ++j) {
         float f;
-        const uint32_t bits = registros_[0x4000 + k * 4 + j];
+        const uint32_t bits = registros_[(pixel ? 0x4400 : 0x4000) + k * 4 + j];
         std::memcpy(&f, &bits, sizeof(f));
         valores += fmt::format("{}{:.4g}", j ? "," : "", f);
       }
       valores += ")";
     }
-    REXLOG_INFO("[fh2 nativo] constantes VS n{} PS n{} sup {:08X} (Swap {}):{}", vs, ps_dibujo_ ? int(ps_dibujo_->numero) : -1,
+    REXLOG_INFO("[fh2 nativo] constantes {}{} PS n{} sup {:08X} (Swap {}):{}", pixel ? "PS n" : "VS n", vs, ps_dibujo_ ? int(ps_dibujo_->numero) : -1,
                 registros_[0x2000], swaps_.load(), valores);
   }
 #endif

@@ -15,7 +15,7 @@ layout(push_constant) uniform Constantes {
   ivec2 origen_xy;
   ivec2 destino_xy;
   ivec2 tamano;
-  uint flotante;  // D24FS8: 20e4 depth
+  uint flotante;  // bit 0: D24FS8 (20e4 depth); bit 1: stencil read as 0 (debug)
 } c;
 
 // As Xenia's Float32To20e4 with round to nearest even.
@@ -43,8 +43,14 @@ void main() {
   }
   const ivec2 p = c.origen_xy + i;
   const float z = texelFetch(profundidad, p, 0).r;
-  const uint d = c.flotante != 0u ? A20e4(z) : uint(clamp(z, 0.0, 1.0) * 16777215.0 + 0.5);
-  const uint s = texelFetch(stencil, p, 0).r & 0xFFu;
-  imageStore(destino, c.destino_xy + i,
-             vec4(float(s), float(d & 0xFFu), float((d >> 8) & 0xFFu), float(d >> 16)) * (1.0 / 255.0));
+  uint d = (c.flotante & 1u) != 0u ? A20e4(z) : uint(clamp(z, 0.0, 1.0) * 16777215.0 + 0.5);
+  const uint s = (c.flotante & 2u) != 0u ? 0u : texelFetch(stencil, p, 0).r & 0xFFu;
+  if ((c.flotante & 8u) != 0u) {
+    d = 0x800000u;  // debug: a constant depth
+  }
+  vec4 bytes = vec4(float(s), float(d & 0xFFu), float((d >> 8) & 0xFFu), float(d >> 16));
+  if ((c.flotante & 4u) != 0u) {
+    bytes = bytes.wzyx;  // debug: the word's bytes in the other order
+  }
+  imageStore(destino, c.destino_xy + i, bytes * (1.0 / 255.0));
 }

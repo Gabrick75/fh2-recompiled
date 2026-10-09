@@ -1085,6 +1085,8 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_diag_memoria_subida, true, "NFSMW",
 
 // The 30 FPS guard lives in nfsmw_recorte_sombras.cpp, which owns the lever.
 #if defined(FH2_RECOMP)
+REXCVAR_DEFINE_STRING(fh2_nativo_diag_textura, "", "FH2",
+                      "Debug: hex address whose texture fetches log what resolved image they get (first 30)");
 REXCVAR_DEFINE_INT32(fh2_nativo_diag_ps, -1, "FH2",
                      "Debug: log where the native renderer's Dibujar leaves for this pixel shader number (-1 = off)");
 #endif
@@ -3052,6 +3054,27 @@ class DibujosVulkanImpl final : public DibujosVulkan {
           }
 #endif
         }
+#if defined(FH2_RECOMP)
+        if (p.ps && int32_t(p.ps->numero) == REXCVAR_GET(fh2_nativo_diag_ps)) {
+          static int avisos_salida = 0;
+          if (avisos_salida < 4) {
+            ++avisos_salida;
+            std::string texto;
+            for (size_t i = 0; i + 4 <= salida.size() && i < 64; i += 4) {
+              uint32_t w;
+              std::memcpy(&w, salida.data() + i, 4);
+              texto += fmt::format(" {:08X}", w);
+            }
+            std::string atributos;
+            for (const AtributoVertices& at : entrada->atributos) {
+              atributos += fmt::format(" [loc {} enlace {} formato {} offset {}]", at.ubicacion, at.enlace,
+                                       int(at.formato), at.offset);
+            }
+            REXLOG_INFO("[fh2 nativo] PS n{} rectangulos enlace {} zancada {} orden {}:{} atributos{}", p.ps->numero, b,
+                        zancada, int(o.orden), texto, atributos);
+          }
+        }
+#endif
         o.datos = salida.data();
         o.bytes = uint32_t(salida.size());
         o.direccion = 0;  // not guest memory: copied at once and never deduplicated
@@ -3745,6 +3768,12 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       clave.profundidad |= 0x7 << 4;  // test: Z function always
     }
     clave.rasterizado = (modo_sc & 0x7) | (reinicio ? 0x8 : 0) | (con_sesgo ? 0x10 : 0);
+    // Rectangle lists are not polygons for the culling (Xenia's IsPrimitivePolygonal: their winding is never
+    // checked). FH2 gives some of its post-processing rectangles in the culled winding with back faces culled; with
+    // the cull mode applied they vanished, and the motion blur read an empty velocity buffer (a smear over the race).
+    if (rectangulos) {
+      clave.rasterizado &= ~0x3u;
+    }
     VkPipeline pipeline = VK_NULL_HANDLE;
     // Looked up with ClaveDeBusqueda (phase 0a: canonical form; phases 1 and 2: without the state set through
     // vkCmdSet*). clave stays raw: the deferred sky (opaco_en_todos), the counter and the dynamic state read
@@ -5308,6 +5337,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     }
     ++epoca_subida_;
     ++fotograma_;
+#if defined(FH2_RECOMP)
+    fh2_diag_textura_ = uint32_t(std::strtoul(REXCVAR_GET(fh2_nativo_diag_textura).c_str(), nullptr, 16));
+#endif
     CerrarFotogramaDeLaGuardiaDelCielo();
     // nfsmw_reflejo_visibilidad, once per submission (the guard may switch it off mid-session).
     medir_visibilidad_ = contexto_->OclusionGpuPermitida() && nfsmw::reflejo_demanda::MedirVisibilidad();
@@ -9077,6 +9109,18 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     const uint32_t swizzle = (f[3] >> 1) & 0xFFF;
     const uint32_t base = (f[1] >> 12) << 12;
     if (!cubo && !volumen) {
+#if defined(FH2_RECOMP)
+      // fh2_nativo_diag_textura: what a fetch of that address gets (first 30).
+      if (fh2_diag_textura_ && (base & 0x1FFFFFFF) == fh2_diag_textura_ && fh2_diag_textura_avisos_ < 30 &&
+          (REXCVAR_GET(fh2_nativo_diag_ps) < 0 || ps_encuadre_diag_ == REXCVAR_GET(fh2_nativo_diag_ps))) {
+        ++fh2_diag_textura_avisos_;
+        const ImagenNativa* r = contexto_->TexturaResuelta(base & 0x1FFFFFFF);
+        REXLOG_INFO("[fh2 nativo] textura {:08X} formato {} {}x{} pedida por PS n{}: resuelta {} {}x{} formato vk {} "
+                    "imagen {}", base, f[1] & 0x3F, (f[2] & 0x1FFF) + 1, ((f[2] >> 13) & 0x1FFF) + 1,
+                    ps_encuadre_diag_, r ? "si" : "NO", r ? r->ancho : 0, r ? r->alto : 0, r ? int(r->formato) : 0,
+                    r ? static_cast<const void*>(r->imagen) : nullptr);
+      }
+#endif
       if (const ImagenNativa* resuelta = contexto_->TexturaResuelta(base & 0x1FFFFFFF)) {
         // Without this the shadows flicker.
         // With nfsmw_nativo_inv_tamano_tex the shader takes 1/size from the shared constants, and this path
@@ -9095,6 +9139,12 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 #if defined(FH2_RECOMP)
         if (const uint32_t formato_fetch = f[1] & 0x3F; EsProfundidad(resuelta->formato) && formato_fetch != 22 &&
                                                         formato_fetch != 23) {
+          static int avisos_empaquetada = 0;
+          if (avisos_empaquetada < 8) {
+            ++avisos_empaquetada;
+            REXLOG_INFO("[fh2 nativo] textura {:08X} formato {} sobre una profundidad resuelta: empaquetada {}",
+                        base, formato_fetch, contexto_->Fh2ProfundidadEmpaquetada(base & 0x1FFFFFFF) ? "si" : "NO");
+          }
           if (const ImagenNativa* empaquetada = contexto_->Fh2ProfundidadEmpaquetada(base & 0x1FFFFFFF)) {
             ranura = RanuraVista(empaquetada->imagen, empaquetada->formato, swizzle, kSwizzleRGBA);
             muestreo_puntual = true;
@@ -13175,7 +13225,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   // Rectangle lists (NFS Carbon): each binding's vertices with the fourth corner of every rectangle added.
   std::array<std::vector<uint8_t>, 16> rectangulos_vertices_;
 #if defined(FH2_RECOMP)
-  int32_t ps_encuadre_diag_ = -1;  // the draw's pixel shader number, for the framing diagnostics
+  int32_t ps_encuadre_diag_ = -1;
+  uint32_t fh2_diag_textura_ = 0;  // fh2_nativo_diag_textura, read once per frame
+  uint32_t fh2_diag_textura_avisos_ = 0;  // the draw's pixel shader number, for the framing diagnostics
 #endif
   // IndicesDe16 (nfsmw_nativo_indices_neon). Ring only.
   int32_t indices_neon_ = -1;  // -1 cvar not read, 0 plain loop, 1 NEON

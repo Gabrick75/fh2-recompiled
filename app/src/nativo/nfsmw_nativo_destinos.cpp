@@ -636,6 +636,17 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_rampa_gamma, true, "NFSMW",
 
 // The 30 FPS guard (nfsmw_guardia_30) lives in nfsmw_recorte_sombras.cpp, which owns the lever it pulls.
 #if defined(FH2_RECOMP)
+REXCVAR_DEFINE_STRING(fh2_nativo_prueba_magenta, "", "FH2",
+                      "Debug: hex address whose colour copies take a render target painted magenta");
+REXCVAR_DEFINE_BOOL(fh2_nativo_prof_constante, false, "FH2",
+                    "Debug: depth resolves read as 8_8_8_8 carry one constant depth");
+REXCVAR_DEFINE_BOOL(fh2_nativo_prof_orden_inverso, false, "FH2",
+                    "Debug: depth resolves read as 8_8_8_8 with the word's bytes reversed");
+REXCVAR_DEFINE_BOOL(fh2_nativo_prof_sin_stencil, false, "FH2",
+                    "Debug: depth resolves read as 8_8_8_8 carry stencil 0");
+REXCVAR_DEFINE_STRING(fh2_nativo_foto_empaquetada, "", "FH2",
+                      "Debug (with nfsmw_nativo_diag_resueltas): hex address of a depth resolve whose 8_8_8_8 view "
+                      "covers the mosaic");
 REXCVAR_DEFINE_BOOL(fh2_nativo_foto_completa, false, "FH2",
                     "Debug (with nfsmw_nativo_diag_resueltas): the photographed render target covers the whole mosaic");
 REXCVAR_DEFINE_INT32(fh2_nativo_foto_indice, 0, "FH2",
@@ -1483,7 +1494,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if ((reg.rb_copy_dest_base & 0x1FFFFFFF) ==
         uint32_t(std::strtoul(REXCVAR_GET(fh2_nativo_foto_copia).c_str(), nullptr, 16))) {
       static int avisos = 0;
-      if (avisos < 6) {
+      if (avisos < 400 && x1 - x0 == 640) {
         ++avisos;
         REXLOG_INFO("[fh2 nativo] copia a {:08X} lee la imagen {} (base {:03X} formato {} pitch {}) rect ({},{})-({},{})",
                     reg.rb_copy_dest_base, static_cast<const void*>(destino_render->imagen), info_color & 0xFFF,
@@ -1621,6 +1632,22 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       return false;
     }
     Preparar(*destino_render);
+#if defined(FH2_RECOMP)
+    // fh2_nativo_prueba_magenta (debug): the render target is painted magenta right before a copy to that address,
+    // to tell a draw that does not land from a copy or a sampling that loses it.
+    if (resuelta && base_resuelta == uint32_t(std::strtoul(REXCVAR_GET(fh2_nativo_prueba_magenta).c_str(), nullptr,
+                                                           16))) {
+      if (dibujos_) dibujos_->TerminarPase();
+      const VkClearColorValue magenta{{1.0f, 0.0f, 1.0f, 1.0f}};
+      dfn_.vkCmdClearColorImage(comandos_trabajo_, destino_render->imagen, VK_IMAGE_LAYOUT_GENERAL, &magenta, 1,
+                                &kRangoColor);
+      VkMemoryBarrier barrera{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+      barrera.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      barrera.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+      dfn_.vkCmdPipelineBarrier(comandos_trabajo_, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1,
+                                &barrera, 0, nullptr, 0, nullptr);
+    }
+#endif
     if (resuelta) {
       Preparar(resuelta->imagen);
       // What the game asks for and what fits in the render target.
@@ -4884,7 +4911,10 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     struct {
       int32_t origen[2], destino[2], tamano[2];
       uint32_t flotante;
-    } constantes{{x0, y0}, {int32_t(dx), int32_t(dy)}, {int32_t(w), int32_t(h)}, flotante ? 1u : 0u};
+    } constantes{{x0, y0}, {int32_t(dx), int32_t(dy)}, {int32_t(w), int32_t(h)},
+                    (flotante ? 1u : 0u) | (REXCVAR_GET(fh2_nativo_prof_sin_stencil) ? 2u : 0u) |
+                        (REXCVAR_GET(fh2_nativo_prof_orden_inverso) ? 4u : 0u) |
+                        (REXCVAR_GET(fh2_nativo_prof_constante) ? 8u : 0u)};
     dfn_.vkCmdPushConstants(comandos_trabajo_, fh2_prof_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                             sizeof(constantes), &constantes);
     dfn_.vkCmdDispatch(comandos_trabajo_, (w + 7) / 8, (h + 7) / 8, 1);
@@ -5875,6 +5905,31 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         }
         blit_(comandos_trabajo_, fh2_instantanea_.imagen, VK_IMAGE_LAYOUT_GENERAL, mosaico_.imagen,
               VK_IMAGE_LAYOUT_GENERAL, 1, &copia, VK_FILTER_LINEAR);
+      }
+      // fh2_nativo_foto_empaquetada: the depth resolve at that address as 8_8_8_8, over the whole mosaic.
+      const uint32_t empaquetada =
+          uint32_t(std::strtoul(REXCVAR_GET(fh2_nativo_foto_empaquetada).c_str(), nullptr, 16));
+      // A colour resolved texture at that address works too (the packed view first).
+      const Imagen* foto = nullptr;
+      if (const auto it = fh2_empaquetadas_.find(empaquetada); empaquetada && it != fh2_empaquetadas_.end()) {
+        foto = &it->second;
+      } else if (const auto r = resueltas_.find(empaquetada); empaquetada && r != resueltas_.end() &&
+                                                                !EsProfundidadFormato(r->second.imagen.formato)) {
+        foto = &r->second.imagen;
+      }
+      if (foto && foto->preparada) {
+        const auto* it = foto;
+        static int avisos_foto = 0;
+        if (avisos_foto < 20 && ++avisos_foto) {
+          REXLOG_INFO("[fh2 nativo] foto de {:08X}: {}x{} formato {}", empaquetada, it->ancho, it->alto, int(it->formato));
+        }
+        VkImageBlit copia{};
+        copia.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copia.srcOffsets[1] = {int32_t(it->ancho), int32_t(it->alto), 1};
+        copia.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copia.dstOffsets[1] = {1280, 720, 1};
+        blit_(comandos_trabajo_, it->imagen, VK_IMAGE_LAYOUT_GENERAL, mosaico_.imagen,
+              VK_IMAGE_LAYOUT_GENERAL, 1, &copia, VK_FILTER_NEAREST);
         lista += " 15:destino de la escena antes de copiarla";
       }
     }
