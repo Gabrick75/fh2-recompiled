@@ -636,10 +636,10 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_rampa_gamma, true, "NFSMW",
 
 // The 30 FPS guard (nfsmw_guardia_30) lives in nfsmw_recorte_sombras.cpp, which owns the lever it pulls.
 #if defined(FH2_RECOMP)
-REXCVAR_DEFINE_BOOL(fh2_nativo_cementerio, false, "FH2",
-                    "Experimental: a resolved texture replaced by another shape at the same address is destroyed once "
-                    "the GPU is done with it, instead of waiting for the GPU right there (about 4.5 waits per frame in "
-                    "the race). Presentation stops with it on: not finished");
+REXCVAR_DEFINE_BOOL(fh2_nativo_cementerio, true, "FH2",
+                    "A resolved texture replaced by another shape at the same address is destroyed once the GPU is done "
+                    "with it, instead of waiting for the GPU right there (about 4.5 waits per frame in the race: 10 fps "
+                    "on the PC without it, the game's 30 with it)");
 REXCVAR_DEFINE_BOOL(fh2_nativo_variantes_limpias, true, "FH2",
                     "With fh2_nativo_variantes: a kept texture is cleared when it comes back, as a new image would be");
 REXCVAR_DEFINE_BOOL(fh2_nativo_variantes, false, "FH2",
@@ -2390,7 +2390,8 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     const bool mosaico =
         presentador && REXCVAR_GET(nfsmw_nativo_diag_resueltas) && ComponerMosaico(base);
     // Without waiting for the GPU: the output goes after the work on the same queue.
-    if (!presentador || !EnviarTrabajo(false)) {
+    const bool fh2_enviado = presentador && EnviarTrabajo(false);
+    if (!fh2_enviado) {
       return false;
     }
     if (mosaico) {
@@ -4358,6 +4359,11 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       if (todo || (it->orden <= envios_ && it->orden < pendiente_minima)) {
         if (dibujos_) {
           dibujos_->OlvidarImagen(it->imagen.imagen);
+        }
+        // The scaled copy's descriptor sets are cached by view: a new view may get this handle back.
+        for (auto s = fh2_escala_sets_.begin(); s != fh2_escala_sets_.end();) {
+          s = s->first.first == it->imagen.vista || s->first.second == it->imagen.vista ? fh2_escala_sets_.erase(s)
+                                                                                      : std::next(s);
         }
         Destruir(it->imagen);
         it = fh2_cementerio_.erase(it);
