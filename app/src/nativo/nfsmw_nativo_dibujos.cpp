@@ -1893,6 +1893,7 @@ bool FormatoTexturaDe(uint32_t formato, FormatoTextura& f) {
   }
 }
 
+
 bool EsProfundidad(VkFormat formato) {
   return formato == VK_FORMAT_D24_UNORM_S8_UINT || formato == VK_FORMAT_D32_SFLOAT_S8_UINT;
 }
@@ -2189,9 +2190,20 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         dfn_(dispositivo->functions()),
         device_(dispositivo->device()),
         memoria_(memoria),
-        contexto_(contexto) {}
+        contexto_(contexto) {
+#if defined(FH2_RECOMP)
+    if (memoria_) {
+      fh2_vigilancia_ = memoria_->RegisterPhysicalMemoryInvalidationCallback(&Fh2EscrituraVigilada, this);
+    }
+#endif
+  }
 
   ~DibujosVulkanImpl() override {
+#if defined(FH2_RECOMP)
+    if (memoria_ && fh2_vigilancia_) {
+      memoria_->UnregisterPhysicalMemoryInvalidationCallback(fh2_vigilancia_);
+    }
+#endif
     PararPrecalentado();  // uses the pipeline cache and the layout: first
     PararCopias();
     PararEnlaces();  // in-flight vkBindImageMemory calls finish before any image is destroyed
@@ -3463,11 +3475,51 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         w[0] = w[1] = w[2] = w[3] = 0;
         if (!b.palabras) continue;
         VkDeviceSize offset;
-        if (!(dedupe_activo_ && dedupe_.Buscar(b.direccion, b.palabras * 4, uint32_t(b.orden), offset))) {
-          Reservar(VkDeviceSize(b.palabras) * 4, 4, offset);
-          CopiarVertices(TrabajoCopia{memoria_->TranslatePhysical(b.direccion), subida_datos_ + offset, b.palabras,
-                                      b.orden});
-          if (dedupe_activo_) dedupe_.Anotar(b.direccion, b.palabras * 4, uint32_t(b.orden), offset);
+        // Not through the upload deduplication: FH2 rewrites its per-draw buffers during the frame without a wait the
+        // ring sees (measured with a full hash). Ranges from 4 KB are reused while the guest has not written their
+        // pages (Fh2Vigilado); smaller ones are copied every time.
+        const uint8_t* datos_busca = static_cast<const uint8_t*>(memoria_->TranslatePhysical(b.direccion));
+        const uint32_t bytes_busca = b.palabras * 4;
+        Fh2Vigilado* vigilado = nullptr;
+        if (fh2_vigilancia_ && bytes_busca >= (4u << 10)) {
+          const uint32_t n = fh2_vigilados_n_.load(std::memory_order_relaxed);
+          for (uint32_t i = 0; i < n && !vigilado; ++i) {
+            if (fh2_vigilados_[i].direccion == b.direccion && fh2_vigilados_[i].bytes == bytes_busca) {
+              vigilado = &fh2_vigilados_[i];
+            }
+          }
+          if (!vigilado && n < fh2_vigilados_.size()) {
+            vigilado = &fh2_vigilados_[n];
+            vigilado->direccion = b.direccion;
+            vigilado->bytes = bytes_busca;
+            vigilado->sucio.store(1, std::memory_order_relaxed);
+            fh2_vigilados_n_.store(n + 1, std::memory_order_release);
+          }
+        }
+        if (vigilado && vigilado->fotograma == fotograma_ &&
+            !vigilado->sucio.load(std::memory_order_acquire) && uint32_t(b.orden) == 2) {
+          offset = vigilado->offset;
+          ++fh2_vigilados_reusados_;
+        } else {
+          if (vigilado) {
+            // Cleared, then watched, then copied: a write during the copy marks it dirty again.
+            vigilado->sucio.store(0, std::memory_order_release);
+            memoria_->EnablePhysicalMemoryAccessCallbacks(b.direccion, bytes_busca, true, false);
+          }
+          Reservar(VkDeviceSize(bytes_busca), 4, offset);
+          CopiarVertices(TrabajoCopia{datos_busca, subida_datos_ + offset, b.palabras, b.orden});
+          if (vigilado) {
+            vigilado->fotograma = uint32_t(b.orden) == 2 ? fotograma_ : 0;
+            vigilado->offset = offset;
+            ++fh2_vigilados_copiados_;
+          }
+          static auto ultimo = std::chrono::steady_clock::now();
+          if (std::chrono::steady_clock::now() - ultimo > std::chrono::seconds(10)) {
+            ultimo = std::chrono::steady_clock::now();
+            REXLOG_INFO("[fh2 nativo] buscas vigiladas: {} rangos, {} reusadas, {} copiadas, {} avisos de escritura",
+                        fh2_vigilados_n_.load(), fh2_vigilados_reusados_, fh2_vigilados_copiados_,
+                        fh2_avisos_escritura_.load());
+          }
         }
         w[0] = uint32_t(offset / 4);  // in dwords from the start of the upload buffer (binding 3 covers it whole)
         w[1] = b.palabras;
@@ -13227,6 +13279,37 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 #if defined(FH2_RECOMP)
   int32_t ps_encuadre_diag_ = -1;
   uint32_t fh2_diag_textura_ = 0;  // fh2_nativo_diag_textura, read once per frame
+  // FH2's large direct-fetch buffers (bone and instance pools, ~2.4 MB, about 1000 draws per frame read them), copied
+  // once per upload buffer and copied again only if the guest wrote to their pages since (the SDK's physical memory
+  // write watches). Copying them per draw moved ~9 GB/s; hashing them per draw cost almost as much.
+  struct Fh2Vigilado {
+    uint32_t direccion = 0, bytes = 0;  // immutable once published in fh2_vigilados_n_
+    std::atomic<uint32_t> sucio{1};
+    uint64_t fotograma = 0;
+    VkDeviceSize offset = 0;
+  };
+  std::array<Fh2Vigilado, 1024> fh2_vigilados_;
+  std::atomic<uint32_t> fh2_vigilados_n_{0};
+  void* fh2_vigilancia_ = nullptr;
+  uint64_t fh2_vigilados_reusados_ = 0, fh2_vigilados_copiados_ = 0;
+  std::atomic<uint64_t> fh2_avisos_escritura_{0};
+
+  // Called on the writing guest thread with the memory lock held: only atomics here.
+  static std::pair<uint32_t, uint32_t> Fh2EscrituraVigilada(void* contexto, uint32_t inicio, uint32_t longitud,
+                                                            bool exacto) {
+    (void)exacto;
+    auto* self = static_cast<DibujosVulkanImpl*>(contexto);
+    const uint32_t n = self->fh2_vigilados_n_.load(std::memory_order_acquire);
+    const uint64_t fin = uint64_t(inicio) + longitud;
+    for (uint32_t i = 0; i < n; ++i) {
+      Fh2Vigilado& v = self->fh2_vigilados_[i];
+      if (uint64_t(v.direccion) < fin && uint64_t(v.direccion) + v.bytes > inicio) {
+        v.sucio.store(1, std::memory_order_release);
+      }
+    }
+    self->fh2_avisos_escritura_.fetch_add(1, std::memory_order_relaxed);
+    return std::make_pair(uint32_t(0), UINT32_MAX);
+  }
   uint32_t fh2_diag_textura_avisos_ = 0;  // the draw's pixel shader number, for the framing diagnostics
 #endif
   // IndicesDe16 (nfsmw_nativo_indices_neon). Ring only.

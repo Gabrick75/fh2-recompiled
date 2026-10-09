@@ -636,6 +636,16 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_rampa_gamma, true, "NFSMW",
 
 // The 30 FPS guard (nfsmw_guardia_30) lives in nfsmw_recorte_sombras.cpp, which owns the lever it pulls.
 #if defined(FH2_RECOMP)
+REXCVAR_DEFINE_BOOL(fh2_nativo_cementerio, false, "FH2",
+                    "Experimental: a resolved texture replaced by another shape at the same address is destroyed once "
+                    "the GPU is done with it, instead of waiting for the GPU right there (about 4.5 waits per frame in "
+                    "the race). Presentation stops with it on: not finished");
+REXCVAR_DEFINE_BOOL(fh2_nativo_variantes, false, "FH2",
+                    "Experimental: a resolved texture of another shape at the same address is kept aside and reused "
+                    "(no GPU wait), but the race's exposure goes black in about half the runs");
+REXCVAR_DEFINE_BOOL(fh2_nativo_lecturas_antes_de_valla, true, "FH2",
+                    "Read-backs of resolves reach guest memory before the ring writes the next fence (one GPU wait per "
+                    "frame); without it they arrive submissions late and the race's exposure can end up black");
 REXCVAR_DEFINE_STRING(fh2_nativo_prueba_magenta, "", "FH2",
                       "Debug: hex address whose colour copies take a render target painted magenta");
 REXCVAR_DEFINE_BOOL(fh2_nativo_prof_constante, false, "FH2",
@@ -896,6 +906,13 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     for (auto& [clave, imagen] : fh2_empaquetadas_) {
       Destruir(imagen);
     }
+    for (auto& [clave, variante] : fh2_variantes_) {
+      Destruir(variante.imagen);
+    }
+    for (Fh2Enterrada& enterrada : fh2_cementerio_) {
+      Destruir(enterrada.imagen);
+    }
+    fh2_cementerio_.clear();
 #endif
     Destruir(mosaico_);
     for (ImagenFrontal& repuesto : frontales_imagenes_) {  // nfsmw_nativo_frontal_perezoso
@@ -3074,6 +3091,20 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     return dibujos_ ? dibujos_->Estadisticas() : EstadisticasDibujos{};
   }
 
+#if defined(FH2_RECOMP)
+  void Fh2EntregarLecturas() override {
+    if (!REXCVAR_GET(fh2_nativo_lecturas_antes_de_valla)) return;
+    bool pendientes = !lecturas_pendientes_.empty();
+    for (const RanuraTrabajo& r : ranuras_) {
+      pendientes = pendientes || (r.pendiente && !r.lecturas.empty());
+    }
+    if (!pendientes) return;
+    EnviarTrabajo(true);  // the current submission, waited for: its read-backs are written to guest memory
+    EsperarGpu();         // and the earlier ones that still carry some
+    ++fh2_entregas_lecturas_;
+  }
+#endif
+
   void EsperarSubidas() override {
     if (dibujos_) {
       dibujos_->EsperarSubidas();
@@ -4308,8 +4339,68 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     return &profundidades_.emplace(clave, imagen).first->second;
   }
 
+#if defined(FH2_RECOMP)
+  // Destroys the graveyard's images whose last possible submission has finished (no pending slot at or before it).
+  void Fh2VaciarCementerio(bool todo = false) {
+    if (fh2_cementerio_.empty()) return;
+    uint64_t pendiente_minima = UINT64_MAX;
+    for (RanuraTrabajo& r : ranuras_) {
+      if (r.pendiente && dfn_.vkGetFenceStatus(device_, r.fence) != VK_SUCCESS) {
+        pendiente_minima = std::min(pendiente_minima, r.orden);
+      }
+    }
+    for (auto it = fh2_cementerio_.begin(); it != fh2_cementerio_.end();) {
+      if (todo || (it->orden <= envios_ && it->orden < pendiente_minima)) {
+        if (dibujos_) {
+          dibujos_->OlvidarImagen(it->imagen.imagen);
+        }
+        Destruir(it->imagen);
+        it = fh2_cementerio_.erase(it);
+        ++fh2_enterradas_;
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  static uint64_t Fh2ClaveVariante(uint32_t base, uint32_t ancho, uint32_t alto, VkFormat formato) {
+    return (uint64_t(base) << 32) ^ (uint64_t(ancho) << 18) ^ (uint64_t(alto) << 4) ^ uint64_t(formato) * 0x9E3779B1u;
+  }
+
+  // If an image of that shape was kept aside for the address, it becomes the address's texture and the current one
+  // goes aside in its place (see ObtenerResuelta).
+  bool Fh2CambiarVariante(std::unordered_map<uint32_t, Resuelta>::iterator it, uint32_t base, uint32_t ancho,
+                          uint32_t alto, VkFormat formato_host, uint32_t formato, bool intercambio_rb) {
+    const auto v = fh2_variantes_.find(Fh2ClaveVariante(base, ancho, alto, formato_host));
+    if (v == fh2_variantes_.end() || v->second.imagen.ancho != ancho || v->second.imagen.alto != alto ||
+        v->second.imagen.formato != formato_host) {
+      return false;
+    }
+    Resuelta actual = std::move(it->second);
+    it->second = std::move(v->second);
+    fh2_variantes_.erase(v);
+    fh2_variantes_.emplace(Fh2ClaveVariante(base, actual.imagen.ancho, actual.imagen.alto, actual.imagen.formato),
+                           std::move(actual));
+    it->second.formato_guest = formato;
+    it->second.intercambio_rb = intercambio_rb;
+    it->second.imagen.intercambio_rb = intercambio_rb;
+    if (dibujos_) {
+      dibujos_->InvalidarTexturas();  // the address samples another image now
+    }
+    if (!prestadas_.empty()) {
+      prestadas_.erase(base);
+    }
+    SombraMinimoResueltaEscrita(base);
+    ++fh2_variantes_cambiadas_;
+    return true;
+  }
+#endif
+
   Resuelta* ObtenerResuelta(uint32_t base, uint32_t ancho, uint32_t alto, uint32_t formato,
                             bool intercambio_rb, VkFormat formato_host = kFormatoColor) {
+#if defined(FH2_RECOMP)
+    Fh2VaciarCementerio();
+#endif
     if (!ancho || !alto) {
       Rechazar(9, "copia a una textura de tamano 0");
       return nullptr;
@@ -4326,6 +4417,43 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         it->second.imagen.intercambio_rb = intercambio_rb;
         return &it->second;
       }
+#if defined(FH2_RECOMP)
+      // FH2 resolves several shapes to one address every frame (1CA95000: a 1024 shadow depth, a 320x192 scene
+      // piece, the 640x360 velocity; 1DAC5000: depth and colour). Destroying the image each time cost a GPU wait,
+      // about 4.5 per frame. The other shapes are kept aside and swapped in when that shape comes back: the
+      // address shows whatever was resolved to it last, as the console's memory does.
+      if (REXCVAR_GET(fh2_nativo_variantes) &&
+          Fh2CambiarVariante(it, base, ancho, alto, formato_host, formato, intercambio_rb)) {
+        return &it->second;
+      }
+      if (!REXCVAR_GET(fh2_nativo_variantes) && REXCVAR_GET(fh2_nativo_cementerio)) {
+        // The old image goes to the graveyard: destroyed once the submissions that may sample it have finished, so
+        // there is no GPU wait here and the address gets a new, cleared image as before.
+        SoltarReferencias(it->second.imagen);  // no deferred copy may reach it after this
+        fh2_cementerio_.push_back({it->second.imagen, envios_ + 1});
+        resueltas_.erase(it);
+        if (dibujos_) {
+          dibujos_->InvalidarTexturas();
+        }
+        if (!prestadas_.empty()) {
+          prestadas_.erase(base);
+        }
+        SombraMinimoResueltaEscrita(base);
+      } else if (REXCVAR_GET(fh2_nativo_variantes) && fh2_variantes_.size() < 64) {
+        fh2_variantes_.emplace(Fh2ClaveVariante(base, it->second.imagen.ancho, it->second.imagen.alto,
+                                                it->second.imagen.formato),
+                               std::move(it->second));
+        resueltas_.erase(it);
+        if (dibujos_) {
+          dibujos_->InvalidarTexturas();
+        }
+        if (!prestadas_.empty()) {
+          prestadas_.erase(base);
+        }
+        SombraMinimoResueltaEscrita(base);
+      } else
+#endif
+      {
       // Another size or format at the same address: the old image may still be in use.
       EnviarTrabajo(true);
       EsperarGpu();
@@ -4342,6 +4470,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         prestadas_.erase(base);
       }
       SombraMinimoResueltaEscrita(base);  // the new image does not have its content
+      }
     }
     Resuelta resuelta;
     // The attachment usage (color or depth) is needed for nfsmw_nativo_resolver_sin_copia: this image can
@@ -5299,6 +5428,23 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   }
 
   void Destruir(Imagen& imagen) {
+    SoltarReferencias(imagen);
+    // The DibujosVulkan framebuffers that use this view are destroyed before it: Vulkan may give the same
+    // handle to a new view and FramebufferDe would return a stale one (see
+    // nfsmw_nativo_framebuffers_olvidan_vistas). At shutdown, dibujos_ is already gone and so are its
+    // framebuffers.
+    if (dibujos_ && imagen.vista != VK_NULL_HANDLE) {
+      dibujos_->OlvidarVista(imagen.vista);
+    }
+    if (imagen.vista != VK_NULL_HANDLE) dfn_.vkDestroyImageView(device_, imagen.vista, nullptr);
+    if (imagen.imagen != VK_NULL_HANDLE) dfn_.vkDestroyImage(device_, imagen.imagen, nullptr);
+    if (imagen.memoria != VK_NULL_HANDLE) dfn_.vkFreeMemory(device_, imagen.memoria, nullptr);
+    imagen = Imagen{};
+  }
+
+  // What other pieces keep of an image that is going away: deferred copies to or from it, the lazy composite and
+  // FH2's aspect views. Split out of Destruir for FH2's graveyard, which drops these at once and destroys later.
+  void SoltarReferencias(Imagen& imagen) {
     CompuestaAlDestruir(imagen);  // nfsmw_nativo_compuesta_perezosa
 #if defined(FH2_RECOMP)
     if (const auto v = fh2_vistas_aspecto_.find(imagen.imagen); v != fh2_vistas_aspecto_.end()) {
@@ -5342,17 +5488,6 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         }
       }
     }
-    // The DibujosVulkan framebuffers that use this view are destroyed before it: Vulkan may give the same
-    // handle to a new view and FramebufferDe would return a stale one (see
-    // nfsmw_nativo_framebuffers_olvidan_vistas). At shutdown, dibujos_ is already gone and so are its
-    // framebuffers.
-    if (dibujos_ && imagen.vista != VK_NULL_HANDLE) {
-      dibujos_->OlvidarVista(imagen.vista);
-    }
-    if (imagen.vista != VK_NULL_HANDLE) dfn_.vkDestroyImageView(device_, imagen.vista, nullptr);
-    if (imagen.imagen != VK_NULL_HANDLE) dfn_.vkDestroyImage(device_, imagen.imagen, nullptr);
-    if (imagen.memoria != VK_NULL_HANDLE) dfn_.vkFreeMemory(device_, imagen.memoria, nullptr);
-    imagen = Imagen{};
   }
 
   // First time: to GENERAL (valid for copy, clear and sampling) and cleared to zero.
@@ -6581,6 +6716,17 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   uint32_t fh2_prof_sets_libres_ = 0;
   bool fh2_prof_fallo_ = false;
   uint64_t fh2_profundidades_empaquetadas_ = 0;
+  // Resolved textures of other shapes kept aside per address (ObtenerResuelta).
+  std::unordered_map<uint64_t, Resuelta> fh2_variantes_;
+  uint64_t fh2_variantes_cambiadas_ = 0;
+  uint64_t fh2_entregas_lecturas_ = 0;
+  // Resolved textures replaced by another shape, waiting for the GPU to finish with them (Fh2VaciarCementerio).
+  struct Fh2Enterrada {
+    Imagen imagen;
+    uint64_t orden = 0;  // the last submission that may use it
+  };
+  std::vector<Fh2Enterrada> fh2_cementerio_;
+  uint64_t fh2_enterradas_ = 0;
   uint32_t fh2_copias_foto_ = 0;  // copies to fh2_nativo_foto_copia in this frame
 #endif
   Imagen mosaico_;

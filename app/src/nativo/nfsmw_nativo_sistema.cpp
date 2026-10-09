@@ -1916,6 +1916,11 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
       case xenos::PM4_INTERRUPT: {
         if (palabras < 1) break;
         AnotarVallaCopias();  // Measurement only
+#if defined(FH2_RECOMP)
+        if (destinos_) {
+          destinos_->Fh2EntregarLecturas();  // the CPU may read them in the interrupt (see EVENT_WRITE_SHD)
+        }
+#endif
         const uint32_t cpus = datos.Leer();
         for (uint32_t cpu = 0; cpu < 6; ++cpu) {
           if (cpus & (1u << cpu)) {
@@ -2018,6 +2023,11 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
       case xenos::PM4_MEM_WRITE: {
         if (palabras < 1) break;
         AnotarVallaCopias();  // Measurement only
+#if defined(FH2_RECOMP)
+        if (destinos_) {
+          destinos_->Fh2EntregarLecturas();  // a value the CPU may be polling (see EVENT_WRITE_SHD)
+        }
+#endif
         uint32_t direccion = datos.Leer();
         for (uint32_t i = 1; i < palabras; ++i) {
           EscribirMemoria(direccion, datos.Leer());
@@ -2054,6 +2064,11 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
         const uint32_t direccion = datos.Leer();
         const uint32_t valor = datos.Leer();
         EscribirRegistro(rex::graphics::XE_GPU_REG_VGT_EVENT_INITIATOR, iniciador & 0x3F);
+#if defined(FH2_RECOMP)
+        if (destinos_) {
+          destinos_->Fh2EntregarLecturas();
+        }
+#endif
         EscribirMemoria(direccion, ((iniciador >> 31) & 0x1)
                                        ? contador_.load(std::memory_order_relaxed)
                                        : valor);

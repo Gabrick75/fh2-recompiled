@@ -87,6 +87,9 @@ class DestinosNativos {
   virtual EstadisticasDibujos EstadisticasDeDibujos() const = 0;
   // Deferred vertex copies finished: before returning the read pointer to the game.
   virtual void EsperarSubidas() = 0;
+  // FH2: before the ring writes a fence the CPU waits on, the read-backs of resolves already recorded reach guest
+  // memory (the CPU reads them right after the fence, as on the console, where the copy is done by then).
+  virtual void Fh2EntregarLecturas() {}
   // Vertex copies queued and not done yet (only to measure the fences).
   virtual size_t CopiasPendientes() const { return 0; }
 
