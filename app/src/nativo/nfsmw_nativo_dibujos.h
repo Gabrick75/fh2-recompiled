@@ -86,6 +86,7 @@ struct ImagenNativa {
   // FH2 resolves its scene in horizontal strips, each copy clearing its strip: the rows already cleared from row 0
   // whose clear is held back until the last strip (see Fh2BorrarAhora in nfsmw_nativo_destinos.cpp).
   uint32_t fh2_borrado_pendiente = 0;
+  bool fh2_almacenamiento = false;  // created with STORAGE usage (the scaled resolve copy writes it)
 #endif
   uint32_t resuelta_base = 0;  // where its content is while contenido_invalido
 };

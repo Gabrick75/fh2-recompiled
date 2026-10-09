@@ -26,6 +26,9 @@
 // Everything is used only by the native system's PM4 ring thread: no locks.
 
 #include "nfsmw_nativo_destinos.h"
+#if defined(FH2_RECOMP)
+#include "shaders/fh2_copia_escala_spv.h"
+#endif
 #include "nfsmw_esperas_tiron.h"
 #include "nfsmw_nativo_shaders.h"  // Samplers of the PS (nfsmw_nativo_diag_lectores_s)
 #include "nfsmw_nativo_sincronizacion.h"
@@ -1672,7 +1675,13 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
          * 17,350 restores, almost one for one; the game draws on top again without clearing and the copy is
          * paid anyway, only later and with two operations instead of one.
          */
-        if (entero_color && borrar_color && ResolverSinCopia() &&
+#if defined(FH2_RECOMP)
+        // The copy's exponent bias (RB_COPY_DEST_INFO 16-21): FH2 resolves its HDR scene with -2 and its blurs with -4.
+        const int32_t fh2_sesgo = int32_t(reg.rb_copy_dest_info << 10) >> 26;
+#else
+        const int32_t fh2_sesgo = 0;
+#endif
+        if (entero_color && borrar_color && ResolverSinCopia() && fh2_sesgo == 0 &&
             REXCVAR_GET(nfsmw_nativo_intercambiar_color)) {
           // With x0 = y0 = 0 the tiling offset is 0, so the address is the base as is.
           if (IntercambiarConResuelta(*destino_render, *resuelta, reg.rb_copy_dest_base & 0x1FFFFFFF)) {
@@ -1692,6 +1701,15 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         // reads, it is deferred.
         ResolverFrontalAnterior(base_resuelta,
                                 dx == 0 && dy == 0 && ancho == resuelta->imagen.ancho && alto == resuelta->imagen.alto);
+#if defined(FH2_RECOMP)
+        if (fh2_sesgo != 0 && Fh2CopiarConEscala(*destino_render, resuelta->imagen, x0, y0, dx, dy, ancho, alto,
+                                                  std::ldexp(1.0f, fh2_sesgo))) {
+          ++copias_;
+          AnotarCopia(ancho, alto);
+          ResueltaEscrita(base_resuelta, uint64_t(ancho) * alto);
+          LeerResuelta(reg, *resuelta, x0, y0, dx, dy, ancho, alto);
+        } else
+#endif
         if (destino_render->formato != resuelta->imagen.formato) {
           // A render target in another host format than its texture (NFS Carbon's half float scene resolved to
           // 8_8_8_8): vkCmdCopyImage needs compatible formats, a 1:1 blit converts.
@@ -4268,6 +4286,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       // Another size or format at the same address: the old image may still be in use.
       EnviarTrabajo(true);
       EsperarGpu();
+#if defined(FH2_RECOMP)
+      Fh2OlvidarSetsEscala();  // its view is going away, and the GPU is idle
+#endif
       if (dibujos_) {
         dibujos_->OlvidarImagen(it->second.imagen.imagen);
       }
@@ -4285,9 +4306,15 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     const VkImageUsageFlags uso_destino = EsProfundidadFormato(formato_host)
                                               ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
                                               : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+#if defined(FH2_RECOMP)
+    const bool almacenamiento = !EsProfundidadFormato(formato_host) && Fh2FormatoEscalable(formato_host);
+#else
+    const bool almacenamiento = false;
+#endif
     if (!Crear(resuelta.imagen, ancho, alto,
                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | uso_destino,
+                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | uso_destino |
+                   (almacenamiento ? VK_IMAGE_USAGE_STORAGE_BIT : 0),
                formato_host)) {
       Rechazar(10, "no se pudo crear una textura resuelta");
       return nullptr;
@@ -4295,6 +4322,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     resuelta.formato_guest = formato;
     resuelta.intercambio_rb = intercambio_rb;
     resuelta.imagen.intercambio_rb = intercambio_rb;
+#if defined(FH2_RECOMP)
+    resuelta.imagen.fh2_almacenamiento = almacenamiento;
+#endif
     REXLOG_INFO("[nativo] C2: textura resuelta en {:08X}, {}x{}, formato {}", base, ancho, alto,
                 formato);
     if (dibujos_) {
@@ -4540,6 +4570,167 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
    * this does not touch it). Each one costs a pipeline drain, twice per frame in the menu. The whole
    * target is copied: that is what the EDRAM held and what the resolve reads.
    */
+#if defined(FH2_RECOMP)
+  // Whether a resolved texture of this format can be written by the scaled copy (storage image support).
+  bool Fh2FormatoEscalable(VkFormat formato) {
+    switch (formato) {
+      case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_A2B10G10R10_UNORM_PACK32: case VK_FORMAT_R16G16B16A16_UNORM:
+      case VK_FORMAT_R16G16B16A16_SFLOAT: case VK_FORMAT_R16G16_SFLOAT: case VK_FORMAT_R32_SFLOAT:
+        break;
+      default:
+        return false;
+    }
+    VkFormatProperties propiedades{};
+    dispositivo_->vulkan_instance()->functions().vkGetPhysicalDeviceFormatProperties(dispositivo_->physical_device(),
+                                                                                    formato, &propiedades);
+    return (propiedades.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0;
+  }
+
+  VkPipeline Fh2PipelineEscala(VkFormat formato) {
+    if (fh2_escala_fallo_) return VK_NULL_HANDLE;
+    const auto it = fh2_escala_pipelines_.find(formato);
+    if (it != fh2_escala_pipelines_.end()) return it->second;
+    if (fh2_escala_layout_ == VK_NULL_HANDLE) {
+      VkDescriptorSetLayoutBinding enlaces[2]{};
+      enlaces[0] = {0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+      enlaces[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+      VkDescriptorSetLayoutCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+      info.bindingCount = 2;
+      info.pBindings = enlaces;
+      const VkPushConstantRange rango{VK_SHADER_STAGE_COMPUTE_BIT, 0, 28};
+      VkPipelineLayoutCreateInfo info_layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+      info_layout.setLayoutCount = 1;
+      info_layout.pSetLayouts = &fh2_escala_layout_;
+      info_layout.pushConstantRangeCount = 1;
+      info_layout.pPushConstantRanges = &rango;
+      if (dfn_.vkCreateDescriptorSetLayout(device_, &info, nullptr, &fh2_escala_layout_) != VK_SUCCESS ||
+          dfn_.vkCreatePipelineLayout(device_, &info_layout, nullptr, &fh2_escala_pipeline_layout_) != VK_SUCCESS) {
+        fh2_escala_fallo_ = true;
+        return VK_NULL_HANDLE;
+      }
+    }
+    const uint32_t* codigo = nullptr;
+    size_t bytes = 0;
+    switch (formato) {
+      case VK_FORMAT_R8G8B8A8_UNORM: codigo = kFh2CopiaEscala_rgba8; bytes = sizeof(kFh2CopiaEscala_rgba8); break;
+      case VK_FORMAT_A2B10G10R10_UNORM_PACK32: codigo = kFh2CopiaEscala_rgb10_a2; bytes = sizeof(kFh2CopiaEscala_rgb10_a2); break;
+      case VK_FORMAT_R16G16B16A16_UNORM: codigo = kFh2CopiaEscala_rgba16; bytes = sizeof(kFh2CopiaEscala_rgba16); break;
+      case VK_FORMAT_R16G16B16A16_SFLOAT: codigo = kFh2CopiaEscala_rgba16f; bytes = sizeof(kFh2CopiaEscala_rgba16f); break;
+      case VK_FORMAT_R16G16_SFLOAT: codigo = kFh2CopiaEscala_rg16f; bytes = sizeof(kFh2CopiaEscala_rg16f); break;
+      case VK_FORMAT_R32_SFLOAT: codigo = kFh2CopiaEscala_r32f; bytes = sizeof(kFh2CopiaEscala_r32f); break;
+      default: return VK_NULL_HANDLE;
+    }
+    VkShaderModuleCreateInfo info_modulo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    info_modulo.codeSize = bytes;
+    info_modulo.pCode = codigo;
+    VkShaderModule modulo = VK_NULL_HANDLE;
+    if (dfn_.vkCreateShaderModule(device_, &info_modulo, nullptr, &modulo) != VK_SUCCESS) {
+      return VK_NULL_HANDLE;
+    }
+    VkComputePipelineCreateInfo info_pipeline{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    info_pipeline.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    info_pipeline.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    info_pipeline.stage.module = modulo;
+    info_pipeline.stage.pName = "main";
+    info_pipeline.layout = fh2_escala_pipeline_layout_;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    const VkResult r = dfn_.vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &info_pipeline, nullptr, &pipeline);
+    dfn_.vkDestroyShaderModule(device_, modulo, nullptr);
+    if (r != VK_SUCCESS) return VK_NULL_HANDLE;
+    REXLOG_INFO("[fh2 nativo] copias con sesgo de exponente: pipeline para el formato {}", int(formato));
+    fh2_escala_pipelines_[formato] = pipeline;
+    return pipeline;
+  }
+
+  // Forgets every cached descriptor set. Only with the GPU idle (the sets may be in use otherwise).
+  void Fh2OlvidarSetsEscala() {
+    fh2_escala_sets_.clear();
+    if (fh2_escala_pool_ != VK_NULL_HANDLE) {
+      dfn_.vkResetDescriptorPool(device_, fh2_escala_pool_, 0);
+      fh2_escala_sets_libres_ = 256;
+    }
+  }
+
+  // origen: the render target; destino: the resolved texture (created with STORAGE usage). Copies w x h from
+  // (x0, y0) to (dx, dy) times escala. False if it cannot (the caller copies as before).
+  bool Fh2CopiarConEscala(Imagen& origen, Imagen& destino, int32_t x0, int32_t y0, uint32_t dx, uint32_t dy, uint32_t w,
+                          uint32_t h, float escala) {
+    if (!destino.fh2_almacenamiento || origen.vista == VK_NULL_HANDLE || destino.vista == VK_NULL_HANDLE) return false;
+    const VkPipeline pipeline = Fh2PipelineEscala(destino.formato);
+    if (pipeline == VK_NULL_HANDLE) return false;
+    if (fh2_escala_pool_ == VK_NULL_HANDLE) {
+      const VkDescriptorPoolSize tamanos[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 256}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 256}};
+      VkDescriptorPoolCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+      info.maxSets = 256;
+      info.poolSizeCount = 2;
+      info.pPoolSizes = tamanos;
+      if (dfn_.vkCreateDescriptorPool(device_, &info, nullptr, &fh2_escala_pool_) != VK_SUCCESS) {
+        fh2_escala_fallo_ = true;
+        return false;
+      }
+      fh2_escala_sets_libres_ = 256;
+    }
+    const auto clave = std::make_pair(origen.vista, destino.vista);
+    auto it = fh2_escala_sets_.find(clave);
+    if (it == fh2_escala_sets_.end()) {
+      if (!fh2_escala_sets_libres_) {
+        // Full: everything recorded is submitted and waited for, then the pool starts over.
+        EnviarTrabajo(true);
+        EsperarGpu();
+        Fh2OlvidarSetsEscala();
+        if (!Grabar()) return false;
+      }
+      VkDescriptorSetAllocateInfo reserva{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+      reserva.descriptorPool = fh2_escala_pool_;
+      reserva.descriptorSetCount = 1;
+      reserva.pSetLayouts = &fh2_escala_layout_;
+      VkDescriptorSet set = VK_NULL_HANDLE;
+      if (dfn_.vkAllocateDescriptorSets(device_, &reserva, &set) != VK_SUCCESS) return false;
+      --fh2_escala_sets_libres_;
+      const VkDescriptorImageInfo imagenes[2] = {{VK_NULL_HANDLE, origen.vista, VK_IMAGE_LAYOUT_GENERAL},
+                                                 {VK_NULL_HANDLE, destino.vista, VK_IMAGE_LAYOUT_GENERAL}};
+      VkWriteDescriptorSet escrituras[2]{};
+      for (uint32_t b = 0; b < 2; ++b) {
+        escrituras[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        escrituras[b].dstSet = set;
+        escrituras[b].dstBinding = b;
+        escrituras[b].descriptorCount = 1;
+        escrituras[b].descriptorType = b ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        escrituras[b].pImageInfo = &imagenes[b];
+      }
+      dfn_.vkUpdateDescriptorSets(device_, 2, escrituras, 0, nullptr);
+      it = fh2_escala_sets_.emplace(clave, set).first;
+    }
+    VkMemoryBarrier barrera{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrera.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    barrera.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    dfn_.vkCmdPipelineBarrier(comandos_trabajo_,
+                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrera, 0, nullptr, 0, nullptr);
+    dfn_.vkCmdBindPipeline(comandos_trabajo_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    dfn_.vkCmdBindDescriptorSets(comandos_trabajo_, VK_PIPELINE_BIND_POINT_COMPUTE, fh2_escala_pipeline_layout_, 0, 1,
+                                 &it->second, 0, nullptr);
+    struct {
+      int32_t origen[2], destino[2], tamano[2];
+      float escala;
+    } constantes{{x0, y0}, {int32_t(dx), int32_t(dy)}, {int32_t(w), int32_t(h)}, escala};
+    dfn_.vkCmdPushConstants(comandos_trabajo_, fh2_escala_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                            sizeof(constantes), &constantes);
+    dfn_.vkCmdDispatch(comandos_trabajo_, (w + 7) / 8, (h + 7) / 8, 1);
+    barrera.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrera.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT |
+                            VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dfn_.vkCmdPipelineBarrier(comandos_trabajo_, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                              VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              0, 1, &barrera, 0, nullptr, 0, nullptr);
+    ++fh2_copias_escaladas_;
+    return true;
+  }
+#endif
+
   void CopiarDeVueltaParaResolver(Imagen& destino, Imagen& origen) {
     Preparar(origen);
     Preparar(destino);
@@ -6124,6 +6315,16 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   std::vector<uint32_t> resueltas_fotograma_;
 #if defined(FH2_RECOMP)
   Imagen fh2_instantanea_;  // see the FH2 diagnostics in the copy
+  // Resolves with an exponent bias (Fh2CopiarConEscala): compute pipelines per destination format, and the
+  // descriptor sets of each (render target, resolved texture) pair, reused while both images live.
+  VkDescriptorSetLayout fh2_escala_layout_ = VK_NULL_HANDLE;
+  VkPipelineLayout fh2_escala_pipeline_layout_ = VK_NULL_HANDLE;
+  VkDescriptorPool fh2_escala_pool_ = VK_NULL_HANDLE;
+  std::map<VkFormat, VkPipeline> fh2_escala_pipelines_;
+  std::map<std::pair<VkImageView, VkImageView>, VkDescriptorSet> fh2_escala_sets_;
+  uint32_t fh2_escala_sets_libres_ = 0;
+  bool fh2_escala_fallo_ = false;
+  uint64_t fh2_copias_escaladas_ = 0;
   uint32_t fh2_copias_foto_ = 0;  // copies to fh2_nativo_foto_copia in this frame
 #endif
   Imagen mosaico_;
