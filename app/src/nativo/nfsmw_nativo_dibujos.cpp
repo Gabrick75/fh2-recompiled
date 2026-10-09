@@ -9173,7 +9173,19 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                     r ? static_cast<const void*>(r->imagen) : nullptr);
       }
 #endif
-      if (const ImagenNativa* resuelta = contexto_->TexturaResuelta(base & 0x1FFFFFFF)) {
+      const ImagenNativa* resuelta_fh2 = contexto_->TexturaResuelta(base & 0x1FFFFFFF);
+#if defined(FH2_RECOMP)
+      // The address holds another shape than the fetch asks for: the texture of that shape resolved there last (the
+      // game reads last frame's luminance from an address it has since resolved other shapes to).
+      if (resuelta_fh2 && (resuelta_fh2->ancho != (f[2] & 0x1FFF) + 1 ||
+                           resuelta_fh2->alto != ((f[2] >> 13) & 0x1FFF) + 1)) {
+        if (const ImagenNativa* forma = contexto_->Fh2VarianteResuelta(base & 0x1FFFFFFF, (f[2] & 0x1FFF) + 1,
+                                                                        ((f[2] >> 13) & 0x1FFF) + 1)) {
+          resuelta_fh2 = forma;
+        }
+      }
+#endif
+      if (const ImagenNativa* resuelta = resuelta_fh2) {
         // Without this the shadows flicker.
         // With nfsmw_nativo_inv_tamano_tex the shader takes 1/size from the shared constants, and this path
         // used to return without reporting the size: 0 was written and the tfetch offsets (the taps of the

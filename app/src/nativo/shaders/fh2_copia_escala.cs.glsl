@@ -14,6 +14,7 @@ layout(push_constant) uniform Constantes {
   ivec2 destino_xy;
   ivec2 tamano;
   float escala;
+  float maximo;  // the render target's largest value (31.875 for 2_10_10_10_FLOAT, 7e3); applied before the scale
 } c;
 
 void main() {
@@ -21,5 +22,7 @@ void main() {
   if (any(greaterThanEqual(i, c.tamano))) {
     return;
   }
-  imageStore(destino, c.destino_xy + i, texelFetch(origen, c.origen_xy + i, 0) * c.escala);
+  vec4 texel = texelFetch(origen, c.origen_xy + i, 0);
+  texel.rgb = min(texel.rgb, vec3(c.maximo));
+  imageStore(destino, c.destino_xy + i, texel * c.escala);
 }

@@ -640,6 +640,8 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_cementerio, false, "FH2",
                     "Experimental: a resolved texture replaced by another shape at the same address is destroyed once "
                     "the GPU is done with it, instead of waiting for the GPU right there (about 4.5 waits per frame in "
                     "the race). Presentation stops with it on: not finished");
+REXCVAR_DEFINE_BOOL(fh2_nativo_variantes_limpias, true, "FH2",
+                    "With fh2_nativo_variantes: a kept texture is cleared when it comes back, as a new image would be");
 REXCVAR_DEFINE_BOOL(fh2_nativo_variantes, false, "FH2",
                     "Experimental: a resolved texture of another shape at the same address is kept aside and reused "
                     "(no GPU wait), but the race's exposure goes black in about half the runs");
@@ -1753,8 +1755,11 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         ResolverFrontalAnterior(base_resuelta,
                                 dx == 0 && dy == 0 && ancho == resuelta->imagen.ancho && alto == resuelta->imagen.alto);
 #if defined(FH2_RECOMP)
+        // 2_10_10_10_FLOAT (3) and its AS_16_16_16_16 view (12) are 7e3 on the console: nothing above 31.875. The host
+        // render target is float16 and keeps more; without the clamp the sun and the sky lowered the exposure.
         if (fh2_sesgo != 0 && Fh2CopiarConEscala(*destino_render, resuelta->imagen, x0, y0, dx, dy, ancho, alto,
-                                                  std::ldexp(1.0f, fh2_sesgo))) {
+                                                  std::ldexp(1.0f, fh2_sesgo),
+                                                  formato_color == 3 || formato_color == 12 ? 31.875f : 65504.0f)) {
           ++copias_;
           AnotarCopia(ancho, alto);
           ResueltaEscrita(base_resuelta, uint64_t(ancho) * alto);
@@ -4364,7 +4369,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   }
 
   static uint64_t Fh2ClaveVariante(uint32_t base, uint32_t ancho, uint32_t alto, VkFormat formato) {
-    return (uint64_t(base) << 32) ^ (uint64_t(ancho) << 18) ^ (uint64_t(alto) << 4) ^ uint64_t(formato) * 0x9E3779B1u;
+    return (uint64_t(base) << 32) | ((uint32_t(ancho) << 18) ^ (uint32_t(alto) << 4) ^ uint32_t(formato) * 0x9E3779B1u);
   }
 
   // If an image of that shape was kept aside for the address, it becomes the address's texture and the current one
@@ -4384,6 +4389,31 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     it->second.formato_guest = formato;
     it->second.intercambio_rb = intercambio_rb;
     it->second.imagen.intercambio_rb = intercambio_rb;
+    // Cleared where it comes back in the work buffer, as a new image would be (fh2_nativo_variantes_limpias).
+    if (REXCVAR_GET(fh2_nativo_variantes_limpias) && Grabar()) {
+      if (dibujos_) dibujos_->TerminarPase();
+      Imagen& im = it->second.imagen;
+      VkMemoryBarrier barrera{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+      barrera.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT |
+                              VK_ACCESS_SHADER_WRITE_BIT;
+      barrera.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      dfn_.vkCmdPipelineBarrier(comandos_trabajo_, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                                1, &barrera, 0, nullptr, 0, nullptr);
+      if (EsProfundidadFormato(im.formato)) {
+        if (borrar_profundidad_) {
+          const VkClearDepthStencilValue lejos{1.0f, 0};
+          borrar_profundidad_(comandos_trabajo_, im.imagen, VK_IMAGE_LAYOUT_GENERAL, &lejos, 1, &kRangoProfundidad);
+        }
+      } else {
+        const VkClearColorValue cero{};
+        dfn_.vkCmdClearColorImage(comandos_trabajo_, im.imagen, VK_IMAGE_LAYOUT_GENERAL, &cero, 1, &kRangoColor);
+      }
+      barrera.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      barrera.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT |
+                              VK_ACCESS_SHADER_WRITE_BIT;
+      dfn_.vkCmdPipelineBarrier(comandos_trabajo_, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                                1, &barrera, 0, nullptr, 0, nullptr);
+    }
     if (dibujos_) {
       dibujos_->InvalidarTexturas();  // the address samples another image now
     }
@@ -4769,7 +4799,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       VkDescriptorSetLayoutCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
       info.bindingCount = 2;
       info.pBindings = enlaces;
-      const VkPushConstantRange rango{VK_SHADER_STAGE_COMPUTE_BIT, 0, 28};
+      const VkPushConstantRange rango{VK_SHADER_STAGE_COMPUTE_BIT, 0, 32};
       VkPipelineLayoutCreateInfo info_layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
       info_layout.setLayoutCount = 1;
       info_layout.pSetLayouts = &fh2_escala_layout_;
@@ -4826,7 +4856,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   // origen: the render target; destino: the resolved texture (created with STORAGE usage). Copies w x h from
   // (x0, y0) to (dx, dy) times escala. False if it cannot (the caller copies as before).
   bool Fh2CopiarConEscala(Imagen& origen, Imagen& destino, int32_t x0, int32_t y0, uint32_t dx, uint32_t dy, uint32_t w,
-                          uint32_t h, float escala) {
+                          uint32_t h, float escala, float maximo) {
     if (!destino.fh2_almacenamiento || origen.vista == VK_NULL_HANDLE || destino.vista == VK_NULL_HANDLE) return false;
     const VkPipeline pipeline = Fh2PipelineEscala(destino.formato);
     if (pipeline == VK_NULL_HANDLE) return false;
@@ -4885,8 +4915,8 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                                  &it->second, 0, nullptr);
     struct {
       int32_t origen[2], destino[2], tamano[2];
-      float escala;
-    } constantes{{x0, y0}, {int32_t(dx), int32_t(dy)}, {int32_t(w), int32_t(h)}, escala};
+      float escala, maximo;
+    } constantes{{x0, y0}, {int32_t(dx), int32_t(dy)}, {int32_t(w), int32_t(h)}, escala, maximo};
     dfn_.vkCmdPushConstants(comandos_trabajo_, fh2_escala_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                             sizeof(constantes), &constantes);
     dfn_.vkCmdDispatch(comandos_trabajo_, (w + 7) / 8, (h + 7) / 8, 1);
@@ -5057,6 +5087,17 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                                   VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                               0, 1, &barrera, 0, nullptr, 0, nullptr);
     ++fh2_profundidades_empaquetadas_;
+  }
+
+  const ImagenNativa* Fh2VarianteResuelta(uint32_t direccion, uint32_t ancho, uint32_t alto) override {
+    if (!REXCVAR_GET(fh2_nativo_variantes) || fh2_variantes_.empty()) return nullptr;
+    for (const auto& [clave, variante] : fh2_variantes_) {
+      if ((clave >> 32) == direccion && variante.imagen.ancho == ancho && variante.imagen.alto == alto &&
+          variante.imagen.preparada) {
+        return &variante.imagen;
+      }
+    }
+    return nullptr;
   }
 
   const ImagenNativa* Fh2ProfundidadEmpaquetada(uint32_t direccion) override {
