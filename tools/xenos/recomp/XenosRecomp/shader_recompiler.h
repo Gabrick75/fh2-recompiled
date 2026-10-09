@@ -33,6 +33,12 @@ struct ShaderRecompiler : StringBuffer
     // Vertex fetches without a declared element (FH2's instance data through vertex fetch constants 88-95): the
     // constants used, as a bit mask of (constant - 88), for the renderer.
     uint32_t fh2BuscasManuales = 0;
+    // r0 holds the vertex index until something writes it; fetches indexed by anything else (bone indices,
+    // instance indices) read their buffer directly, and a mini fetch does what its full fetch did.
+    uint32_t fh2R0Escrito = 0;  // components of r0 written (bit per component)
+    bool fh2UltimaBuscaManual = false;
+    int32_t fh2UltimoElementoCompleto = -1;  // element ordinal of the last full fetch read directly
+    std::unordered_map<uint32_t, uint32_t> fh2OrdinalElemento;  // fetch instruction address -> element ordinal
     // Float and loop constants the container defines as literals (the rest are read from the constants the game
     // sets: the D3D library's own shaders have no constant table).
     std::set<uint32_t> fh2ConstantesLiterales, fh2BuclesLiterales;

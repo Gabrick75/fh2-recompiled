@@ -1163,9 +1163,10 @@ constexpr size_t kMaxRegistrosLista = 4096;
 // 90 words up to g_InputRemap (bytes 296..359) and 32 more for 1/size of the 16 texture slots (bytes
 // 360..487), which avoid querying the texture size on every sample.
 #if defined(FH2_RECOMP)
-// FH2: NFS Carbon's 128 words, then FH2's own area up to byte 896 (FH2_COMPARTIDA_BYTES in tools/xenos/recomp's
-// shader_common.h): vertex shader samplers at 512, direct vertex fetches at 640, loop constants at 768.
-constexpr uint32_t kPalabrasCompartidas = 224;
+// FH2: NFS Carbon's 128 words, then FH2's own area up to byte 1152 (FH2_COMPARTIDA_BYTES in tools/xenos/recomp's
+// shader_common.h): vertex shader samplers at 512, direct vertex fetches at 640, loop constants at 768, the patched
+// parameters of each declared vertex element at 896.
+constexpr uint32_t kPalabrasCompartidas = 288;  // up to FH2_COMPARTIDA_BYTES (1152), with the element parameters
 constexpr uint32_t kPalabraRemapeosAltos = 122;
 constexpr uint32_t kPalabraFh2TexturasVs = 128;     // 512: dimension * 4 + slot - 16
 constexpr uint32_t kPalabraFh2SamplersVs = 140;     // 560
@@ -1300,7 +1301,7 @@ constexpr VkDeviceSize kUboBytesPs = 256 * 16;
 constexpr VkDeviceSize kUboBytesPs = 224 * 16;
 #endif
 #if defined(FH2_RECOMP)
-constexpr VkDeviceSize kUboBytesCompartidas = kPalabrasCompartidas * 4;  // 224 words
+constexpr VkDeviceSize kUboBytesCompartidas = kPalabrasCompartidas * 4;  // 288 words
 #elif defined(NFSC_RECOMP)
 constexpr VkDeviceSize kUboBytesCompartidas = 32 * 16;  // 128 words
 #else
@@ -2782,6 +2783,23 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         necesarios = disponibles > inicio ? (disponibles - inicio) / enlace.zancada * enlace.zancada : 0;
       }
       if (!necesarios || direccion + inicio + necesarios > kMemoriaFisica) {
+#if defined(FH2_RECOMP)
+        static int avisos = 0;
+        if (avisos < 12) {
+          ++avisos;
+          std::string fetches;
+          for (const ElementoVertice& e : p.vs->elementos) {
+            const uint32_t w0 = p.vs_microcodigo[size_t(e.instruccion) * 3];
+            fetches += fmt::format(" {}{}@{}:r{}.{} c{}", NombreUso(e.uso), e.indice_uso, e.instruccion, (w0 >> 5) & 0x3F,
+                                   "xyzw"[(w0 >> 30) & 3], ((w0 >> 20) & 0x1F) * 3 + ((w0 >> 25) & 0x3));
+          }
+          REXLOG_INFO("[fh2 nativo] causa 12 fetches:{}", fetches);
+          REXLOG_INFO("[fh2 nativo] causa 12: VS n{} PS n{} tipo {} vertices {} cuenta {} vmin {} ranura {} d0 {:08X} d1 "
+                      "{:08X} zancada {} rectangulos {}",
+                      p.vs ? int(p.vs->numero) : -1, p.ps ? int(p.ps->numero) : -1, r[rex::graphics::XE_GPU_REG_VGT_DRAW_INITIATOR] & 0x3F, vertices, cuenta, vmin,
+                      enlace.ranura, d0, d1, enlace.zancada, rectangulos);
+        }
+#endif
         return Rechazar(12, "vertices fuera de la memoria");
       }
       origenes[b] = {memoria_->TranslatePhysical(uint32_t(direccion + inicio)),
@@ -3090,7 +3108,31 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     // With a single binding the copy goes to a multiple of the stride: up to stride - 4 bytes of padding.
     const VkDeviceSize hueco_base_cero =
         vertices_base_cero_ && entrada->enlaces.size() == 1 ? VkDeviceSize(entrada->enlaces[0].zancada) : 0;
-    const VkDeviceSize necesarios = hueco_base_cero + bytes_vertices + bytes_indices + bytes_texturas +
+#if defined(FH2_RECOMP)
+    // FH2: the buffers of vertex fetch constants 88-95 a vertex shader reads directly (g_Fh2Buscas: instance data,
+    // bone matrices), copied whole in host byte order.
+    struct BusquedaFh2 {
+      uint32_t direccion = 0, palabras = 0;
+      xenos::Endian orden = xenos::Endian::kNone;
+    };
+    std::array<BusquedaFh2, 8> buscas_fh2{};
+    VkDeviceSize bytes_buscas_fh2 = 0;
+    if (p.vs && p.vs->fh2_buscas) {
+      for (uint32_t k = 0; k < 8; ++k) {
+        const uint32_t d0 = r[kRegFetch + (88 + k) * 2], d1 = r[kRegFetch + (88 + k) * 2 + 1];
+        if ((d0 & 0x3) != uint32_t(xenos::FetchConstantType::kVertex)) continue;
+        const uint32_t direccion = d0 & 0x1FFFFFFC;
+        uint32_t palabras = (d1 >> 2) & 0xFFFFFF;
+        palabras = std::min<uint32_t>(palabras, (4u << 20) / 4);  // 4 MB at most
+        if (!palabras || uint64_t(direccion) + uint64_t(palabras) * 4 > kMemoriaFisica) continue;
+        buscas_fh2[k] = {direccion, palabras, static_cast<xenos::Endian>(d1 & 0x3)};
+        bytes_buscas_fh2 += VkDeviceSize(palabras) * 4 + 4;
+      }
+    }
+#else
+    const VkDeviceSize bytes_buscas_fh2 = 0;
+#endif
+    const VkDeviceSize necesarios = bytes_buscas_fh2 + hueco_base_cero + bytes_vertices + bytes_indices + bytes_texturas +
                                     2 * VkDeviceSize(kRegistrosConstantes) * 4 +
                                     kPalabrasCompartidas * 4 + 64 * 8 +
                                     // With UBOs the blocks go whole and aligned to alineacion_ubo_
@@ -3227,6 +3269,42 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                                    std::chrono::steady_clock::now() - antes_vertices)
                                    .count());
     }
+#if defined(FH2_RECOMP)
+    if (p.vs && p.vs->fh2_buscas) {
+      constexpr uint32_t kBuscas = 640 / 4, kElementos = 896 / 4;  // FH2_COMPARTIDA_BUSCAS / _ELEMENTOS
+      for (uint32_t k = 0; k < 8; ++k) {
+        const BusquedaFh2& b = buscas_fh2[k];
+        uint32_t* w = compartidas + kBuscas + k * 4;
+        w[0] = w[1] = w[2] = w[3] = 0;
+        if (!b.palabras) continue;
+        VkDeviceSize offset;
+        if (!(dedupe_activo_ && dedupe_.Buscar(b.direccion, b.palabras * 4, uint32_t(b.orden), offset))) {
+          Reservar(VkDeviceSize(b.palabras) * 4, 4, offset);
+          CopiarVertices(TrabajoCopia{memoria_->TranslatePhysical(b.direccion), subida_datos_ + offset, b.palabras,
+                                      b.orden});
+          if (dedupe_activo_) dedupe_.Anotar(b.direccion, b.palabras * 4, uint32_t(b.orden), offset);
+        }
+        w[0] = uint32_t(offset / 4);  // in dwords from the start of the upload buffer (binding 3 covers it whole)
+        w[1] = b.palabras;
+        w[2] = 0;  // already in host byte order
+      }
+      // Each declared element as the D3D patched its fetch (fh2BuscaElemento).
+      const auto& parcheado = p.vs_microcodigo;
+      for (size_t e = 0; e < p.vs->elementos.size() && e < 32; ++e) {
+        const size_t i = size_t(p.vs->elementos[e].instruccion) * 3;
+        uint32_t* w = compartidas + kElementos + e * 2;
+        if (i + 2 >= parcheado.size()) {
+          w[0] = w[1] = 0;
+          continue;
+        }
+        const uint32_t d0 = parcheado[i], d1 = parcheado[i + 1], d2 = parcheado[i + 2];
+        const uint32_t constante = ((d0 >> 20) & 0x1F) * 3 + ((d0 >> 25) & 0x3);
+        const uint32_t banderas = ((d1 >> 12) & 0x1) | (((d1 >> 13) & 0x1) << 1) | (((d1 >> 14) & 0x1) << 2);
+        w[0] = constante | (((d1 >> 16) & 0x3F) << 8) | (banderas << 16) | (((d1 >> 24) & 0x3F) << 24);
+        w[1] = (d2 & 0xFF) | (uint32_t(int32_t(d2 << 1) >> 9) << 8);
+      }
+    }
+#endif
     VkDeviceSize offset_indices = 0;
     if (con_indices) {
       Reservar(bytes_indices, 4, offset_indices);
@@ -8332,26 +8410,39 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     REXLOG_INFO("[nativo] C6: constantes por UBO dinamico (nfsmw_nativo_constantes_ubo) = {}; alternar cada {} s; "
                 "alineacion {} bytes",
                 usar_ubo_ ? "SI" : "no", alternar_ubo_s_, alineacion_ubo_);
-    std::array<VkDescriptorSetLayoutBinding, 3> enlaces_ubo{};
+#if defined(FH2_RECOMP)
+    // FH2: binding 3, the direct vertex fetch buffer (g_Fh2Buscas): the slot's whole upload buffer, not dynamic (the
+    // shared constants carry absolute offsets).
+    constexpr uint32_t kEnlacesSet4 = 4;
+#else
+    constexpr uint32_t kEnlacesSet4 = 3;
+#endif
+    std::array<VkDescriptorSetLayoutBinding, 4> enlaces_ubo{};
     for (uint32_t b = 0; b < 3; ++b) {
       enlaces_ubo[b].binding = b;
       enlaces_ubo[b].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
       enlaces_ubo[b].descriptorCount = 1;
       enlaces_ubo[b].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     }
+    enlaces_ubo[3].binding = 3;
+    enlaces_ubo[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    enlaces_ubo[3].descriptorCount = 1;
+    enlaces_ubo[3].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     VkDescriptorSetLayoutCreateInfo info_ubo{};
     info_ubo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    info_ubo.bindingCount = 3;
+    info_ubo.bindingCount = kEnlacesSet4;
     info_ubo.pBindings = enlaces_ubo.data();
     if (dfn_.vkCreateDescriptorSetLayout(device_, &info_ubo, nullptr, &layout_ubo_) != VK_SUCCESS) {
       return false;
     }
-    const VkDescriptorPoolSize tamano_ubo{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 3 * uint32_t(sets_ubo_.size())};
+    const VkDescriptorPoolSize tamanos_ubo[2] = {
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 3 * uint32_t(sets_ubo_.size())},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, uint32_t(sets_ubo_.size())}};
     VkDescriptorPoolCreateInfo info_pool_ubo{};
     info_pool_ubo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     info_pool_ubo.maxSets = uint32_t(sets_ubo_.size());
-    info_pool_ubo.poolSizeCount = 1;
-    info_pool_ubo.pPoolSizes = &tamano_ubo;
+    info_pool_ubo.poolSizeCount = kEnlacesSet4 == 4 ? 2 : 1;
+    info_pool_ubo.pPoolSizes = tamanos_ubo;
     if (dfn_.vkCreateDescriptorPool(device_, &info_pool_ubo, nullptr, &pool_ubo_) != VK_SUCCESS) {
       return false;
     }
@@ -8381,6 +8472,17 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         escrituras_ubo[b].pBufferInfo = &bloques[b];
       }
       dfn_.vkUpdateDescriptorSets(device_, 3, escrituras_ubo.data(), 0, nullptr);
+#if defined(FH2_RECOMP)
+      const VkDescriptorBufferInfo buscas{subidas_[ranura].bufer, 0, VK_WHOLE_SIZE};
+      VkWriteDescriptorSet escritura_buscas{};
+      escritura_buscas.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      escritura_buscas.dstSet = sets_ubo_[ranura];
+      escritura_buscas.dstBinding = 3;
+      escritura_buscas.descriptorCount = 1;
+      escritura_buscas.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      escritura_buscas.pBufferInfo = &buscas;
+      dfn_.vkUpdateDescriptorSets(device_, 1, &escritura_buscas, 0, nullptr);
+#endif
     }
     const VkPushConstantRange rango{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                     24};
@@ -8614,6 +8716,16 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     }
     uint32_t ubicaciones_usadas = 0;
     for (const ElementoVertice& elemento : vs.elementos) {
+#if defined(FH2_RECOMP)
+      {
+        // FH2: an element whose input the SPIR-V does not declare is read directly (fh2BuscaElemento): no
+        // vertex attribute, no stream.
+        const int32_t u = UbicacionDeUso(elemento.uso, elemento.indice_uso);
+        if (u < 0 || u >= 32 || !((vs.fh2_entradas >> u) & 1)) {
+          continue;
+        }
+      }
+#endif
       const uint32_t registro = (vs.microcodigo[size_t(elemento.instruccion) * 3] >> 12) & 0x3F;
       const uint32_t original = vs.microcodigo[size_t(elemento.instruccion) * 3 + 1] & 0xFFF;
       size_t q = SIZE_MAX;

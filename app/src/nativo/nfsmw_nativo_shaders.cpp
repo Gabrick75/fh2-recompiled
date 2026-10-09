@@ -272,6 +272,44 @@ static bool TieneMarcaSombraMinimo(const std::vector<uint32_t>& spirv) {
 
 // OpKill, OpTerminateInvocation and OpDemoteToHelperInvocation in the module. If the SPIR-V cannot be walked
 // it returns 2, the conservative answer (the fragment stage is kept).
+#if defined(FH2_RECOMP)
+// FH2: the input locations of a vertex shader's SPIR-V and whether it binds set 4 binding 3 (g_Fh2Buscas).
+static void AnalizarEntradasFh2(const std::vector<uint32_t>& spirv, uint32_t& entradas, bool& buscas) {
+  entradas = 0;
+  buscas = false;
+  if (spirv.size() < 5 || spirv[0] != 0x07230203u) {
+    return;
+  }
+  std::unordered_map<uint32_t, uint32_t> ubicacion, conjunto, enlace;
+  std::vector<uint32_t> variables_entrada;
+  std::vector<uint32_t> variables;
+  for (size_t i = 5; i < spirv.size();) {
+    const uint32_t palabras = spirv[i] >> 16, op = spirv[i] & 0xFFFF;
+    if (palabras == 0 || i + palabras > spirv.size()) {
+      return;
+    }
+    if (op == 71 && palabras >= 4) {  // OpDecorate
+      const uint32_t id = spirv[i + 1], decoracion = spirv[i + 2];
+      if (decoracion == 30) ubicacion[id] = spirv[i + 3];       // Location
+      else if (decoracion == 34) conjunto[id] = spirv[i + 3];   // DescriptorSet
+      else if (decoracion == 33) enlace[id] = spirv[i + 3];     // Binding
+    } else if (op == 59 && palabras >= 4) {  // OpVariable
+      variables.push_back(spirv[i + 2]);
+      if (spirv[i + 3] == 1) variables_entrada.push_back(spirv[i + 2]);  // StorageClass Input
+    }
+    i += palabras;
+  }
+  for (const uint32_t v : variables_entrada) {
+    const auto it = ubicacion.find(v);
+    if (it != ubicacion.end() && it->second < 32) entradas |= 1u << it->second;
+  }
+  for (const uint32_t v : variables) {
+    const auto c = conjunto.find(v), b = enlace.find(v);
+    if (c != conjunto.end() && b != enlace.end() && c->second == 4 && b->second == 3) buscas = true;
+  }
+}
+#endif
+
 static uint32_t ContarKills(const std::vector<uint32_t>& spirv) {
   if (spirv.size() < 5 || spirv[0] != 0x07230203u) {
     return 2;
@@ -328,6 +366,11 @@ bool ShadersNativos::Cargar(const std::filesystem::path& archivo) {
         }
       }
     }
+#if defined(FH2_RECOMP)
+    if (e.vertices) {
+      AnalizarEntradasFh2(shaders[i].spirv, e.fh2_entradas, e.fh2_buscas);
+    }
+#endif
     (e.vertices ? vertex : pixel) += 1;
     d.entradas.push_back(std::move(e));
   }

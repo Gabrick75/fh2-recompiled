@@ -61,6 +61,12 @@ struct EntradaShader {
   bool sombra_minimo = false;
   // Bytes of its float constant buffer that the SPIR-V reads (16 per register).
   uint32_t constantes_bytes = 256 * 16;
+#if defined(FH2_RECOMP)
+  // From the SPIR-V: the vertex input locations it really declares (bit per location; the translator drops the
+  // inputs that are only read directly), and whether it reads the direct vertex fetch buffer (set 4, binding 3).
+  uint32_t fh2_entradas = 0;
+  bool fh2_buscas = false;
+#endif
 };
 
 struct EstadisticasShaders {

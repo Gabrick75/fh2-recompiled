@@ -1,5 +1,6 @@
 #include "shader_recompiler.h"
 #include "shader_common.h"
+#include <cctype>
 #include <stdexcept>
 
 static constexpr char SWIZZLES[] = 
@@ -214,6 +215,50 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
 
     auto findResult = vertexElements.find(address);
 #ifdef FH2_RECOMP
+    // A declared fetch indexed by something else than the vertex index (another register, or r0 once that component
+    // was overwritten: bone indices, instance indices) reads its buffer directly with the parameters the D3D patched
+    // in (fh2BuscaElemento: the renderer writes them per element from the patched microcode).
+    bool fh2Manual;
+    if (instr.isMiniFetch)
+        fh2Manual = fh2UltimaBuscaManual;
+    else
+    {
+        fh2Manual = findResult != vertexElements.end() &&
+            (instr.srcRegister != 0 || ((fh2R0Escrito >> (instr.srcSwizzle & 3)) & 1) != 0);
+        fh2UltimaBuscaManual = fh2Manual;
+    }
+    if (instr.dstRegister == 0)
+    {
+        for (uint32_t c = 0; c < 4; c++)
+            if (((instr.dstSwizzle >> (c * 3)) & 7) != 7)
+                fh2R0Escrito |= 1u << c;
+    }
+    if (findResult != vertexElements.end() && fh2Manual)
+    {
+        const std::string destino = out.substr(marcaPredicado);
+        out.resize(marcaPredicado);
+        const uint32_t ordinal = fh2OrdinalElemento.count(address) ? fh2OrdinalElemento[address] : 0;
+        if (!instr.isMiniFetch)
+        {
+            fh2UltimoElementoCompleto = int32_t(ordinal);
+            indent();
+            println("fh2BuscaIndice = int(floor(r{}.{}{}));", instr.srcRegister, SWIZZLES[instr.srcSwizzle & 3],
+                instr.isIndexRounded ? " + 0.5" : "");
+        }
+        out += destino;
+        println("fh2BuscaElemento({}, {}, fh2BuscaIndice).{};", fh2UltimoElementoCompleto < 0 ? ordinal :
+            uint32_t(fh2UltimoElementoCompleto), ordinal, [&]
+            {
+                std::string swizzle;
+                std::swap(swizzle, out);
+                printDstSwizzle(instr.dstSwizzle, true);
+                std::swap(swizzle, out);
+                return swizzle;
+            }());
+        printDstSwizzle01(instr.dstRegister, instr.dstSwizzle);
+        cerrarSiEscribePredicado(marcaPredicado);
+        return;
+    }
     if (findResult == vertexElements.end())
     {
         // FH2: a fetch the vertex declaration does not describe reads its buffer directly (shader_common.h,
@@ -778,6 +823,16 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
         println("a0 = (int)clamp(floor(({}).w + 0.5), -256.0, 255.0);", op(VECTOR_0));
     }
 
+#ifdef FH2_RECOMP
+    // r0 (the vertex index of a vertex shader) overwritten: later fetches indexed by it read their buffer directly.
+    if (!instr.exportData)
+    {
+        if (instr.vectorDest == 0)
+            fh2R0Escrito |= instr.vectorWriteMask;
+        if (instr.scalarDest == 0)
+            fh2R0Escrito |= instr.scalarWriteMask;
+    }
+#endif
     uint32_t vectorWriteMask = instr.vectorWriteMask;
     if (instr.exportData)
         vectorWriteMask &= ~instr.scalarWriteMask;
@@ -1565,6 +1620,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             if (repetido)
             {
                 vertexElements.emplace(uint32_t(vertexElement.address), vertexElement);
+                fh2OrdinalElemento.emplace(uint32_t(vertexElement.address), i);
                 continue;
             }
         #endif
@@ -1594,6 +1650,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 uint32_t(vertexElement.usageIndex), USAGE_SEMANTICS[uint32_t(vertexElement.usage)]);
 
             vertexElements.emplace(uint32_t(vertexElement.address), vertexElement);
+        #ifdef FH2_RECOMP
+            fh2OrdinalElemento.emplace(uint32_t(vertexElement.address), i);
+        #endif
         }
 
     #ifdef UNLEASHED_RECOMP
@@ -1758,6 +1817,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         out += "\tCubeMapData cubeMapData = (CubeMapData)0;\n";
         out += "\tuint fh2BuscaConstante = 0;\n";
         out += "\tint fh2BuscaDireccion = 0;\n";
+        out += "\tint fh2BuscaIndice = 0;\n";
     }
 #endif
 
@@ -2222,4 +2282,56 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 #endif
 
     out += "}";
+
+#ifdef FH2_RECOMP
+    // A vertex input whose fetches all read their buffer directly is not read: it leaves the signature, so its
+    // location is not an input of the SPIR-V and the renderer does not bind it.
+    if (!isPixelShader)
+    {
+        const size_t inicioMain = out.find("void main(");
+        const size_t cuerpo = inicioMain == std::string::npos ? std::string::npos : out.find("\n{\n", inicioMain);
+        if (cuerpo != std::string::npos)
+        {
+            std::string firma = out.substr(inicioMain, cuerpo - inicioMain);
+            const std::string_view resto(out.data() + cuerpo, out.size() - cuerpo);
+            std::string nueva;
+            size_t pos = 0;
+            while (pos < firma.size())
+            {
+                size_t fin = firma.find('\n', pos);
+                if (fin == std::string::npos) fin = firma.size();
+                const std::string linea = firma.substr(pos, fin - pos);
+                bool quitar = false;
+                const size_t in = linea.find(" in ");
+                if (in != std::string::npos && linea.find("SV_") == std::string::npos)
+                {
+                    const size_t nombre = linea.find(" i", in + 3);
+                    const size_t dos = linea.find(" :", nombre);
+                    if (nombre != std::string::npos && dos != std::string::npos)
+                    {
+                        const std::string variable = linea.substr(nombre + 1, dos - nombre - 1);
+                        bool usada = false;
+                        for (size_t q = resto.find(variable); q != std::string_view::npos; q = resto.find(variable, q + 1))
+                        {
+                            const char sig = q + variable.size() < resto.size() ? resto[q + variable.size()] : ' ';
+                            if (!std::isalnum(static_cast<unsigned char>(sig)) && sig != '_')
+                            {
+                                usada = true;
+                                break;
+                            }
+                        }
+                        quitar = !usada;
+                    }
+                }
+                if (!quitar)
+                {
+                    nueva += linea;
+                    if (fin < firma.size()) nueva += '\n';
+                }
+                pos = fin + 1;
+            }
+            out = out.substr(0, inicioMain) + nueva + out.substr(cuerpo);
+        }
+    }
+#endif
 }

@@ -74,7 +74,11 @@
 // FH2: the 32 loop constants as the game set them (xenos: count in bits 0-7, start 8-15, step 16-23), for shaders
 // without literal ones.
 #define FH2_COMPARTIDA_BUCLES     768
-#define FH2_COMPARTIDA_BYTES      896
+// FH2: per declared vertex element (ordinal 0-31 in the container), as the D3D patched its fetch: word 0 the vertex fetch
+// constant (bits 0-6), xenos::VertexFormat (8-13), flags as fh2BuscaVertices takes them (16-23) and the exponent
+// adjust (24-29, signed); word 1 the stride in dwords (0-7) and the offset in dwords (8-31, signed).
+#define FH2_COMPARTIDA_ELEMENTOS  896
+#define FH2_COMPARTIDA_BYTES      1152
 #define SPEC_CONSTANT_ALPHA_FUNC_SHIFT  16
 #define SPEC_CONSTANT_ALPHA_FUNC_MASK   (7 << 16)
 
@@ -183,6 +187,23 @@ uint fh2PalabraBusca(uint constante, int palabra)
     else if (endian == 3)
         w = (w << 16) | (w >> 16);
     return w;
+}
+
+float4 fh2BuscaVertices(uint constante, int direccion, uint formato, uint banderas, int ajusteExp);
+
+// A declared vertex element read directly (fetches indexed by bone or instance indices): its constant and stride come
+// from the element of the full fetch (base), its format, flags, offset and exponent adjust from its own (mio).
+float4 fh2BuscaElemento(uint base, uint mio, int indice)
+{
+    const uint w0b = NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_ELEMENTOS + base * 8);
+    const uint w1b = NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_ELEMENTOS + base * 8 + 4);
+    const uint w0m = NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_ELEMENTOS + mio * 8);
+    const uint w1m = NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_ELEMENTOS + mio * 8 + 4);
+    const uint constante = w0b & 0x7Fu;
+    if (constante < 88 || constante > 95)
+        return 0.0;
+    return fh2BuscaVertices(constante - 88, indice * int(w1b & 0xFFu) + (int(w1m) >> 8), (w0m >> 8) & 0x3Fu,
+                            (w0m >> 16) & 0xFFu, int(w0m << 2) >> 26);
 }
 
 // One vertex fetch read directly, decoded like the SDK's translator (spirv_translator_fetch.cpp): packed components
