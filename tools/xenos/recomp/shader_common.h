@@ -319,6 +319,14 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
 #define Sample(SAMPLER, COORD) SampleLevel(SAMPLER, COORD, 0)
 #endif
 
+// FH2: a 2D texture coordinate in texels (tfetch with unnormalized coordinates) to 0-1.
+float2 fh2Normalizar(uint resourceDescriptorIndex, float2 texCoord, float2 invSize)
+{
+    [branch] if (g_SpecConstants() & SPEC_CONSTANT_INV_TAMANO_TEX)
+        return texCoord * invSize;
+    return texCoord / float2(getTexture2DDimensions(g_Texture2DDescriptorHeap[resourceDescriptorIndex]));
+}
+
 float4 tfetch2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset, float2 invSize)
 {
     Texture2D<float4> texture = g_Texture2DDescriptorHeap[resourceDescriptorIndex];

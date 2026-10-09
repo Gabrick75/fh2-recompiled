@@ -1084,6 +1084,11 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_diag_memoria_subida, true, "NFSMW",
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 // The 30 FPS guard lives in nfsmw_recorte_sombras.cpp, which owns the lever.
+#if defined(FH2_RECOMP)
+REXCVAR_DEFINE_INT32(fh2_nativo_diag_ps, -1, "FH2",
+                     "Debug: log where the native renderer's Dibujar leaves for this pixel shader number (-1 = off)");
+#endif
+
 namespace nfsmw::guardia30 {
 bool SinSombras(bool del_usuario);
 }  // namespace nfsmw::guardia30
@@ -1405,6 +1410,40 @@ using FnCopiarImagen = void(VKAPI_PTR*)(VkCommandBuffer, VkImage, VkImageLayout,
 float Flotante(uint32_t valor) {
   return std::bit_cast<float>(valor);
 }
+
+#if defined(FH2_RECOMP)
+// Half floats for FH2's 16-bit rectangle coordinates (IEEE binary16; the Xbox 360's extended range is not used here).
+float MedioAFlotante(uint16_t h) {
+  const uint32_t signo = uint32_t(h & 0x8000) << 16, e = (h >> 10) & 0x1F, m = h & 0x3FF;
+  uint32_t b;
+  if (e == 0) {
+    if (m == 0) {
+      b = signo;
+    } else {
+      float v = std::ldexp(float(m), -24);
+      std::memcpy(&b, &v, 4);
+      b |= signo;
+    }
+  } else if (e == 31) {
+    b = signo | 0x7F800000u | (m << 13);
+  } else {
+    b = signo | ((e + 112) << 23) | (m << 13);
+  }
+  float f;
+  std::memcpy(&f, &b, 4);
+  return f;
+}
+
+uint16_t FlotanteAMedio(float f) {
+  uint32_t b;
+  std::memcpy(&b, &f, 4);
+  const uint16_t signo = uint16_t((b >> 16) & 0x8000);
+  const int32_t e = int32_t((b >> 23) & 0xFF) - 127 + 15;
+  if (e <= 0) return signo;
+  if (e >= 31) return uint16_t(signo | 0x7C00);
+  return uint16_t(signo | (e << 10) | ((b >> 13) & 0x3FF));
+}
+#endif
 
 // Arithmetic of the Xenos mip level layout (pipeline/texture/util.cpp: GetPackedMipLevel,
 // GetPackedMipOffset and GetGuestTextureLayout).
@@ -2298,6 +2337,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   }
 
   bool Dibujar(const PeticionDibujo& p) override {
+#if defined(FH2_RECOMP)
+    ps_encuadre_diag_ = p.ps ? int32_t(p.ps->numero) : -1;
+#endif
     VeredictoVegetacion(p);  // the ring's versus the game's (nfsmw_d3d_vegetacion_juego)
     // Stage stopwatch on 1 in kCronometroCada draws: reading the clock 12 times per draw took almost a
     // quarter of the ring thread's busy CPU on PC, and on the Switch each read costs more. The C6 averages
@@ -2306,7 +2348,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     auto marca = cronometrar_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const uint32_t* r = p.registros;
     if (!r || !p.vs) {
-      return false;
+      return Fh2DiagSalida(p, __LINE__, false);
     }
     // --- Tipo de primitiva ---------------------------------------------------
     const uint32_t modo_edram = r[gr::XE_GPU_REG_RB_MODECONTROL] & 0x7;
@@ -2320,7 +2362,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     const EntradaShader* ps =  // can be removed if it writes no color and does not discard
         modo_edram == uint32_t(xenos::EdramMode::kColorDepth) ? p.ps : nullptr;
     if (!ps && modo_edram == uint32_t(xenos::EdramMode::kColorDepth)) {
-      return false;
+      return Fh2DiagSalida(p, __LINE__, false);
     }
     // Diagnostic: PS whose draws are skipped (nfsmw_nativo_diag_omitir_ps).
     const std::string& omitir = diag_omitir_ps_texto_;
@@ -2344,7 +2386,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
     }
     if (ps && !omitir_ps_.empty() && omitir_ps_.count(ps->numero)) {
-      return true;
+      return Fh2DiagSalida(p, __LINE__, true);
     }
     const uint32_t iniciador = r[gr::XE_GPU_REG_VGT_DRAW_INITIATOR];
     const uint32_t tipo = iniciador & 0x3F;
@@ -2352,7 +2394,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     const bool indices32 = (iniciador >> 11) & 0x1;
     const uint32_t cuenta = iniciador >> 16;
     if (!cuenta) {
-      return true;
+      return Fh2DiagSalida(p, __LINE__, true);
     }
     VkPrimitiveTopology topologia;
     bool cuadrilateros = false;
@@ -2405,7 +2447,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 
     const EntradaVertices* entrada = EntradaDe(p);
     if (!entrada) {
-      return false;
+      return Fh2DiagSalida(p, __LINE__, false);
     }
     Etapa(0, marca);
     std::chrono::steady_clock::time_point t_indices_185 = marca;  // C6 subetapas 15-18
@@ -2484,7 +2526,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
             !alfa_nunca && ((((dc >> 1) & 0x1) && ((dc >> 2) & 0x1)) || (dc & 0x1));
         ++cuentas_z_[alfa_nunca ? kInvisibleAlfa : kInvisibleMezcla];
         if (!deja_rastro) {
-          return true;
+          return Fh2DiagSalida(p, __LINE__, true);
         }
         ++cuentas_z_[kInvisibleSoloColor];  // drawn anyway: only counts what is left to gain
       }
@@ -2560,7 +2602,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     }
     if (vegetacion_temprana) {
       ++dibujos_vegetacion_pronto_;
-      return true;
+      return Fh2DiagSalida(p, __LINE__, true);
     }
     const uint32_t control_profundidad = r[gr::XE_GPU_REG_RB_DEPTHCONTROL];
     if (control_profundidad & 0x3) {  // stencil o z
@@ -2578,7 +2620,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                     avisos_oclusion_dibujo_, p.vs->numero, ps ? int(ps->numero) : -1, tipo, cuenta, pitch,
                     mascara_registro, control_profundidad, modo_edram);
       }
-      return true;  // writes nothing visible
+      return Fh2DiagSalida(p, __LINE__, true);  // writes nothing visible
     }
     // FPS test nfsmw_nativo_omitir_sombras: the shadow map is depth-only and 1600 wide. With
     // nfsmw_nativo_omitir_sombras_alternar_s = N they are skipped in the odd N-second intervals.
@@ -2601,7 +2643,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         }
       }
       if (omitir) {
-        return true;
+        return Fh2DiagSalida(p, __LINE__, true);
       }
     }
 
@@ -2710,7 +2752,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         }
       }
       if (vmin > vmax) {
-        return true;  // resets only
+        return Fh2DiagSalida(p, __LINE__, true);  // resets only
       }
       con_indices = true;
     } else {
@@ -2831,6 +2873,75 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         std::memcpy(&palabra, o.datos + byte, 4);
         return Flotante(xenos::GpuSwap(palabra, o.orden));
       };
+#if defined(FH2_RECOMP)
+      // FH2's rectangles keep their positions and coordinates in 16-bit components too (normalized or half): a
+      // dword of an attribute is decoded and encoded by the attribute's format, two components per dword for the
+      // 16-bit ones, four for the 8-bit ones.
+      enum : uint8_t { kOtra, kF32, kS16, kU16, kH16, kS8, kU8 };
+      const auto tipo_de_formato = [](VkFormat f, uint32_t& palabras) -> uint8_t {
+        switch (f) {
+          case VK_FORMAT_R32_SFLOAT: palabras = 1; return kF32;
+          case VK_FORMAT_R32G32_SFLOAT: palabras = 2; return kF32;
+          case VK_FORMAT_R32G32B32_SFLOAT: palabras = 3; return kF32;
+          case VK_FORMAT_R32G32B32A32_SFLOAT: palabras = 4; return kF32;
+          case VK_FORMAT_R16G16_SNORM: palabras = 1; return kS16;
+          case VK_FORMAT_R16G16B16A16_SNORM: palabras = 2; return kS16;
+          case VK_FORMAT_R16G16_UNORM: palabras = 1; return kU16;
+          case VK_FORMAT_R16G16B16A16_UNORM: palabras = 2; return kU16;
+          case VK_FORMAT_R16G16_SFLOAT: palabras = 1; return kH16;
+          case VK_FORMAT_R16G16B16A16_SFLOAT: palabras = 2; return kH16;
+          case VK_FORMAT_R8G8B8A8_SNORM: palabras = 1; return kS8;
+          case VK_FORMAT_R8G8B8A8_UNORM: palabras = 1; return kU8;
+          default: palabras = 0; return kOtra;
+        }
+      };
+      // The components of a dword (in host order) as floats, and back.
+      const auto componentes = [](uint8_t tipo, uint32_t w, float c[4]) -> uint32_t {
+        switch (tipo) {
+          case kF32: c[0] = Flotante(w); return 1;
+          case kS16: c[0] = std::max(float(int16_t(w & 0xFFFF)) / 32767.0f, -1.0f);
+                     c[1] = std::max(float(int16_t(w >> 16)) / 32767.0f, -1.0f); return 2;
+          case kU16: c[0] = float(w & 0xFFFF) / 65535.0f; c[1] = float(w >> 16) / 65535.0f; return 2;
+          case kH16: c[0] = MedioAFlotante(uint16_t(w & 0xFFFF)); c[1] = MedioAFlotante(uint16_t(w >> 16)); return 2;
+          case kS8: for (int k = 0; k < 4; ++k) c[k] = std::max(float(int8_t(w >> (8 * k))) / 127.0f, -1.0f); return 4;
+          case kU8: for (int k = 0; k < 4; ++k) c[k] = float((w >> (8 * k)) & 0xFF) / 255.0f; return 4;
+          default: return 0;
+        }
+      };
+      const auto empaquetar = [](uint8_t tipo, const float c[4]) -> uint32_t {
+        const auto s16 = [](float v) { return uint32_t(uint16_t(int16_t(std::lround(std::clamp(v, -1.0f, 1.0f) * 32767.0f)))); };
+        const auto u16 = [](float v) { return uint32_t(std::lround(std::clamp(v, 0.0f, 1.0f) * 65535.0f)); };
+        switch (tipo) {
+          case kF32: { uint32_t b; std::memcpy(&b, &c[0], 4); return b; }
+          case kS16: return s16(c[0]) | (s16(c[1]) << 16);
+          case kU16: return u16(c[0]) | (u16(c[1]) << 16);
+          case kH16: return uint32_t(FlotanteAMedio(c[0])) | (uint32_t(FlotanteAMedio(c[1])) << 16);
+          case kS8: { uint32_t w = 0; for (int k = 0; k < 4; ++k) w |= uint32_t(uint8_t(int8_t(std::lround(std::clamp(c[k], -1.0f, 1.0f) * 127.0f)))) << (8 * k); return w; }
+          case kU8: { uint32_t w = 0; for (int k = 0; k < 4; ++k) w |= uint32_t(std::lround(std::clamp(c[k], 0.0f, 1.0f) * 255.0f)) << (8 * k); return w; }
+          default: return 0;
+        }
+      };
+      const auto leer_palabra = [&](const Origen& o, size_t byte) {
+        uint32_t palabra;
+        std::memcpy(&palabra, o.datos + byte, 4);
+        return xenos::GpuSwap(palabra, o.orden);
+      };
+      uint32_t palabras_posicion = 0;
+      const uint8_t tipo_posicion = tipo_de_formato(posicion->formato, palabras_posicion);
+      const auto leer_xy = [&](const Origen& o, size_t byte, float& px, float& py) {
+        float c[4] = {};
+        if (tipo_posicion == kF32) {
+          px = leer(o, byte);
+          py = leer(o, byte + 4);
+        } else if (componentes(tipo_posicion, leer_palabra(o, byte), c) >= 2) {
+          px = c[0];
+          py = c[1];
+        } else {
+          px = leer(o, byte);
+          py = leer(o, byte + 4);
+        }
+      };
+#endif
       std::array<uint8_t, 1024> esquinas_pequeno{};
       std::vector<uint8_t> esquinas_grande;
       uint8_t* esquinas = n <= esquinas_pequeno.size() ? esquinas_pequeno.data()
@@ -2842,9 +2953,36 @@ class DibujosVulkanImpl final : public DibujosVulkan {
           float x[3], y[3];
           for (uint32_t k = 0; k < 3; ++k) {
             const size_t v = size_t(q * 3 + k) * zancada + posicion->offset;
+#if defined(FH2_RECOMP)
+            leer_xy(o, v, x[k], y[k]);
+#else
             x[k] = leer(o, v);
             y[k] = leer(o, v + 4);
+#endif
           }
+#if defined(FH2_RECOMP)
+          if (p.ps && int32_t(p.ps->numero) == REXCVAR_GET(fh2_nativo_diag_ps)) {
+            static int avisos_ps = 0;
+            if (avisos_ps < 6) {
+              ++avisos_ps;
+              REXLOG_INFO("[fh2 nativo] PS n{} rectangulo: ({},{}) ({},{}) ({},{}) formato vk {} offset {} zancada {}",
+                          p.ps->numero, x[0], y[0], x[1], y[1], x[2], y[2], int(posicion->formato), posicion->offset,
+                          zancada);
+            }
+          }
+          {
+            static int avisos = 0;
+            if (avisos < 6 && (std::isnan(x[0]) || std::isnan(y[0]))) {
+              ++avisos;
+              uint32_t crudo[4];
+              std::memcpy(crudo, o.datos + posicion->offset, sizeof(crudo));
+              REXLOG_INFO("[fh2 nativo] rectangulo con posicion nan: VS n{} formato vk {} offset {} zancada {} orden {} "
+                          "palabras {:08X} {:08X} {:08X} {:08X}",
+                          p.vs ? int(p.vs->numero) : -1, int(posicion->formato), posicion->offset, zancada,
+                          int(o.orden), crudo[0], crudo[1], crudo[2], crudo[3]);
+            }
+          }
+#endif
           const auto d = [&](uint32_t i, uint32_t j) { return (x[i] - x[j]) * (x[i] - x[j]) + (y[i] - y[j]) * (y[i] - y[j]); };
           const float d01 = d(0, 1), d02 = d(0, 2), d12 = d(1, 2);
           esquinas[q] = d12 >= d01 && d12 >= d02 ? 0 : d02 >= d01 ? 1 : 2;  // opposite the longest side
@@ -2867,6 +3005,17 @@ class DibujosVulkanImpl final : public DibujosVulkan {
             flotante[a.offset / 4 + k] = true;
           }
         }
+#if defined(FH2_RECOMP)
+        std::array<uint8_t, 64> tipos_fh2{};
+        for (const AtributoVertices& at : entrada->atributos) {
+          if (at.enlace != b) continue;
+          uint32_t palabras = 0;
+          const uint8_t tipo = tipo_de_formato(at.formato, palabras);
+          for (uint32_t k = 0; k < palabras && at.offset / 4 + k < tipos_fh2.size(); ++k) {
+            tipos_fh2[at.offset / 4 + k] = tipo;
+          }
+        }
+#endif
         Origen& o = origenes[b];
         std::vector<uint8_t>& salida = rectangulos_vertices_[b];
         salida.resize(size_t(n) * 4 * zancada);
@@ -2879,6 +3028,18 @@ class DibujosVulkanImpl final : public DibujosVulkan {
           std::memcpy(destino + 3 * zancada, v0 + bb * zancada, zancada);
           uint8_t* cuarta = destino + 2 * zancada;
           std::memcpy(cuarta, v0 + a * zancada, zancada);
+#if defined(FH2_RECOMP)
+          for (uint32_t w = 0; w < zancada / 4 && w < tipos_fh2.size(); ++w) {
+            if (tipos_fh2[w] == kOtra) continue;
+            float ca[4] = {}, cb[4] = {}, cc[4] = {}, r4[4] = {};
+            const uint32_t n_c = componentes(tipos_fh2[w], leer_palabra(o, size_t(q * 3 + a) * zancada + w * 4), ca);
+            componentes(tipos_fh2[w], leer_palabra(o, size_t(q * 3 + bb) * zancada + w * 4), cb);
+            componentes(tipos_fh2[w], leer_palabra(o, size_t(q * 3 + c) * zancada + w * 4), cc);
+            for (uint32_t k = 0; k < n_c; ++k) r4[k] = ca[k] + cb[k] - cc[k];
+            const uint32_t bits = xenos::GpuSwap(empaquetar(tipos_fh2[w], r4), o.orden);  // back to the guest's order
+            std::memcpy(cuarta + w * 4, &bits, 4);
+          }
+#else
           for (uint32_t w = 0; w < zancada / 4 && w < flotante.size(); ++w) {
             if (!flotante[w]) continue;
             const float valor = leer(o, size_t(q * 3 + a) * zancada + w * 4) +
@@ -2889,6 +3050,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
             bits = xenos::GpuSwap(bits, o.orden);  // back to the guest's order (the swap is its own inverse)
             std::memcpy(cuarta + w * 4, &bits, 4);
           }
+#endif
         }
         o.datos = salida.data();
         o.bytes = uint32_t(salida.size());
@@ -3153,7 +3315,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                                         std::chrono::steady_clock::now() - antes_envio)
                                         .count());
       if (!enviado) {
-        return false;
+        return Fh2DiagSalida(p, __LINE__, false);
       }
     }
 
@@ -3200,7 +3362,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
             std::chrono::duration_cast<std::chrono::nanoseconds>(tras_pase - antes_pase).count());
       }
       if (!empezado) {
-        return false;
+        return Fh2DiagSalida(p, __LINE__, false);
       }
     }
     const VkCommandBuffer cmd = pase_comandos_;
@@ -3219,7 +3381,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     // --- Uploads: textures, vertices, indices and constants ------------------------------
     for (Textura* textura : texturas_a_subir_) {
       if (!SubirTextura(*textura)) {
-        return false;
+        return Fh2DiagSalida(p, __LINE__, false);
       }
     }
     std::array<VkDeviceSize, 16> offsets_vertices{};
@@ -3392,7 +3554,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       encuadre_valido_ = true;
     }
     if (encuadre_vacio != 0) {
-      return true;  // empty viewport or scissor: as before
+      return Fh2DiagSalida(p, __LINE__, true);  // empty viewport or scissor: as before
     }
 
     uint32_t especializacion = entrada->especializacion;
@@ -3492,7 +3654,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (solo_alfa && ps) {
       // If vegetation is excluded from the shadow map, this whole draw is unnecessary.
       if (sin_vegetacion_) {
-        return true;
+        return Fh2DiagSalida(p, __LINE__, true);
       }
       especializacion |= kSpecSoloAlfa;
     }
@@ -3578,7 +3740,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     // it.
     NFSMW_SUB(11, pipeline = PipelineDe(ClaveDeBusqueda(clave), *entrada, p));
     if (pipeline == VK_NULL_HANDLE) {
-      return false;
+      return Fh2DiagSalida(p, __LINE__, false);
     }
 #if REX_PLATFORM_SWITCH
     // The pipeline about to be bound, prefetched into the cache several us before its vkCmdBindPipeline
@@ -3797,7 +3959,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       // EmitirCieloAplazado, and the difference with dibujos_al_aplazar gives the draws that went ahead of
       // it, which is exactly the geometry that now covers it.
       dibujados_cronometrados_ += cronometrar_ ? 1 : 0;
-      return true;
+      return Fh2DiagSalida(p, __LINE__, true);
     }
     if (pipeline != pipeline_enlazado_) {
       if (contar_cambios_pipeline_) {  // Measurement only (nfsmw_nativo_contar_cambios_pipeline)
@@ -3811,7 +3973,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (eds_modo_ && !FijarEstadoDinamico(cmd, clave)) {
       NFSMW_SUB(11, pipeline = PipelineDe(ClaveDeBusqueda(clave), *entrada, p));
       if (pipeline == VK_NULL_HANDLE) {
-        return false;
+        return Fh2DiagSalida(p, __LINE__, false);
       }
       NFSMW_SUB(0, dfn_.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline));
       pipeline_enlazado_ = pipeline;
@@ -4097,7 +4259,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     ++dibujados_;
     ++dibujos_en_pase_;  // to know at which position of the pass the sky ends up emitted
     dibujados_cronometrados_ += cronometrar_ ? 1 : 0;
-    return true;
+    return Fh2DiagSalida(p, __LINE__, true);
   }
 
   /*
@@ -4634,6 +4796,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 #if defined(FH2_RECOMP)
     {
       // FH2 diagnostics: scene-sized draws cut short (first 20).
+      if (REXCVAR_GET(fh2_nativo_diag_ps) >= 0 && ps_encuadre_diag_ == REXCVAR_GET(fh2_nativo_diag_ps)) {
+        REXLOG_INFO("[fh2 nativo] PS n{} encuadre: tijera ({},{})-({},{}) viewport {}x{} en ({},{}) pase {}x{} ndc {} {} {} {}",
+                    ps_encuadre_diag_, x0, y0, x1, y1, viewport.width, viewport.height, viewport.x, viewport.y,
+                    pase_ancho_, pase_alto_, ndc[0], ndc[1], ndc[2], ndc[3]);
+      }
       static std::set<uint64_t> vistos;
       const uint64_t clave_diag = (uint64_t(r[gr::XE_GPU_REG_RB_SURFACE_INFO]) << 32) ^ (uint64_t(br) << 8) ^ tl ^
                                   (uint64_t(r[gr::XE_GPU_REG_RB_DEPTHCONTROL]) << 40);
@@ -5845,6 +6012,19 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   }
 
  private:
+#if defined(FH2_RECOMP)
+  // FH2 diagnostics: where Dibujar leaves for the pixel shader number fh2_nativo_diag_ps (-1 = never).
+  bool Fh2DiagSalida(const PeticionDibujo& p, int linea, bool resultado) {
+    static int avisos = 0;
+    const int32_t ps = REXCVAR_GET(fh2_nativo_diag_ps);
+    if (ps >= 0 && p.ps && int32_t(p.ps->numero) == ps && avisos < 20) {
+      ++avisos;
+      REXLOG_INFO("[fh2 nativo] PS n{}: Dibujar sale en la linea {} ({}), ultima causa {}", ps, linea,
+                  resultado ? "true" : "false", ultima_causa_);
+    }
+    return resultado;
+  }
+#endif
   bool Rechazar(uint32_t causa, const char* texto) {
     ++rechazados_;
     ++causas_[causa];
@@ -10489,6 +10669,20 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         }
       }
     }
+#if defined(FH2_RECOMP)
+    if (ps_encuadre_diag_ >= 0 && ps_encuadre_diag_ == REXCVAR_GET(fh2_nativo_diag_ps)) {
+      static int avisos = 0;
+      if (avisos < 6) {
+        ++avisos;
+        REXLOG_INFO("[fh2 nativo] PS n{} pase: color {} {} {} {} (claves {:016X} {:016X} {:016X})", ps_encuadre_diag_,
+                    static_cast<const void*>(imagenes[0] ? imagenes[0]->imagen : VK_NULL_HANDLE),
+                    static_cast<const void*>(imagenes[1] ? imagenes[1]->imagen : VK_NULL_HANDLE),
+                    static_cast<const void*>(imagenes[2] ? imagenes[2]->imagen : VK_NULL_HANDLE),
+                    static_cast<const void*>(imagenes[3] ? imagenes[3]->imagen : VK_NULL_HANDLE), claves[0], claves[1],
+                    claves[2]);
+      }
+    }
+#endif
     if (claves[4]) {
       imagenes[4] = contexto_->DestinoProfundidad(uint32_t(claves[4] >> 24) & 0xFFF,
                                                   uint32_t(claves[4] >> 16) & 0x1, pitch);
@@ -12958,6 +13152,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   std::vector<uint16_t, SinInicializar<uint16_t>> indices16_;  // camino rapido: 16 bits sin convertir
   // Rectangle lists (NFS Carbon): each binding's vertices with the fourth corner of every rectangle added.
   std::array<std::vector<uint8_t>, 16> rectangulos_vertices_;
+#if defined(FH2_RECOMP)
+  int32_t ps_encuadre_diag_ = -1;  // the draw's pixel shader number, for the framing diagnostics
+#endif
   // IndicesDe16 (nfsmw_nativo_indices_neon). Ring only.
   int32_t indices_neon_ = -1;  // -1 cvar not read, 0 plain loop, 1 NEON
   uint64_t indices_neon_dibujos_ = 0;

@@ -219,6 +219,9 @@ struct ShadersNativos::Datos {
   std::vector<uint32_t> temporal;
   EstadisticasShaders estadisticas;
   uint32_t avisos = 0;
+#if defined(FH2_RECOMP)
+  uint32_t fh2_samplers_anadidos = 0;  // samplers found in pixel shader microcode that the tables do not list
+#endif
   bool cargada = false;
 };
 
@@ -273,6 +276,38 @@ static bool TieneMarcaSombraMinimo(const std::vector<uint32_t>& spirv) {
 // OpKill, OpTerminateInvocation and OpDemoteToHelperInvocation in the module. If the SPIR-V cannot be walked
 // it returns 2, the conservative answer (the fragment stage is kept).
 #if defined(FH2_RECOMP)
+// FH2: the fetch constants a pixel shader's texture fetches read, from the control flow's exec clauses (its constant
+// table does not always list its samplers: the post-processing effects' do not).
+static uint32_t SlotsDeTexturas(const std::vector<uint32_t>& w) {
+  uint32_t slots = 0;
+  size_t i = 0, primera = SIZE_MAX;
+  std::vector<std::pair<uint32_t, uint32_t>> execs;  // (address, count | sequence << 8)
+  while (i + 2 < w.size()) {
+    const uint64_t cf[2] = {w[i] | (uint64_t(w[i + 1] & 0xFFFF) << 32), (w[i + 1] >> 16) | (uint64_t(w[i + 2]) << 16)};
+    for (const uint64_t c : cf) {
+      const uint32_t op = uint32_t(c >> 44) & 0xF;
+      if (op >= 1 && op <= 6) {
+        const uint32_t direccion = uint32_t(c) & 0xFFF;
+        execs.push_back({direccion, (uint32_t(c >> 12) & 0x7) | (uint32_t(c >> 16) & 0xFFF) << 8});
+        primera = std::min<size_t>(primera, direccion);
+      }
+    }
+    i += 3;
+    if (primera != SIZE_MAX && i >= primera * 3) break;
+  }
+  for (const auto& [direccion, datos] : execs) {
+    const uint32_t cuenta = datos & 0xFF, secuencia = datos >> 8;
+    for (uint32_t k = 0; k < cuenta; ++k) {
+      const size_t a = size_t(direccion + k) * 3;
+      if (!((secuencia >> (2 * k)) & 1) || a >= w.size()) continue;
+      const uint32_t opcode = w[a] & 0x1F;
+      if (opcode == 0) continue;  // vertex fetch
+      slots |= 1u << ((w[a] >> 20) & 0x1F);
+    }
+  }
+  return slots;
+}
+
 // FH2: the input locations of a vertex shader's SPIR-V and whether it binds set 4 binding 3 (g_Fh2Buscas).
 static void AnalizarEntradasFh2(const std::vector<uint32_t>& spirv, uint32_t& entradas, bool& buscas) {
   entradas = 0;
@@ -369,6 +404,19 @@ bool ShadersNativos::Cargar(const std::filesystem::path& archivo) {
 #if defined(FH2_RECOMP)
     if (e.vertices) {
       AnalizarEntradasFh2(shaders[i].spirv, e.fh2_entradas, e.fh2_buscas);
+    } else {
+      // Samplers the table does not list but the microcode fetches: the renderer binds a texture only for listed
+      // ones (the translator names them s<slot>).
+      uint32_t slots = SlotsDeTexturas(e.microcodigo) & 0xFFFF;
+      for (const SamplerShader& sm : e.samplers) slots &= ~(1u << (sm.registro & 31));
+      for (uint32_t slot = 0; slot < 16; ++slot) {
+        if ((slots >> slot) & 1) {
+          SamplerShader sm;
+          sm.registro = uint16_t(slot);
+          e.samplers.push_back(sm);
+          ++d.fh2_samplers_anadidos;
+        }
+      }
     }
 #endif
     (e.vertices ? vertex : pixel) += 1;

@@ -482,6 +482,16 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
 #endif
 
     print("({0}_Texture{1}DescriptorIndex, {0}_SamplerDescriptorIndex, ", constNamePtr, dimension);
+#ifdef FH2_RECOMP
+    // Unnormalized coordinates (texels): normalized here with the texture's size (FH2's blur passes use them).
+    if (instr.texCoordDenorm && instr.dimension == TextureDimension::Texture2D)
+    {
+        print("fh2Normalizar({0}_Texture2DDescriptorIndex, ", constNamePtr);
+        printSrcRegister(componentCount);
+        print(", {}_InvTamano)", constNamePtr);
+    }
+    else
+#endif
     printSrcRegister(componentCount);
 
     switch (instr.dimension)

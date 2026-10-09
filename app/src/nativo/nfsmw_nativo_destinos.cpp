@@ -44,6 +44,7 @@
 #include <rex/ui/vulkan/util.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <map>
 #include <chrono>
@@ -631,6 +632,14 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_rampa_gamma, true, "NFSMW",
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 // The 30 FPS guard (nfsmw_guardia_30) lives in nfsmw_recorte_sombras.cpp, which owns the lever it pulls.
+#if defined(FH2_RECOMP)
+REXCVAR_DEFINE_INT32(fh2_nativo_foto_indice, 0, "FH2",
+                     "Debug: which copy of the frame to fh2_nativo_foto_copia is photographed (0 = the first)");
+REXCVAR_DEFINE_STRING(fh2_nativo_foto_copia, "1C4E1000", "FH2",
+                      "Debug (with nfsmw_nativo_diag_resueltas): the copy destination (hex physical address) whose "
+                      "source render target is photographed into the mosaic's last cell right before the copy");
+#endif
+
 namespace nfsmw::guardia30 {
 void Latir(double ms);
 void Informe();
@@ -1461,8 +1470,20 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 #if defined(FH2_RECOMP)
     // FH2 diagnostics (nfsmw_nativo_diag_resueltas): the scene's render target right before its first strip is
     // copied, for the mosaic's last cell.
-    if (REXCVAR_GET(nfsmw_nativo_diag_resueltas) && blit_ && y0 == 0 && pitch == 1280 &&
-        (reg.rb_copy_dest_base & 0x1FFFFFFF) == 0x1C4E1000 && Grabar()) {
+    if ((reg.rb_copy_dest_base & 0x1FFFFFFF) ==
+        uint32_t(std::strtoul(REXCVAR_GET(fh2_nativo_foto_copia).c_str(), nullptr, 16))) {
+      static int avisos = 0;
+      if (avisos < 6) {
+        ++avisos;
+        REXLOG_INFO("[fh2 nativo] copia a {:08X} lee la imagen {} (base {:03X} formato {} pitch {}) rect ({},{})-({},{})",
+                    reg.rb_copy_dest_base, static_cast<const void*>(destino_render->imagen), info_color & 0xFFF,
+                    formato_color, pitch, x0, y0, x1, y1);
+      }
+    }
+    const bool fh2_es_la_copia = (reg.rb_copy_dest_base & 0x1FFFFFFF) ==
+                                 uint32_t(std::strtoul(REXCVAR_GET(fh2_nativo_foto_copia).c_str(), nullptr, 16)) &&
+                                 y0 == 0 && fh2_copias_foto_++ == uint32_t(REXCVAR_GET(fh2_nativo_foto_indice));
+    if (REXCVAR_GET(nfsmw_nativo_diag_resueltas) && blit_ && fh2_es_la_copia && Grabar()) {
       if (fh2_instantanea_.imagen == VK_NULL_HANDLE) {
         Crear(fh2_instantanea_, 1280, 720, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
       }
@@ -1472,7 +1493,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         Preparar(fh2_instantanea_);
         VkImageBlit foto{};
         foto.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        foto.srcOffsets[1] = {1280, 720, 1};
+        foto.srcOffsets[1] = {int32_t(std::max(x1, 1)), int32_t(std::max(y1, 1)), 1};
         foto.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         foto.dstOffsets[1] = {1280, 720, 1};
         blit_(comandos_trabajo_, destino_render->imagen, VK_IMAGE_LAYOUT_GENERAL, fh2_instantanea_.imagen,
@@ -5408,6 +5429,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   // Diagnostic (nfsmw_nativo_diag_resueltas): the frame's resolved textures in a 4x4 grid over
   // 1280x720, in the order of their first copy. Cells without a texture stay dark purple.
   bool ComponerMosaico(uint32_t base_swap) {
+#if defined(FH2_RECOMP)
+    fh2_copias_foto_ = 0;
+#endif
     std::vector<uint32_t> bases;
     bases.swap(resueltas_fotograma_);
     if (bases.empty() || !blit_) {
@@ -6100,6 +6124,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   std::vector<uint32_t> resueltas_fotograma_;
 #if defined(FH2_RECOMP)
   Imagen fh2_instantanea_;  // see the FH2 diagnostics in the copy
+  uint32_t fh2_copias_foto_ = 0;  // copies to fh2_nativo_foto_copia in this frame
 #endif
   Imagen mosaico_;
   std::chrono::steady_clock::time_point ultimo_aviso_mosaico_{};
