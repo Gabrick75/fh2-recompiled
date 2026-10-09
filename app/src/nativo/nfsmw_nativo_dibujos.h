@@ -131,6 +131,8 @@ class ContextoDestinos {
   virtual ImagenNativa* DestinoProfundidad(uint32_t base, uint32_t formato, uint32_t pitch) = 0;
   // Texture resolved by C2 at that physical address, or nullptr.
   virtual const ImagenNativa* TexturaResuelta(uint32_t direccion) = 0;
+  // FH2: a depth resolve seen as 8_8_8_8 (raw depth and stencil bits), or nullptr.
+  virtual const ImagenNativa* Fh2ProfundidadEmpaquetada(uint32_t direccion) { (void)direccion; return nullptr; }
   // nfsmw_nativo_profundidad_perezosa. While set, the depth textures requested belong to a sample the
   // shader does not take (the final composite without blur) and do not force a copy.
   virtual void LecturasDeProfundidadMuertas(bool muertas) { (void)muertas; }

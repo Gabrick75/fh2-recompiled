@@ -394,6 +394,8 @@ REXCVAR_DEFINE_INT32(nfsmw_nativo_oclusion, 1, "NFSMW",
 REXCVAR_DEFINE_STRING(nfsmw_nativo_diag_constantes_ps, "", "NFSMW",
                       "Renderizador nativo (solo pruebas): numeros de PS (separados por comas) de los que se anotan sus "
                       "12 primeras constantes, como mucho cada nfsmw_nativo_diag_constantes_ms");
+REXCVAR_DEFINE_STRING(fh2_nativo_diag_vs_c, "", "FH2",
+                      "Debug: 'VS:N' logs the vertex shader constants cN..cN+3 of the draws of that VS (library number)");
 REXCVAR_DEFINE_INT32(nfsmw_nativo_diag_constantes_ms, 250, "NFSMW",
                      "Renderizador nativo (solo pruebas): intervalo minimo entre anotaciones de constantes por PS")
     .range(0, 60000);
@@ -2279,6 +2281,34 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     return destinos_ != nullptr;
   }
 
+#if defined(FH2_RECOMP)
+  // FH2 diagnostic (fh2_nativo_diag_vs_c): for the draws of one VS, its float constants cN..cN+3 (a matrix) and
+  // the surface it draws to, at most once every 100 ms.
+  void Fh2AnotarConstantesVs() {
+    const std::string& texto = REXCVAR_GET(fh2_nativo_diag_vs_c);
+    if (texto.empty() || !vs_dibujo_) return;
+    uint32_t vs = 0, c = 0;
+    if (std::sscanf(texto.c_str(), "%u:%u", &vs, &c) != 2 || vs_dibujo_->numero != vs || c > 252) return;
+    static auto ultimo = Reloj::now();
+    const auto ahora = Reloj::now();
+    if (ahora - ultimo < std::chrono::milliseconds(100)) return;
+    ultimo = ahora;
+    std::string valores;
+    for (uint32_t k = c; k < c + 4; ++k) {
+      valores += fmt::format(" c{}=(", k);
+      for (uint32_t j = 0; j < 4; ++j) {
+        float f;
+        const uint32_t bits = registros_[0x4000 + k * 4 + j];
+        std::memcpy(&f, &bits, sizeof(f));
+        valores += fmt::format("{}{:.4g}", j ? "," : "", f);
+      }
+      valores += ")";
+    }
+    REXLOG_INFO("[fh2 nativo] constantes VS n{} PS n{} sup {:08X} (Swap {}):{}", vs, ps_dibujo_ ? int(ps_dibujo_->numero) : -1,
+                registros_[0x2000], swaps_.load(), valores);
+  }
+#endif
+
   // Diagnostic nfsmw_nativo_diag_constantes_ps: the first constants of the requested PS, at most once
   // every nfsmw_nativo_diag_constantes_ms per PS (exposure and brightness of the visual treatment).
   void AnotarConstantesPs() {
@@ -2368,6 +2398,9 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     // flag is refreshed once per Swap: the diagnostic takes at most one frame to turn on.
     if (diag_constantes_activo_) {
       AnotarConstantesPs();
+#if defined(FH2_RECOMP)
+      Fh2AnotarConstantesVs();
+#endif
     }
     PeticionDibujo peticion;
     peticion.registros = registros_.data();
@@ -2434,6 +2467,9 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   void TrazaSwap() {
     // Once per Swap, not once per draw (see DibujarNativo).
     diag_constantes_activo_ = !REXCVAR_GET(nfsmw_nativo_diag_constantes_ps).empty();
+#if defined(FH2_RECOMP)
+    diag_constantes_activo_ = diag_constantes_activo_ || !REXCVAR_GET(fh2_nativo_diag_vs_c).empty();
+#endif
     if (trazando_) {
       trazando_ = false;
       traza_hecha_ = true;

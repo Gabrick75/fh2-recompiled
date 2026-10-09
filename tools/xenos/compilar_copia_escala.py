@@ -1,5 +1,5 @@
-"""Compiles app/src/nativo/shaders/fh2_copia_escala.cs.glsl once per destination format into
-app/src/nativo/shaders/fh2_copia_escala_spv.h (glslc from the Android NDK)."""
+"""Compiles app/src/nativo/shaders/fh2_copia_escala.cs.glsl once per destination format, and
+fh2_profundidad_rgba8.cs.glsl, into app/src/nativo/shaders/fh2_copia_escala_spv.h (glslc from the Android NDK)."""
 import glob, os, subprocess, struct, sys, tempfile
 RAIZ = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
 GLSLC = sorted(glob.glob(os.path.expanduser('~/Android/Sdk/ndk/*/shader-tools/linux-x86_64/glslc')))[-1]
@@ -19,5 +19,14 @@ with tempfile.TemporaryDirectory() as tmp:
         for i in range(0, len(palabras), 8):
             lineas.append('    ' + ', '.join('0x%08X' % w for w in palabras[i:i + 8]) + ',')
         lineas.append('};')
+    spv = os.path.join(tmp, 'prof.spv')
+    subprocess.run([GLSLC, '-fshader-stage=compute', '--target-env=vulkan1.0', '-O',
+                    os.path.join(os.path.dirname(FUENTE), 'fh2_profundidad_rgba8.cs.glsl'), '-o', spv], check=True)
+    d = open(spv, 'rb').read()
+    palabras = struct.unpack('<%dI' % (len(d) // 4), d)
+    lineas.append('inline constexpr uint32_t kFh2ProfundidadRgba8[] = {')
+    for i in range(0, len(palabras), 8):
+        lineas.append('    ' + ', '.join('0x%08X' % w for w in palabras[i:i + 8]) + ',')
+    lineas.append('};')
 open(SALIDA, 'w').write('\n'.join(lineas) + '\n')
 print('escrito', SALIDA)

@@ -636,6 +636,8 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_rampa_gamma, true, "NFSMW",
 
 // The 30 FPS guard (nfsmw_guardia_30) lives in nfsmw_recorte_sombras.cpp, which owns the lever it pulls.
 #if defined(FH2_RECOMP)
+REXCVAR_DEFINE_BOOL(fh2_nativo_foto_completa, false, "FH2",
+                    "Debug (with nfsmw_nativo_diag_resueltas): the photographed render target covers the whole mosaic");
 REXCVAR_DEFINE_INT32(fh2_nativo_foto_indice, 0, "FH2",
                      "Debug: which copy of the frame to fh2_nativo_foto_copia is photographed (0 = the first)");
 REXCVAR_DEFINE_STRING(fh2_nativo_foto_copia, "1C4E1000", "FH2",
@@ -879,6 +881,11 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     for (auto& [clave, resuelta] : resueltas_) {
       Destruir(resuelta.imagen);
     }
+#if defined(FH2_RECOMP)
+    for (auto& [clave, imagen] : fh2_empaquetadas_) {
+      Destruir(imagen);
+    }
+#endif
     Destruir(mosaico_);
     for (ImagenFrontal& repuesto : frontales_imagenes_) {  // nfsmw_nativo_frontal_perezoso
       Destruir(repuesto.imagen);
@@ -1986,6 +1993,15 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         ++resolver_contenido_viejo_;  // previous behavior: the old image is resolved
       }
     }
+#if defined(FH2_RECOMP)
+    // To a color format (8_8_8_8): FH2's motion blur reads the depth's raw bits. The depth texture is kept for
+    // the fetches in 24_8 (the shadows read this same address that way).
+    if (const uint32_t formato_copia = (info_destino >> 7) & 0x3F; formato_copia != 22 && formato_copia != 23 &&
+                                                                  !escalado) {
+      Fh2EmpaquetarProfundidad(*profundidad, base & 0x1FFFFFFF, (info >> 16) & 0x1, x0, y0, dx, dy, ancho, alto,
+                               resuelta->imagen.ancho, resuelta->imagen.alto);
+    }
+#endif
     if (escalado) {
       // Source and destination have the same reduced size, so it is a normal 1 to 1 copy
       // with the rectangle converted to image pixels. No blit, no scaling.
@@ -4729,6 +4745,165 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     ++fh2_copias_escaladas_;
     return true;
   }
+
+  bool Fh2PreparaEmpaquetado() {
+    if (fh2_prof_pipeline_ != VK_NULL_HANDLE) return true;
+    if (fh2_prof_fallo_) return false;
+    fh2_prof_fallo_ = true;  // until everything below is created
+    VkDescriptorSetLayoutBinding enlaces[3]{};
+    enlaces[0] = {0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    enlaces[1] = {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    enlaces[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    info.bindingCount = 3;
+    info.pBindings = enlaces;
+    if (dfn_.vkCreateDescriptorSetLayout(device_, &info, nullptr, &fh2_prof_layout_) != VK_SUCCESS) return false;
+    const VkPushConstantRange rango{VK_SHADER_STAGE_COMPUTE_BIT, 0, 28};
+    VkPipelineLayoutCreateInfo info_layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    info_layout.setLayoutCount = 1;
+    info_layout.pSetLayouts = &fh2_prof_layout_;
+    info_layout.pushConstantRangeCount = 1;
+    info_layout.pPushConstantRanges = &rango;
+    if (dfn_.vkCreatePipelineLayout(device_, &info_layout, nullptr, &fh2_prof_pipeline_layout_) != VK_SUCCESS) {
+      return false;
+    }
+    const VkDescriptorPoolSize tamanos[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 128},
+                                             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 64}};
+    VkDescriptorPoolCreateInfo info_pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    info_pool.maxSets = 64;
+    info_pool.poolSizeCount = 2;
+    info_pool.pPoolSizes = tamanos;
+    if (dfn_.vkCreateDescriptorPool(device_, &info_pool, nullptr, &fh2_prof_pool_) != VK_SUCCESS) return false;
+    fh2_prof_sets_libres_ = 64;
+    VkShaderModuleCreateInfo info_modulo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    info_modulo.codeSize = sizeof(kFh2ProfundidadRgba8);
+    info_modulo.pCode = kFh2ProfundidadRgba8;
+    VkShaderModule modulo = VK_NULL_HANDLE;
+    if (dfn_.vkCreateShaderModule(device_, &info_modulo, nullptr, &modulo) != VK_SUCCESS) return false;
+    VkComputePipelineCreateInfo info_pipeline{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    info_pipeline.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    info_pipeline.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    info_pipeline.stage.module = modulo;
+    info_pipeline.stage.pName = "main";
+    info_pipeline.layout = fh2_prof_pipeline_layout_;
+    const VkResult r =
+        dfn_.vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &info_pipeline, nullptr, &fh2_prof_pipeline_);
+    dfn_.vkDestroyShaderModule(device_, modulo, nullptr);
+    if (r != VK_SUCCESS) return false;
+    fh2_prof_fallo_ = false;
+    REXLOG_INFO("[fh2 nativo] profundidad leida como 8_8_8_8: pipeline creado");
+    return true;
+  }
+
+  // The depth resolve at `base` as the console's 8_8_8_8 view of it, built from the render target `profundidad`
+  // (rectangle w x h from (x0, y0) to (dx, dy) of a texture ancho_tex x alto_tex).
+  void Fh2EmpaquetarProfundidad(Imagen& profundidad, uint32_t base, bool flotante, int32_t x0, int32_t y0,
+                                uint32_t dx, uint32_t dy, uint32_t w, uint32_t h, uint32_t ancho_tex,
+                                uint32_t alto_tex) {
+    if (!Fh2PreparaEmpaquetado() || !Grabar()) return;
+    Imagen& destino = fh2_empaquetadas_[base];
+    if (destino.imagen != VK_NULL_HANDLE && (destino.ancho != ancho_tex || destino.alto != alto_tex)) {
+      EnviarTrabajo(true);
+      EsperarGpu();
+      for (auto it = fh2_prof_sets_.begin(); it != fh2_prof_sets_.end();) {
+        it = it->first.second == destino.vista ? fh2_prof_sets_.erase(it) : std::next(it);
+      }
+      Destruir(destino);
+      destino = Imagen{};
+      if (!Grabar()) return;
+    }
+    if (destino.imagen == VK_NULL_HANDLE) {
+      if (!Crear(destino, ancho_tex, alto_tex, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
+                     VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_FORMAT_R8G8B8A8_UNORM)) {
+        fh2_empaquetadas_.erase(base);
+        return;
+      }
+      Preparar(destino);
+    }
+    auto vistas = fh2_vistas_aspecto_.find(profundidad.imagen);
+    if (vistas == fh2_vistas_aspecto_.end()) {
+      VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+      info.image = profundidad.imagen;
+      info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+      info.format = profundidad.formato;
+      info.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+      VkImageView vista_z = VK_NULL_HANDLE, vista_s = VK_NULL_HANDLE;
+      if (dfn_.vkCreateImageView(device_, &info, nullptr, &vista_z) != VK_SUCCESS) return;
+      info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+      if (dfn_.vkCreateImageView(device_, &info, nullptr, &vista_s) != VK_SUCCESS) {
+        dfn_.vkDestroyImageView(device_, vista_z, nullptr);
+        return;
+      }
+      vistas = fh2_vistas_aspecto_.emplace(profundidad.imagen, std::make_pair(vista_z, vista_s)).first;
+    }
+    const auto clave = std::make_pair(vistas->second.first, destino.vista);
+    auto set = fh2_prof_sets_.find(clave);
+    if (set == fh2_prof_sets_.end()) {
+      if (!fh2_prof_sets_libres_) {
+        EnviarTrabajo(true);
+        EsperarGpu();
+        fh2_prof_sets_.clear();
+        dfn_.vkResetDescriptorPool(device_, fh2_prof_pool_, 0);
+        fh2_prof_sets_libres_ = 64;
+        if (!Grabar()) return;
+      }
+      VkDescriptorSetAllocateInfo reserva{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+      reserva.descriptorPool = fh2_prof_pool_;
+      reserva.descriptorSetCount = 1;
+      reserva.pSetLayouts = &fh2_prof_layout_;
+      VkDescriptorSet nuevo = VK_NULL_HANDLE;
+      if (dfn_.vkAllocateDescriptorSets(device_, &reserva, &nuevo) != VK_SUCCESS) return;
+      --fh2_prof_sets_libres_;
+      const VkDescriptorImageInfo imagenes[3] = {{VK_NULL_HANDLE, vistas->second.first, VK_IMAGE_LAYOUT_GENERAL},
+                                                 {VK_NULL_HANDLE, vistas->second.second, VK_IMAGE_LAYOUT_GENERAL},
+                                                 {VK_NULL_HANDLE, destino.vista, VK_IMAGE_LAYOUT_GENERAL}};
+      VkWriteDescriptorSet escrituras[3]{};
+      for (uint32_t b = 0; b < 3; ++b) {
+        escrituras[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        escrituras[b].dstSet = nuevo;
+        escrituras[b].dstBinding = b;
+        escrituras[b].descriptorCount = 1;
+        escrituras[b].descriptorType = b == 2 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        escrituras[b].pImageInfo = &imagenes[b];
+      }
+      dfn_.vkUpdateDescriptorSets(device_, 3, escrituras, 0, nullptr);
+      set = fh2_prof_sets_.emplace(clave, nuevo).first;
+    }
+    VkMemoryBarrier barrera{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrera.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT |
+                            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    barrera.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    dfn_.vkCmdPipelineBarrier(comandos_trabajo_,
+                              VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrera, 0, nullptr, 0, nullptr);
+    dfn_.vkCmdBindPipeline(comandos_trabajo_, VK_PIPELINE_BIND_POINT_COMPUTE, fh2_prof_pipeline_);
+    dfn_.vkCmdBindDescriptorSets(comandos_trabajo_, VK_PIPELINE_BIND_POINT_COMPUTE, fh2_prof_pipeline_layout_, 0, 1,
+                                 &set->second, 0, nullptr);
+    struct {
+      int32_t origen[2], destino[2], tamano[2];
+      uint32_t flotante;
+    } constantes{{x0, y0}, {int32_t(dx), int32_t(dy)}, {int32_t(w), int32_t(h)}, flotante ? 1u : 0u};
+    dfn_.vkCmdPushConstants(comandos_trabajo_, fh2_prof_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                            sizeof(constantes), &constantes);
+    dfn_.vkCmdDispatch(comandos_trabajo_, (w + 7) / 8, (h + 7) / 8, 1);
+    barrera.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+    barrera.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT |
+                            VK_ACCESS_TRANSFER_WRITE_BIT;
+    dfn_.vkCmdPipelineBarrier(comandos_trabajo_, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                  VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                  VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                              0, 1, &barrera, 0, nullptr, 0, nullptr);
+    ++fh2_profundidades_empaquetadas_;
+  }
+
+  const ImagenNativa* Fh2ProfundidadEmpaquetada(uint32_t direccion) override {
+    const auto it = fh2_empaquetadas_.find(direccion);
+    return it != fh2_empaquetadas_.end() && it->second.preparada ? &it->second : nullptr;
+  }
 #endif
 
   void CopiarDeVueltaParaResolver(Imagen& destino, Imagen& origen) {
@@ -5095,6 +5270,16 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 
   void Destruir(Imagen& imagen) {
     CompuestaAlDestruir(imagen);  // nfsmw_nativo_compuesta_perezosa
+#if defined(FH2_RECOMP)
+    if (const auto v = fh2_vistas_aspecto_.find(imagen.imagen); v != fh2_vistas_aspecto_.end()) {
+      for (auto it = fh2_prof_sets_.begin(); it != fh2_prof_sets_.end();) {
+        it = it->first.first == v->second.first ? fh2_prof_sets_.erase(it) : std::next(it);
+      }
+      dfn_.vkDestroyImageView(device_, v->second.first, nullptr);
+      dfn_.vkDestroyImageView(device_, v->second.second, nullptr);
+      fh2_vistas_aspecto_.erase(v);
+    }
+#endif
     // nfsmw_nativo_frontal_perezoso. A deferred copy cannot keep a destroyed image. If the texture is
     // what gets destroyed (ObtenerResuelta recreates it with another size or format), its content is lost
     // just as before: the copy is simply dropped. If it is the source (only at shutdown: render targets
@@ -5684,6 +5869,10 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         copia.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         copia.dstOffsets[0] = {3 * 320 + 2, 3 * 180 + 2, 0};
         copia.dstOffsets[1] = {3 * 320 + 318, 3 * 180 + 178, 1};
+        if (REXCVAR_GET(fh2_nativo_foto_completa)) {  // the whole mosaic
+          copia.dstOffsets[0] = {0, 0, 0};
+          copia.dstOffsets[1] = {1280, 720, 1};
+        }
         blit_(comandos_trabajo_, fh2_instantanea_.imagen, VK_IMAGE_LAYOUT_GENERAL, mosaico_.imagen,
               VK_IMAGE_LAYOUT_GENERAL, 1, &copia, VK_FILTER_LINEAR);
         lista += " 15:destino de la escena antes de copiarla";
@@ -6325,6 +6514,18 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   uint32_t fh2_escala_sets_libres_ = 0;
   bool fh2_escala_fallo_ = false;
   uint64_t fh2_copias_escaladas_ = 0;
+  // Depth resolves read as 8_8_8_8 (Fh2EmpaquetarProfundidad): the packed texture per address, the depth and
+  // stencil views of each depth render target, and the descriptor sets per (depth view, packed texture view).
+  std::map<uint32_t, Imagen> fh2_empaquetadas_;
+  std::map<VkImage, std::pair<VkImageView, VkImageView>> fh2_vistas_aspecto_;
+  std::map<std::pair<VkImageView, VkImageView>, VkDescriptorSet> fh2_prof_sets_;
+  VkDescriptorSetLayout fh2_prof_layout_ = VK_NULL_HANDLE;
+  VkPipelineLayout fh2_prof_pipeline_layout_ = VK_NULL_HANDLE;
+  VkPipeline fh2_prof_pipeline_ = VK_NULL_HANDLE;
+  VkDescriptorPool fh2_prof_pool_ = VK_NULL_HANDLE;
+  uint32_t fh2_prof_sets_libres_ = 0;
+  bool fh2_prof_fallo_ = false;
+  uint64_t fh2_profundidades_empaquetadas_ = 0;
   uint32_t fh2_copias_foto_ = 0;  // copies to fh2_nativo_foto_copia in this frame
 #endif
   Imagen mosaico_;

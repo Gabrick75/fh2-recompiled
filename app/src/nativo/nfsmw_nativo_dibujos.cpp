@@ -3580,6 +3580,17 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       // so this creates no pipelines that did not already exist.
       especializacion |= (funcion_alfa & 0x7u) << kSpecFuncionAlfaDesplazamiento;
     }
+#if defined(FH2_RECOMP)
+    // Alpha to coverage (RB_COLORCONTROL bit 4): FH2 draws its fences, foliage and crowd with it under 4x MSAA.
+    // Without host MSAA the coverage of one sample is alpha >= 0.5, which is an alpha test (the console's dither
+    // offsets in bits 24-31 only spread the threshold between samples).
+    else if (ps && ((control_color >> 4) & 0x1)) {
+      umbral_alfa = 0.5f;
+      funcion_alfa = 6;  // >=
+      especializacion |= 0x2;
+      especializacion |= (funcion_alfa & 0x7u) << kSpecFuncionAlfaDesplazamiento;
+    }
+#endif
     compartidas[64] = (r[kRegBooleanos] & 0xFFFF) | ((r[kRegBooleanos + 4] & 0xFFFF) << 16);
     compartidas[65] = 0;  // g_SwappedTexcoords
     if (!(r[gr::XE_GPU_REG_PA_SU_VTX_CNTL] & 0x1)) {  // PixelCenter::kD3DZero
@@ -9081,6 +9092,17 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                       resuelta->ancho, resuelta->alto, 1.0f / float(resuelta->ancho),
                       1.0f / float(resuelta->alto));
         }
+#if defined(FH2_RECOMP)
+        if (const uint32_t formato_fetch = f[1] & 0x3F; EsProfundidad(resuelta->formato) && formato_fetch != 22 &&
+                                                        formato_fetch != 23) {
+          if (const ImagenNativa* empaquetada = contexto_->Fh2ProfundidadEmpaquetada(base & 0x1FFFFFFF)) {
+            ranura = RanuraVista(empaquetada->imagen, empaquetada->formato, swizzle, kSwizzleRGBA);
+            muestreo_puntual = true;
+            valido_hasta = fotograma_;
+            return;
+          }
+        }
+#endif
         if (EsProfundidad(resuelta->formato)) {
           // Depth copy (k_24_8): depth comes out in R and the fetch constant's swizzle distributes it. No
           // filtering: it is read as is.
