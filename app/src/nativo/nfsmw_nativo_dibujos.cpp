@@ -4556,11 +4556,15 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 #if defined(FH2_RECOMP)
     {
       // FH2 diagnostics: scene-sized draws cut short (first 20).
-      static int avisos = 0;
-      if (avisos < 20 && pase_ancho_ >= 1280 && y1 - y0 < 700) {
-        ++avisos;
-        REXLOG_INFO("[fh2 nativo] tijera ({},{})-({},{}) de tl {:08X} br {:08X} ventana ({},{}); pase {}x{}", x0, y0, x1,
-                    y1, tl, br, ventana_x, ventana_y, pase_ancho_, pase_alto_);
+      static std::set<uint64_t> vistos;
+      const uint64_t clave_diag = (uint64_t(r[gr::XE_GPU_REG_RB_SURFACE_INFO]) << 32) ^ (uint64_t(br) << 8) ^ tl ^
+                                  (uint64_t(r[gr::XE_GPU_REG_RB_DEPTHCONTROL]) << 40);
+      if (vistos.size() < 60 && pase_ancho_ >= 1280 && vistos.insert(clave_diag).second) {
+        REXLOG_INFO("[fh2 nativo] tijera ({},{})-({},{}) de tl {:08X} br {:08X} ventana ({},{}); pase {}x{}; viewport "
+                    "{}x{} en ({},{}); superficie {:08X} profundidad {:08X} info prof {:08X}",
+                    x0, y0, x1, y1, tl, br, ventana_x, ventana_y, pase_ancho_, pase_alto_, viewport.width,
+                    viewport.height, viewport.x, viewport.y, r[gr::XE_GPU_REG_RB_SURFACE_INFO],
+                    r[gr::XE_GPU_REG_RB_DEPTHCONTROL], r[gr::XE_GPU_REG_RB_DEPTH_INFO]);
       }
     }
 #endif

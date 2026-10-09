@@ -1458,6 +1458,28 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if (!destino_render) {
       return false;
     }
+#if defined(FH2_RECOMP)
+    // FH2 diagnostics (nfsmw_nativo_diag_resueltas): the scene's render target right before its first strip is
+    // copied, for the mosaic's last cell.
+    if (REXCVAR_GET(nfsmw_nativo_diag_resueltas) && blit_ && y0 == 0 && pitch == 1280 &&
+        (reg.rb_copy_dest_base & 0x1FFFFFFF) == 0x1C4E1000 && Grabar()) {
+      if (fh2_instantanea_.imagen == VK_NULL_HANDLE) {
+        Crear(fh2_instantanea_, 1280, 720, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+      }
+      if (fh2_instantanea_.imagen != VK_NULL_HANDLE) {
+        if (dibujos_) dibujos_->TerminarPase();
+        Preparar(*destino_render);
+        Preparar(fh2_instantanea_);
+        VkImageBlit foto{};
+        foto.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        foto.srcOffsets[1] = {1280, 720, 1};
+        foto.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        foto.dstOffsets[1] = {1280, 720, 1};
+        blit_(comandos_trabajo_, destino_render->imagen, VK_IMAGE_LAYOUT_GENERAL, fh2_instantanea_.imagen,
+              VK_IMAGE_LAYOUT_GENERAL, 1, &foto, VK_FILTER_NEAREST);
+      }
+    }
+#endif
     // The game has just said which area of this render target matters to it. It is the data RestaurarContenido
     // uses to stop copying the bottom rows that nobody draws or reads (the scene render target is created
     // 1280x1280 to draw 1280x720).
@@ -1681,7 +1703,48 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         }
       }
     }
+#if defined(FH2_RECOMP)
+    // FH2: a copy of one horizontal strip clears only that strip on the Xbox 360, but a host clear takes the whole
+    // image, and the next strip's copy would take black. The clears of contiguous full-width strips from row 0 are
+    // held back and done whole when the last one reaches the bottom of the copy's destination.
+    const uint32_t alto_objetivo = ((reg.rb_copy_dest_pitch >> 16) & 0x3FFF) ? ((reg.rb_copy_dest_pitch >> 16) & 0x3FFF)
+                                                                           : 720u;
+    const auto fh2_borrar_ahora = [&](ImagenNativa& imagen) {
+      if (x0 > 0 || uint32_t(x1) < (pitch & ~7u)) {
+        imagen.fh2_borrado_pendiente = 0;
+        return true;  // not a full-width strip: as always
+      }
+      if (y0 <= 0) {
+        if (uint32_t(y1) >= alto_objetivo) {
+          imagen.fh2_borrado_pendiente = 0;
+          return true;
+        }
+        imagen.fh2_borrado_pendiente = uint32_t(y1);
+        return false;
+      }
+      if (imagen.fh2_borrado_pendiente && uint32_t(y0) == imagen.fh2_borrado_pendiente) {
+        if (uint32_t(y1) >= alto_objetivo) {
+          imagen.fh2_borrado_pendiente = 0;
+          return true;
+        }
+        imagen.fh2_borrado_pendiente = uint32_t(y1);
+        return false;
+      }
+      imagen.fh2_borrado_pendiente = 0;
+      return true;
+    };
+    const bool fh2_borrar_color = !borrar_color || fh2_borrar_ahora(*destino_render);
+    bool fh2_borrar_profundidad = true;
+    if (((control >> 9) & 0x1) && borrar_profundidad_) {
+      const uint32_t info_profundidad = reg.rb_depth_info;
+      if (Imagen* p = ObtenerProfundidad(info_profundidad & 0xFFF, (info_profundidad >> 16) & 0x1, pitch)) {
+        fh2_borrar_profundidad = fh2_borrar_ahora(*p);
+      }
+    }
+    if (borrar_color && fh2_borrar_color) {
+#else
     if (borrar_color) {
+#endif
       const uint64_t valor_crudo =
           uint64_t(reg.rb_color_clear) | (uint64_t(reg.rb_color_clear_lo) << 32);
       /*
@@ -1741,7 +1804,11 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         AnotarBorradoDiag(*destino_render, info_color & 0xFFF, formato_color, pitch, false, false);
       }
     }
+#if defined(FH2_RECOMP)
+    if (((control >> 9) & 0x1) && borrar_profundidad_ && fh2_borrar_profundidad) {
+#else
     if (((control >> 9) & 0x1) && borrar_profundidad_) {
+#endif
       BorrarProfundidad(reg, pitch);
     }
     return true;
@@ -5390,6 +5457,24 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       lista += fmt::format(" {}{}:{:08X} {}x{} f{}", i, bases[i] == base_swap ? "*" : "", bases[i],
                            imagen.ancho, imagen.alto, int(imagen.formato));
     }
+#if defined(FH2_RECOMP)
+    {
+      // FH2 diagnostics: the scene's render target itself (EDRAM base 0, 2_10_10_10_FLOAT, pitch 1280), rows 0-720,
+      // in the last cell, as it is when the Swap comes.
+      if (fh2_instantanea_.imagen != VK_NULL_HANDLE) {
+        Preparar(fh2_instantanea_);
+        VkImageBlit copia{};
+        copia.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copia.srcOffsets[1] = {1280, 720, 1};
+        copia.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copia.dstOffsets[0] = {3 * 320 + 2, 3 * 180 + 2, 0};
+        copia.dstOffsets[1] = {3 * 320 + 318, 3 * 180 + 178, 1};
+        blit_(comandos_trabajo_, fh2_instantanea_.imagen, VK_IMAGE_LAYOUT_GENERAL, mosaico_.imagen,
+              VK_IMAGE_LAYOUT_GENERAL, 1, &copia, VK_FILTER_LINEAR);
+        lista += " 15:destino de la escena antes de copiarla";
+      }
+    }
+#endif
     const auto ahora = std::chrono::steady_clock::now();
     if (ahora - ultimo_aviso_mosaico_ >= std::chrono::seconds(10)) {
       ultimo_aviso_mosaico_ = ahora;
@@ -6013,6 +6098,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   uint32_t escala_sombras_ = 0;
   uint64_t sombras_subidas_ = 0;
   std::vector<uint32_t> resueltas_fotograma_;
+#if defined(FH2_RECOMP)
+  Imagen fh2_instantanea_;  // see the FH2 diagnostics in the copy
+#endif
   Imagen mosaico_;
   std::chrono::steady_clock::time_point ultimo_aviso_mosaico_{};
   // Read-back of small resolved textures (nfsmw_nativo_leer_resueltas_texels).

@@ -82,6 +82,11 @@ struct ImagenNativa {
   // resolved texture's instead of copied. The target keeps that texture's old content: if the game draws
   // on it again without clearing first, the content has to be brought back.
   bool contenido_invalido = false;
+#if defined(FH2_RECOMP)
+  // FH2 resolves its scene in horizontal strips, each copy clearing its strip: the rows already cleared from row 0
+  // whose clear is held back until the last strip (see Fh2BorrarAhora in nfsmw_nativo_destinos.cpp).
+  uint32_t fh2_borrado_pendiente = 0;
+#endif
   uint32_t resuelta_base = 0;  // where its content is while contenido_invalido
 };
 
