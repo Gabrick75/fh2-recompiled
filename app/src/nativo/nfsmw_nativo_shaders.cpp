@@ -6,12 +6,15 @@
 
 #include "nfsmw_shader_library.h"
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <algorithm>
 #include <exception>
 #include <cstring>
+#include <cstdio>
 #include <map>
+#include <set>
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -29,6 +32,12 @@
 #define XXH_FORCE_MEMORY_ACCESS 0
 #define XXH_INLINE_ALL
 #include <xxhash.h>
+
+#if defined(FH2_RECOMP)
+REXCVAR_DEFINE_STRING(fh2_nativo_volcar_sueltos, "", "FH2",
+                      "Debug: folder where the native renderer writes the shader microcode its library does not "
+                      "have (tools/xenos/d3d_internos.py wraps it)");
+#endif
 
 namespace nfsmw::nativo {
 namespace {
@@ -134,6 +143,14 @@ const char* Leer(const nfsmw::native::Shader& shader, EntradaShader& e) {
   }
 
   // Constant table: only the samplers (register and type).
+#if defined(FH2_RECOMP)
+  // FH2's D3D library has its own shaders without a constant table (its Clear draws a rectangle with them): the
+  // translator reads their constants straight from the 256 registers, and they sample nothing.
+  if (!tabla) {
+    e.constantes_bytes = 256 * 16;
+    return nullptr;
+  }
+#endif
   if (!tabla || !c.Hay(tabla + 4, 28)) return "sin tabla de constantes";
   const size_t base = size_t(tabla) + 4;
   const uint32_t constantes = c.U32(base + 12);
@@ -446,6 +463,26 @@ const EntradaShader* ShadersNativos::Identificar(bool vertices,
     }
   } else {
     ++d.estadisticas.sin_identificar;
+#if defined(FH2_RECOMP)
+    {
+      // FH2: the microcode the library does not have, written once per fingerprint to fh2_nativo_volcar_sueltos
+      // (big-endian words), for tools/xenos to wrap in containers (the D3D library's own shaders are loose
+      // microcode in the executable).
+      const std::string carpeta = REXCVAR_GET(fh2_nativo_volcar_sueltos);
+      static std::set<uint64_t> volcados;
+      if (!carpeta.empty() && volcados.insert(clave.huella ^ (vertices ? 1 : 0)).second) {
+        const std::string ruta =
+            fmt::format("{}/{}_{:016X}_{}.bin", carpeta, vertices ? 'v' : 'p', clave.huella, microcodigo.size());
+        if (FILE* f = std::fopen(ruta.c_str(), "wb")) {
+          for (const uint32_t w : microcodigo) {
+            const uint32_t be = __builtin_bswap32(w);
+            std::fwrite(&be, 4, 1, f);
+          }
+          std::fclose(f);
+        }
+      }
+    }
+#endif
     if (avisar) {
       ++d.avisos;
       const auto c = d.candidatos.find({vertices, uint32_t(microcodigo.size())});

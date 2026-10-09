@@ -10,6 +10,7 @@
 #include "nfsmw_informe_diferido.h"  // deferred reports
 
 #include <atomic>
+#include <cstring>
 #include <chrono>
 #include <mutex>
 #include <span>
@@ -273,6 +274,46 @@ const EntradaShader* Fh2VsPorDireccion(uint32_t fisico) {
     std::lock_guard<std::mutex> cerrojo(g_fh2_parches_mutex);
     const auto it = g_fh2_parches.find(fisico);
     if (it != g_fh2_parches.end()) objeto = it->second;
+  }
+  const EntradaShader* entrada = nullptr;
+  if (objeto) {
+    std::lock_guard<std::mutex> cerrojo(g_mutex);
+    const auto it = g_objetos.find(objeto);
+    if (it != g_objetos.end()) entrada = it->second;
+  }
+  (entrada ? g_fh2_aciertos : g_fh2_fallos).fetch_add(1, std::memory_order_relaxed);
+  return entrada;
+}
+
+const EntradaShader* Fh2VsPorContenido(const uint8_t* memoria, const uint8_t* microcodigo, size_t bytes) {
+  uint32_t objeto = 0;
+  {
+    std::lock_guard<std::mutex> cerrojo(g_fh2_parches_mutex);
+    {
+      // Diagnostics: the nearest reported destination to this copy.
+      static int avisos = 0;
+      const uint32_t fisico = uint32_t(microcodigo - memoria);
+      if (avisos < 12) {
+        ++avisos;
+        int64_t mejor = INT64_MAX;
+        uint32_t mejor_destino = 0;
+        for (const auto& [destino, candidato] : g_fh2_parches) {
+          const int64_t d = int64_t(fisico) - int64_t(destino);
+          if (std::llabs(d) < std::llabs(mejor)) {
+            mejor = d;
+            mejor_destino = destino;
+          }
+        }
+        REXLOG_INFO("[fh2 nativo] VS inmediato en {:08X} ({} bytes): destino mas cercano {:08X} (distancia {}), {} "
+                    "destinos", fisico, bytes, mejor_destino, mejor, g_fh2_parches.size());
+      }
+    }
+    for (const auto& [fisico, candidato] : g_fh2_parches) {
+      if (fisico < 0x20000000u - bytes && std::memcmp(memoria + fisico, microcodigo, bytes) == 0) {
+        objeto = candidato;
+        break;
+      }
+    }
   }
   const EntradaShader* entrada = nullptr;
   if (objeto) {

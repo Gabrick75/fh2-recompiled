@@ -4553,6 +4553,17 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (x1 <= x0 || y1 <= y0) {
       return 2;
     }
+#if defined(FH2_RECOMP)
+    {
+      // FH2 diagnostics: scene-sized draws cut short (first 20).
+      static int avisos = 0;
+      if (avisos < 20 && pase_ancho_ >= 1280 && y1 - y0 < 700) {
+        ++avisos;
+        REXLOG_INFO("[fh2 nativo] tijera ({},{})-({},{}) de tl {:08X} br {:08X} ventana ({},{}); pase {}x{}", x0, y0, x1,
+                    y1, tl, br, ventana_x, ventana_y, pase_ancho_, pase_alto_);
+      }
+    }
+#endif
     tijera = VkRect2D{{x0, y0}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
     return 0;
   }

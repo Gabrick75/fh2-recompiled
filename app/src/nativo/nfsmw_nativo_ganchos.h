@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace nfsmw::nativo {
@@ -227,6 +228,10 @@ void RecordarCreacion(uint32_t objeto, const EntradaShader* entrada, bool vertic
 // (destination as the game passes it, VS object), and the ring looks up an IM_LOAD's physical address there.
 void Fh2AnotarParcheVs(uint32_t objeto, uint32_t destino);
 const EntradaShader* Fh2VsPorDireccion(uint32_t fisico);
+// The same for a copy of a patched variant somewhere else (FH2's D3D copies a variant into the ring as an
+// IM_LOAD_IMMEDIATE): the reported destination whose memory holds this microcode (guest byte order). memoria is the
+// host pointer of guest physical address 0.
+const EntradaShader* Fh2VsPorContenido(const uint8_t* memoria, const uint8_t* microcodigo, std::size_t bytes);
 // Lookups since the start: found, and not found.
 void Fh2EstadisticasParches(uint64_t& aciertos, uint64_t& fallos);
 #endif

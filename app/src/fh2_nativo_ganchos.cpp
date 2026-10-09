@@ -3,6 +3,9 @@
 //
 // - The shader constructors tell the renderer which library container each D3D shader object comes from.
 #include <cstdint>
+#include <string>
+
+#include <fmt/format.h>
 
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -45,4 +48,24 @@ REX_HOOK_RAW(sub_8241ACA0) {
   const uint32_t objeto = ctx.r3.u32, destino = ctx.r4.u32;
   __imp__sub_8241ACA0(ctx, base);
   nativo::Fh2AnotarParcheVs(objeto, destino);
+}
+
+// Diagnostics: the words of a bound VS object that look like physical pointers (where its patched variants live).
+REX_EXTERN(__imp__sub_8245B370);
+REX_HOOK_RAW(sub_8245B370) {
+  static int avisos = 0;
+  const uint32_t objeto = ctx.r4.u32;
+  if (objeto && avisos < 6) {
+    ++avisos;
+    std::string texto;
+    const auto* w = reinterpret_cast<const uint32_t*>(base + objeto);
+    for (uint32_t i = 0; i < 300; ++i) {
+      const uint32_t v = __builtin_bswap32(w[i]);
+      if ((v >= 0xA0000000u && v < 0xC0000000u) || (v >= 0x10000000u && v < 0x20000000u)) {
+        texto += fmt::format(" +{}={:08X}", i * 4, v);
+      }
+    }
+    REXLOG_INFO("[fh2 nativo] SetVertexShader {:08X}:{}", objeto, texto);
+  }
+  __imp__sub_8245B370(ctx, base);
 }

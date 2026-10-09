@@ -29,6 +29,9 @@ python3 $RAIZ/tools/xenos/extrair_fxobj_pistas.py $RAIZ/assets/game_root $S/fxob
 # The executable's modules as loaded (tools/rodar_pc.sh --xex_despejar_imagem=$RAIZ/app/out/shaders_fh2_imagem).
 python3 $RAIZ/tools/xenos/extrair_contenedores.py $RAIZ/assets/game_root $S/contenedores $S/fxobj_pistas \
   $(ls $RAIZ/app/out/shaders_fh2_imagem.* 2>/dev/null)
+# The D3D library's own shaders (loose microcode), from the native renderer's dump (--fh2_nativo_volcar_sueltos).
+SUELTOS=${SUELTOS:-$RAIZ/app/out/shaders_fh2_sueltos}
+[ -d "$SUELTOS" ] && python3 $RAIZ/tools/xenos/d3d_internos.py "$SUELTOS" $S/contenedores
 $B/xenos_hlsl $S/contenedores $S/hlsl $COMUN > $S/traduccion.log 2>&1; tail -1 $S/traduccion.log
 grep "rechazada\|no produjo\|no pude\|firma" $S/traduccion.log | sed -E 's/^ *[pv]_[0-9]+(\.bin)?:? *//' |
   sort | uniq -c | sort -rn | head -5

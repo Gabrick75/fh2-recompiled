@@ -1438,6 +1438,20 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if (!Rectangulo(reg, pitch, x0, y0, x1, y1)) {
       return false;
     }
+#if defined(FH2_RECOMP)
+    {
+      // FH2 diagnostics: the rectangle of the copies (first 60).
+      static int avisos = 0;
+      const uint32_t destino_copia = reg.rb_copy_dest_base & 0x1FFFFFFF;
+      if (avisos < 40 && pitch >= 1280 && (reg.rb_copy_control & 0x300)) {
+        ++avisos;
+        REXLOG_INFO("[fh2 nativo] copia/borrado control {:08X} a {:08X}: rect ({},{})-({},{}) ventana tl {:08X} br {:08X} "
+                    "offset {:08X} modo_sc {:08X}",
+                    reg.rb_copy_control, reg.rb_copy_dest_base, x0, y0, x1, y1, reg.pa_sc_window_scissor_tl, reg.pa_sc_window_scissor_br,
+                    reg.pa_sc_window_offset, reg.pa_su_sc_mode_cntl);
+      }
+    }
+#endif
 
     // First the objects (creating or recreating can submit work), then recording.
     Imagen* destino_render = ObtenerDestino(info_color & 0xFFF, formato_color, pitch);
@@ -1509,8 +1523,18 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         const uint32_t pitch_destino = reg.rb_copy_dest_pitch & 0x3FFF;
         const uint32_t alto_destino = (reg.rb_copy_dest_pitch >> 16) & 0x3FFF;
         // Base in multiples of 32 texels (GetResolveInfo), tiled with the texel size of the copy format.
-        const uint32_t base_x = uint32_t(x0) & ~uint32_t(31);
-        const uint32_t base_y = uint32_t(y0) & ~uint32_t(31);
+        uint32_t base_x = uint32_t(x0) & ~uint32_t(31);
+        uint32_t base_y = uint32_t(y0) & ~uint32_t(31);
+#if defined(FH2_RECOMP)
+        // FH2 resolves its scene in strips (0-256, 256-512, 512-720) into one 1280x720 texture: RB_COPY_DEST_BASE is
+        // that texture's address and the tiled offset only locates the strip inside it. When the rectangle fits the
+        // destination size, the copy goes into the texture at the base, at (x0, y0); otherwise (a sub-rectangle
+        // resolved as a texture of its own) as before.
+        if (uint32_t(x1) <= pitch_destino && uint32_t(y1) <= alto_destino) {
+          base_x = 0;
+          base_y = 0;
+        }
+#endif
         const uint32_t base =
             reg.rb_copy_dest_base +
             uint32_t(DesplazamientoMosaico2D(int32_t(base_x), int32_t(base_y), pitch_destino, bytes_log2_copia));

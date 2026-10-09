@@ -2800,7 +2800,22 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
           static uint32_t avisos = 0;
           if (!carga->entrada && avisos < 20) {
             ++avisos;
-            REXLOG_INFO("[fh2 nativo] VS sin identificar cargado de {:08X}, {} palabras", direccion_tipo & ~3u, tamano);
+            // Diagnostics: is a whole shader container sitting before this microcode?
+            const uint32_t fisico = direccion_tipo & ~3u;
+            int64_t distancia = -1;
+            uint32_t virtuales = 0, fisicos = 0;
+            for (uint32_t atras = 4; atras <= 65536 && atras <= fisico; atras += 4) {
+              const uint32_t w = rex::memory::load_and_swap<uint32_t>(memory_->TranslatePhysical(fisico - atras));
+              if ((w & 0xFFFFFFFEu) == 0x102A1100u) {
+                distancia = atras;
+                virtuales = rex::memory::load_and_swap<uint32_t>(memory_->TranslatePhysical(fisico - atras + 4));
+                fisicos = rex::memory::load_and_swap<uint32_t>(memory_->TranslatePhysical(fisico - atras + 8));
+                break;
+              }
+            }
+            REXLOG_INFO("[fh2 nativo] VS sin identificar cargado de {:08X}, {} palabras; contenedor {} bytes antes "
+                        "(virtual {}, fisico {})",
+                        fisico, tamano, distancia, virtuales, fisicos);
           }
         }
 #endif
@@ -3070,11 +3085,25 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
 
   // The regular IM_LOAD_IMMEDIATE path (formerly inline in PaqueteTipo3).
   void CargarInmediatoSinCache(Lector datos, uint32_t tipo, uint32_t tamano) {
+#if defined(FH2_RECOMP)
+    // Where the microcode is in guest physical memory: FH2's D3D copies a vertex shader into the ring and its fetch
+    // patcher patches it there, so that is the destination the patcher hook reported (Fh2AnotarParcheVs).
+    const uint32_t fisico = uint32_t((datos.base + size_t(datos.pos) * 4) - memory_->TranslatePhysical(0));
+#endif
     microcodigo_.resize(tamano);
     for (uint32_t i = 0; i < tamano; ++i) {
       microcodigo_[i] = datos.Leer();
     }
     IdentificarShader(tipo);
+#if defined(FH2_RECOMP)
+    if (tipo == 0 && !vs_actual_ && shaders_.cargada()) {
+      vs_actual_ = Fh2VsPorDireccion(fisico);
+      if (!vs_actual_) {
+        vs_actual_ = Fh2VsPorContenido(memory_->TranslatePhysical(0), memory_->TranslatePhysical(fisico),
+                                       size_t(tamano) * 4);
+      }
+    }
+#endif
   }
 
   // The same state IdentificarShader leaves, taken from the way (without swapping, identifying or
