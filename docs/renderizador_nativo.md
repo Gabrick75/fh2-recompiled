@@ -212,6 +212,29 @@ Sem o código gerado do NFSMW para comparar, achadas em tempo de execução com 
 | Swap (chama `VdSwap`) | `sub_82B72118` | `826E27A8`? | |
 | Calcula tamanho ou valida contêiner (os dois tipos) | `sub_82B70108` | | |
 
+### Etapa 2, estado (2026-10-08)
+
+O renderizador do nfsmw-android está em `app/src/nativo` (`FH2_RECOMP`) e é ligado com `--nfsmw_renderizador=nativo`
+(`tools/xenos/biblioteca.sh` gera e copia `fh2_shaders.nfsp`). No PC, no menu de eventos:
+
+- Anel, interrupções e Swaps funcionam (~60 fps no PC).
+- Shaders:
+  - pixel shaders identificados pelo microcódigo;
+  - vertex shaders pelo microcódigo ou pelo endereço da cópia que o parcheador `sub_8241ACA0` escreveu
+    (`Fh2AnotarParcheVs`; 6.669 acertos, 1 falha).
+- Resolves aceitam os formatos do FH2: `2_10_10_10`, `16_16_16_16`, `16_16_16_16_FLOAT`, `16_16_FLOAT` e `32_FLOAT`.
+  O viés de expoente das cópias ainda não é aplicado.
+- Entradas de vértice `10_11_11` (posições e coordenadas de textura): ligadas como `R32_SFLOAT` e decodificadas no
+  shader (`fh2Entrada`, constante de especialização 1).
+- **Resultado:** a interface do menu aparece certa; a cena 3D ainda fica preta.
+
+Recusas que sobram por 40 s: 1.404 draws pela causa 12 e 396 por tipo de primitiva (101). Também 1.938 cópias com
+retângulo vazio e 62 Swaps sem textura resolvida.
+
+Próximo: achar onde a cena se perde, entre o alvo HDR (`2_10_10_10_FLOAT` e a vista `AS_16_16_16_16`, que o Carbon
+precisou unir), o viés de expoente e a composição final. O mosaico de diagnóstico (`nfsmw_nativo_diag_resueltas`) só
+mostra texturas 8888.
+
 ### Etapas
 
 1. Biblioteca de shaders do FH2: XenosRecomp + DXC no PC sobre os `.fxobj` (e o XEX); medir quantos traduzem e quantos
