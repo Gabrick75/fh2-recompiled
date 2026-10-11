@@ -125,6 +125,25 @@ final class GameOptions {
         }
     }
 
+    /** The render scale of the native renderer: the typed percent, 50 to 100. */
+    static int nativeRenderScalePercent(Context context) {
+        return Math.max(50, renderScalePercent(context));
+    }
+
+    /** anisotropic_override's values (0, 2 = 2x, 3 = 4x, 5 = 16x) as nfsmw_nativo_anisotropico's (0, 2, 4, 16). */
+    static String nativeAnisotropic(String value) {
+        switch (value) {
+            case "2": return "2";
+            case "3": return "4";
+            case "5": return "16";
+            default: return "0";
+        }
+    }
+
+    static boolean nativeRenderer(Context context) {
+        return "native".equals(get(context, RENDERER));
+    }
+
     /**
      * The scale the game really uses, in eighths of 1280x720 (8 = full): the render targets shrink in eighths so the
      * emulated EDRAM tiles stay whole pixels, and in quarters with MSAA 4x. Same rounding as
@@ -145,8 +164,13 @@ final class GameOptions {
         args.add("--audio_ganancia_pct=" + get(context, VOLUME));
         if ("native".equals(get(context, RENDERER))) {
             // NFSMW Android Evolved's renderer built for FH2 (app/src/nativo): the ring is drawn with translated
-            // shaders, no EDRAM emulation. The emulated GPU's arguments below are then ignored.
+            // shaders, no EDRAM emulation. The emulated GPU's arguments below are then ignored; these are its own.
             args.add("--nfsmw_renderizador=nativo");
+            // The scene and post-processing render targets drawn smaller (50 to 100 %, any step).
+            args.add("--fh2_nativo_escala=" + nativeRenderScalePercent(context));
+            // Its own FXAA on the output; it has no MSAA (the game's 4x surfaces are drawn with one sample).
+            args.add("--nfsmw_antialiasing=" + ("fxaa".equals(get(context, ANTI_ALIASING)) ? "fxaa" : "apagado"));
+            args.add("--nfsmw_nativo_anisotropico=" + nativeAnisotropic(get(context, ANISOTROPIC)));
         }
         switch (get(context, ANTI_ALIASING)) {
             case "off":

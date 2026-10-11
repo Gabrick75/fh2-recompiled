@@ -245,7 +245,8 @@ public final class MainActivity extends AppCompatActivity {
                         "Emulado: a GPU do Xbox 360 emulada, o modo testado. Nativo (experimental): desenha os comandos " +
                                 "do jogo direto em Vulkan, com os shaders traduzidos; bem mais rápido, mas precisa do " +
                                 "arquivo fh2_shaders.nfsp junto dos arquivos do jogo e ainda tem erros de imagem.",
-                        new String[] {"Emulado", "Nativo (experimental)"}, new String[] {"emulated", "native"}, false),
+                        new String[] {"Emulado", "Nativo (experimental)"}, new String[] {"emulated", "native"}, false,
+                        v -> { if (renderScaleShow != null) renderScaleShow.run(); }),
                 renderScale(),
                 notYet(dropdown(GameOptions.FPS, "Limite de FPS",
                         "O teto do jogo. 90, 120 e Sem limite são experimentais e pedem uma tela com essa taxa. Por enquanto só escolhe a taxa de atualização da tela.",
@@ -284,13 +285,13 @@ public final class MainActivity extends AppCompatActivity {
         // --- Performance
         right.addView(card(section("Desempenho"),
                 toggle("Fixar threads nos núcleos",
-                        "Deixa o jogo só nos núcleos rápidos do processador e o processador de comandos da GPU sozinho no " +
-                                "mais rápido (+16 %).",
+                        "Deixa o jogo só nos núcleos rápidos do processador e o processador de comandos da GPU (o do " +
+                                "emulado ou o do nativo) sozinho no mais rápido (+16 %).",
                         GameOptions.flag(this, GameOptions.PIN_THREADS), v -> GameOptions.flag(this, GameOptions.PIN_THREADS, v)),
                 toggle("Cópias diretas para texturas (experimental)",
                         "Quando o jogo copia uma imagem que desenhou para usá-la como textura, copia direto na GPU, " +
                                 "sem passar pela memória do console emulado. Menos trabalho para a GPU; desligue se " +
-                                "aparecer alguma imagem errada.",
+                                "aparecer alguma imagem errada. Só no renderizador emulado (o nativo já copia assim).",
                         GameOptions.flag(this, GameOptions.RESOLVE_SHORTCUT),
                         v -> GameOptions.flag(this, GameOptions.RESOLVE_SHORTCUT, v)),
                 driverSection()));
@@ -323,13 +324,16 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     // Render resolution as a typed percentage of the Xbox 360's 1280x720, with the size it really becomes (eighths).
+    private Runnable renderScaleShow;  // refreshes the render scale's result when the renderer changes
+
     private View renderScale() {
         LinearLayout box = column();
         box.setPadding(0, dp(10), 0, dp(10));
         box.addView(heading("Resolução de renderização"));
         box.addView(summary("Porcentagem da resolução do Xbox 360 (1280×720) em que o jogo desenha. Abaixo de 100 " +
-                "a imagem fica menos nítida e a GPU trabalha bem menos. Digite de 12 a 100; vale em passos de " +
-                "12,5 %."));
+                "a imagem fica menos nítida e a GPU trabalha bem menos. Emulado: de 12 a 100, em passos de " +
+                "12,5 %. Nativo: de 50 a 100, qualquer valor (a cena e o pós-processamento; o HUD também fica " +
+                "menos nítido)."));
         TextInputLayout field = new TextInputLayout(this, null,
                 com.google.android.material.R.attr.textInputOutlinedStyle);
         field.setBoxStrokeColor(ACCENT);
@@ -348,11 +352,20 @@ public final class MainActivity extends AppCompatActivity {
         result.setPadding(0, dp(4), 0, 0);
         box.addView(result);
         Runnable show = () -> {
+            if (GameOptions.nativeRenderer(this)) {
+                // Same rounding as Fh2Escalar (nfsmw_nativo_destinos.cpp): the width in multiples of 16.
+                int percent = GameOptions.nativeRenderScalePercent(this);
+                int width = percent >= 100 ? 1280 : ((1280 * percent / 100) + 15) & ~15;
+                result.setText("O jogo vai desenhar em " + width + "×" + (width * 720 / 1280) + " (" + percent +
+                        " %)" + (percent >= 100 ? ", a resolução original." : "."));
+                return;
+            }
             int eighths = GameOptions.renderScaleEighths(GameOptions.renderScalePercent(this), GameOptions.msaa4x(this));
             String percent = eighths % 2 == 0 ? String.valueOf(eighths * 25 / 2) : (eighths * 25 / 2) + ",5";
             result.setText("O jogo vai desenhar em " + (1280 * eighths / 8) + "×" + (720 * eighths / 8) +
                     " (" + percent + " %)" + (eighths == 8 ? ", a resolução original." : "."));
         };
+        renderScaleShow = show;
         show.run();
         input.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
@@ -407,7 +420,8 @@ public final class MainActivity extends AppCompatActivity {
         };
         box.addView(selector(GameOptions.ANTI_ALIASING, "Suavização de bordas",
                 "Tira o serrilhado. O MSAA 4x é o do jogo e o mais caro para a GPU: o 2x rende +37 % e desligado " +
-                        "+91 %. O FXAA é um filtro sobre a imagem final, barato.",
+                        "+91 %. O FXAA é um filtro sobre a imagem final, barato. No renderizador nativo só há " +
+                        "o FXAA (MSAA vale como desligado).",
                 new String[] {"Desligado", "MSAA", "FXAA"}, new String[] {"off", "msaa", "fxaa"}, true, v -> show.run()));
         box.addView(msaa);
         box.addView(fxaa);
