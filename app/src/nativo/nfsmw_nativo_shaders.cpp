@@ -278,7 +278,7 @@ static bool TieneMarcaSombraMinimo(const std::vector<uint32_t>& spirv) {
 #if defined(FH2_RECOMP)
 // FH2: the fetch constants a pixel shader's texture fetches read, from the control flow's exec clauses (its constant
 // table does not always list its samplers: the post-processing effects' do not).
-static uint32_t SlotsDeTexturas(const std::vector<uint32_t>& w) {
+uint32_t SlotsDeTexturas(std::span<const uint32_t> w) {
   uint32_t slots = 0;
   size_t i = 0, primera = SIZE_MAX;
   std::vector<std::pair<uint32_t, uint32_t>> execs;  // (address, count | sequence << 8)
@@ -404,6 +404,18 @@ bool ShadersNativos::Cargar(const std::filesystem::path& archivo) {
 #if defined(FH2_RECOMP)
     if (e.vertices) {
       AnalizarEntradasFh2(shaders[i].spirv, e.fh2_entradas, e.fh2_buscas);
+      // Vertex shader fetches the table does not list (the microcode's index 0-3; 16-19 at run time).
+      const uint32_t slots_microcodigo = SlotsDeTexturas(e.microcodigo);
+      uint32_t slots_vs = (slots_microcodigo | (slots_microcodigo >> 16)) & 0xF;
+      for (const SamplerShader& sm : e.samplers) slots_vs &= ~(1u << (sm.registro & 31));
+      for (uint32_t slot = 0; slot < 4; ++slot) {
+        if ((slots_vs >> slot) & 1) {
+          SamplerShader sm;
+          sm.registro = uint16_t(slot);
+          e.samplers.push_back(sm);
+          ++d.fh2_samplers_anadidos;
+        }
+      }
     } else {
       // Samplers the table does not list but the microcode fetches: the renderer binds a texture only for listed
       // ones (the translator names them s<slot>).

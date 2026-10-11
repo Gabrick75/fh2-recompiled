@@ -1087,6 +1087,8 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_diag_memoria_subida, true, "NFSMW",
 #if defined(FH2_RECOMP)
 REXCVAR_DEFINE_STRING(fh2_nativo_diag_textura, "", "FH2",
                       "Debug: hex address whose texture fetches log what resolved image they get (first 30)");
+REXCVAR_DEFINE_INT32(fh2_nativo_diag_vs_fetch, -1, "FH2",
+                     "Debug: for draws with this vertex shader, log its samplers and the draw's texture fetch constants");
 REXCVAR_DEFINE_INT32(fh2_nativo_diag_ps, -1, "FH2",
                      "Debug: log where the native renderer's Dibujar leaves for this pixel shader number (-1 = off)");
 #endif
@@ -3156,6 +3158,26 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (composicion_sin_desenfoque) {
       contexto_->LecturasDeProfundidadMuertas(true);
     }
+#if defined(FH2_RECOMP)
+    if (p.vs && int32_t(p.vs->numero) == REXCVAR_GET(fh2_nativo_diag_vs_fetch)) {
+      static int avisos = 0;
+      if (avisos < 4) {
+        ++avisos;
+        std::string texto;
+        for (uint32_t k = 0; k < 32; ++k) {
+          const uint32_t* f = r + kRegFetch + k * 6;
+          if ((f[0] & 0x3) == uint32_t(xenos::FetchConstantType::kTexture)) {
+            texto += fmt::format(" f{}={:08X}/fmt{}/{}x{}", k, f[1] & 0xFFFFF000, f[1] & 0x3F, (f[2] & 0x1FFF) + 1,
+                                 ((f[2] >> 13) & 0x1FFF) + 1);
+          }
+        }
+        std::string registros;
+        for (const SamplerShader& sm : p.vs->samplers) registros += fmt::format(" {}", sm.registro);
+        REXLOG_INFO("[fh2 nativo] VS n{}: samplers de la tabla{}; slots del microcodigo {:08X}; texturas:{}", p.vs->numero,
+                    registros, SlotsDeTexturas(p.vs_microcodigo), texto);
+      }
+    }
+#endif
     bool lee_reflejo = false;  // nfsmw_reflejo_visibilidad
     for (const SamplerShader& sampler :
          ps ? std::span<const SamplerShader>(ps->samplers) : std::span<const SamplerShader>()) {
@@ -3262,6 +3284,26 @@ class DibujosVulkanImpl final : public DibujosVulkan {
      * left. While C2 is observing, the pair is the texture itself (the same texel), so the pipelines with
      * the bit already exist when applying starts. Every read is reported to C2, which decides and watches.
      */
+#if defined(FH2_RECOMP)
+    // Vertex shader samplers: register n reads fetch constant 16 + n (D3D patches the microcode's index), into their
+    // own words of the shared constants (FH2_BYTES_* in shader_common.h). The composite's exposure reads the adapted
+    // luminance here; unbound, the picture came out dark.
+    if (p.vs) {
+      for (const SamplerShader& sampler : p.vs->samplers) {
+        if (sampler.registro >= 4) continue;
+        const uint32_t* fetch = r + kRegFetch + (16u + sampler.registro) * 6;
+        uint32_t ranura_textura = 0, monton = 0, ancho_host = 0, alto_host = 0;
+        bool muestreo_puntual = false;
+        uint64_t valido_hasta = fotograma_;
+        PrepararTextura(fetch, ranura_textura, monton, bytes_texturas, muestreo_puntual, valido_hasta, ancho_host,
+                        alto_host);
+        compartidas[kPalabraFh2TexturasVs + monton * 4 + sampler.registro] = ranura_textura;
+        compartidas[kPalabraFh2SamplersVs + sampler.registro] = RanuraSampler(fetch, muestreo_puntual);
+        const float inv[2] = {ancho_host ? 1.0f / float(ancho_host) : 0.0f, alto_host ? 1.0f / float(alto_host) : 0.0f};
+        std::memcpy(compartidas + 576 / 4 + sampler.registro * 2, inv, sizeof(inv));
+      }
+    }
+#endif
     bool sombra_minimo_dibujo = false;
     if (ps && !ps->samplers.empty()) {
       if (const uint32_t dir_coches = contexto_->DireccionSombraCoches()) {

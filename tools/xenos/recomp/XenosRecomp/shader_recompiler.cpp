@@ -402,7 +402,15 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
     bool subtractFromOne = false;
 #endif
 
+#ifdef FH2_RECOMP
+    // FH2: a vertex shader's samplers are keyed by slot 16-19; its microcode names them 0-3 (patched to 16-19 by D3D
+    // at run time) or already 16-19.
     auto findResult = samplers.find(instr.constIndex);
+    if (findResult == samplers.end() && !isPixelShader && instr.constIndex < 16)
+        findResult = samplers.find(instr.constIndex + 16);
+#else
+    auto findResult = samplers.find(instr.constIndex);
+#endif
     if (findResult != samplers.end())
     {
         constNamePtr = findResult->second;
@@ -1470,23 +1478,28 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 #ifdef FH2_RECOMP
     // FH2: fetches whose slot has no sampler in the constant table (the D3D library's own shaders have no table) are
     // named s<slot>; they read the same per-slot words as the named ones.
-    for (uint32_t slot = 0; slot < 20; slot++)
+    // The name is the microcode's constant index; a vertex shader's n (0-3) and n + 16 both read slot n + 16 (its own
+    // area).
+    for (uint32_t n = 0; n < (isPixelShader ? 16u : 20u); n++)
     {
-        if (samplers.count(slot))
+        if (!isPixelShader && n >= 4 && n < 16)
             continue;
+        const uint32_t slot = isPixelShader || n >= 16 ? n : n + 16;
+        if (samplers.count(slot))
+            continue;  // the fetch takes the table's name
         for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
         {
             const uint32_t b = FH2_BYTES_TEXTURA(slot, uint32_t(j));
             println("#define s{}_Texture{}DescriptorIndex (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT({}) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {}))",
-                slot, TEXTURE_DIMENSIONS[j], b, b);
+                n, TEXTURE_DIMENSIONS[j], b, b);
         }
         const uint32_t bs = FH2_BYTES_SAMPLER(slot);
         println("#define s{}_SamplerDescriptorIndex (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT({}) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {}))",
-            slot, bs, bs);
+            n, bs, bs);
         const uint32_t bi = FH2_BYTES_INV_TAMANO(slot);
         println("#define s{}_InvTamano (NFSMW_UBO ? float2(NFSMW_COMPARTIDA_FLOAT({}), NFSMW_COMPARTIDA_FLOAT({})) : vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + {}))",
-            slot, bi, bi + 4, bi);
-        fh2Textura1D(out, fmt::format("s{}", slot));
+            n, bi, bi + 4, bi);
+        fh2Textura1D(out, fmt::format("s{}", n));
     }
 #endif
 

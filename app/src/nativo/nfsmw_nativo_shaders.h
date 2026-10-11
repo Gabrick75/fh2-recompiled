@@ -116,4 +116,9 @@ const char* NombreUso(uint8_t uso);
 // formats and swizzles, but not the registers.
 bool FetchCoherentes(const EntradaShader& vs, std::span<const uint32_t> parcheado);
 
+#if defined(FH2_RECOMP)
+// The fetch constants a shader's texture fetches read (bit per constant), from its microcode's exec clauses.
+uint32_t SlotsDeTexturas(std::span<const uint32_t> microcodigo);
+#endif
+
 }  // namespace nfsmw::nativo
