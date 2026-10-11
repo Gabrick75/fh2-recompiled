@@ -57,6 +57,20 @@ REXCVAR_DEFINE_INT32(nfsmw_espera_anillo_max_us, 2000, "NFSMW",
     .range(100, 100000)
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
+#if defined(__linux__)
+#include <climits>
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
+// FH2: the same signal the emulated command processor gives (rex_cp_rptr_seq, src/graphics/command_processor.cpp),
+// for app/src/fh2_desempenho.cpp's ring-room wait: a sequence bumped at every return of the read pointer and a futex
+// wake when someone sleeps on it. Without it, in native mode the game's render thread spun at 100 % of a core
+// waiting for room in the ring.
+std::atomic<uint32_t> g_fh2_anillo_seq{0};
+std::atomic<uint32_t> g_fh2_anillo_esperando{0};
+
 namespace nfsmw::nativo {
 namespace {
 
@@ -81,6 +95,12 @@ uint32_t ProgresoAnillo() {
 // would only cost that bound, but the lock is a few tens of nanoseconds per ring pass.
 void AvisarProgresoAnillo() {
   g_progreso.fetch_add(1, std::memory_order_acq_rel);
+  g_fh2_anillo_seq.fetch_add(1, std::memory_order_seq_cst);
+#if defined(__linux__)
+  if (g_fh2_anillo_esperando.load(std::memory_order_seq_cst)) {
+    syscall(SYS_futex, &g_fh2_anillo_seq, FUTEX_WAKE_PRIVATE, INT_MAX, nullptr, nullptr, 0);
+  }
+#endif
   bool avisar;
   {
     std::lock_guard<std::mutex> cerrojo(g_progreso_mutex);

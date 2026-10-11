@@ -10,6 +10,7 @@
 
 #include <dlfcn.h>
 #include <signal.h>
+#include <execinfo.h>
 #include <sys/syscall.h>
 #include <time.h>
 #include <ucontext.h>
@@ -23,6 +24,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -47,6 +49,11 @@ uintptr_t g_samples[kMaxSamples];
 // push nothing), the link register on aarch64. For "who calls memcpy".
 uintptr_t g_callers[kMaxSamples];
 std::atomic<size_t> g_sample_count{0};
+// Short stacks of the first kPilas samples (backtrace from the signal handler: diagnostics only), to find who calls
+// into the dynamic loader or libc.
+constexpr size_t kPilas = 32768, kMarcos = 12;
+void* g_pilas[kPilas][kMarcos];
+int g_marcos[kPilas];
 
 void OnSample(int, siginfo_t*, void* context) {
   auto* uc = static_cast<ucontext_t*>(context);
@@ -65,9 +72,51 @@ void OnSample(int, siginfo_t*, void* context) {
     g_samples[i] = pc;
     g_callers[i] = caller;
   }
+  if (i < kPilas) {
+    g_marcos[i] = backtrace(g_pilas[i], int(kMarcos));
+  }
+}
+
+// CPU ticks (utime + stime) of every thread of the process.
+std::map<pid_t, unsigned long long> ThreadTicks() {
+  std::map<pid_t, unsigned long long> ticks;
+  for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task")) {
+    std::ifstream stat(entry.path() / "stat");
+    std::string line;
+    std::getline(stat, line);
+    const size_t end = line.rfind(')');  // the name may hold spaces
+    if (end == std::string::npos) continue;
+    std::istringstream fields(line.substr(end + 2));
+    std::string field;
+    unsigned long long utime = 0, stime = 0;
+    for (int i = 3; i <= 15 && fields >> field; ++i) {
+      if (i == 14) utime = std::stoull(field);
+      if (i == 15) stime = std::stoull(field);
+    }
+    ticks[pid_t(std::stoi(entry.path().filename().string()))] = utime + stime;
+  }
+  return ticks;
 }
 
 pid_t FindThread(const std::string& prefix) {
+  if (prefix == "*ocupada") {
+    // The thread that used the most CPU over one second (the game's main thread has a different XThread name
+    // every run).
+    const auto antes = ThreadTicks();
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    const auto despues = ThreadTicks();
+    pid_t mejor = 0;
+    unsigned long long maximo = 0;
+    for (const auto& [tid, t] : despues) {
+      const auto a = antes.find(tid);
+      const unsigned long long uso = a == antes.end() ? 0 : t - a->second;
+      if (uso > maximo && tid != pid_t(syscall(SYS_gettid))) {
+        maximo = uso;
+        mejor = tid;
+      }
+    }
+    return mejor;
+  }
   for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task")) {
     std::ifstream comm(entry.path() / "comm");
     std::string name;
@@ -106,6 +155,16 @@ void Run() {
     REXLOG_WARN("[perfil] timer_create failed");
     return;
   }
+  {
+    void* calentar[2];
+    backtrace(calentar, 2);  // the first call loads libgcc: not inside the signal handler
+  }
+  std::string nombre;
+  {
+    std::ifstream comm("/proc/self/task/" + std::to_string(tid) + "/comm");
+    std::getline(comm, nombre);
+  }
+  REXLOG_INFO("[perfil] thread {} is '{}'", tid, nombre);
   itimerspec period{{0, 1000000}, {0, 1000000}};
   timer_settime(timer, 0, &period, nullptr);
   REXLOG_INFO("[perfil] sampling thread {} ('{}') for {} s", tid, prefix, REXCVAR_GET(fh2_perfil_duracao_s));
@@ -136,6 +195,36 @@ void Run() {
     }
   }
   fclose(out);
+  // For the samples in the dynamic loader, libc or libgcc: the first frame of the stack outside them.
+  {
+    const auto fuera = [](void* a, Dl_info& info) {
+      if (!dladdr(a, &info) || !info.dli_fname) return true;
+      const std::string f(info.dli_fname);
+      return f.find("ld-linux") == std::string::npos && f.find("libc.so") == std::string::npos &&
+             f.find("libgcc") == std::string::npos && f.find("libstdc++") == std::string::npos;
+    };
+    std::map<std::pair<std::string, size_t>, uint32_t> llamantes;
+    const size_t con_pila = std::min(count, kPilas);
+    for (size_t i = 0; i < con_pila; ++i) {
+      Dl_info info{};
+      if (fuera(reinterpret_cast<void*>(g_samples[i]), info)) continue;
+      for (int m = 1; m < g_marcos[i]; ++m) {
+        Dl_info f{};
+        if (fuera(g_pilas[i][m], f) && f.dli_fname) {
+          ++llamantes[{f.dli_fname, size_t(uintptr_t(g_pilas[i][m]) - uintptr_t(f.dli_fbase))}];
+          break;
+        }
+      }
+    }
+    std::vector<std::pair<uint32_t, std::pair<std::string, size_t>>> orden;
+    for (const auto& [k, n] : llamantes) orden.emplace_back(n, k);
+    std::sort(orden.rbegin(), orden.rend());
+    if (FILE* f = fopen("fh2_perfil_pilas.txt", "w")) {
+      fprintf(f, "# first caller outside ld.so/libc/libgcc/libstdc++ of those samples (of the first %zu)\n", con_pila);
+      for (const auto& [n, k] : orden) fprintf(f, "%u %s 0x%zx\n", n, k.first.c_str(), k.second);
+      fclose(f);
+    }
+  }
   // Callers of the samples that fell in libc (memcpy, memmove, memset...): "count library offset".
   std::map<uintptr_t, uint32_t> callers;
   for (size_t i = 0; i < count; ++i) {

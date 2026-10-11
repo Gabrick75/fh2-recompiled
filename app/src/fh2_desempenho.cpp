@@ -61,11 +61,33 @@ struct ReadPointerSignal {
   std::atomic<uint32_t>* waiters = nullptr;
 };
 
-// The GPU plugin's counters, looked up once it is loaded.
+}  // namespace
+
+// The native renderer's ring (app/src/nativo/nfsmw_espera_anillo.cpp) gives the same signal.
+extern std::atomic<uint32_t> g_fh2_anillo_seq;
+extern std::atomic<uint32_t> g_fh2_anillo_esperando;
+
+namespace {
+
+// The GPU plugin's counters, looked up once it is loaded; or the native renderer's ring, once it has returned a read
+// pointer (its sequence has moved).
 const ReadPointerSignal* Signal() {
   static ReadPointerSignal signal;
   static std::atomic<bool> ready{false};
   if (!ready.load(std::memory_order_acquire)) {
+    if (g_fh2_anillo_seq.load(std::memory_order_relaxed) != 0) {
+      signal.sequence = &g_fh2_anillo_seq;
+      signal.waiters = &g_fh2_anillo_esperando;
+      REXLOG_INFO("[fh2] espera do anel: dorme no futex do anel nativo");
+      ready.store(true, std::memory_order_release);
+      return &signal;
+    }
+    // dlopen and dlsym walk the dynamic loader's tables: not on every turn of the game's spin (in native mode the
+    // plugin is never loaded, and that lookup alone was a third of the render thread's samples on the PC).
+    static uint32_t intentos = 0;
+    if ((intentos++ & 4095) != 0) {
+      return nullptr;
+    }
     void* plugin = dlopen("librexgpu-xenos.so", RTLD_NOW | RTLD_NOLOAD);
     if (!plugin) {
       return nullptr;
