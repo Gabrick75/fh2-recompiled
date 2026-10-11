@@ -200,7 +200,8 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_sin_desenfoque, true, "NFSMW",
 REXCVAR_DEFINE_INT32(fh2_nativo_omitir_categorias, 0, "FH2",
                      "Native renderer (FPS test): bit mask of pass categories whose draws are skipped: 1 others, "
                      "4 scene (1280 with depth), 8 reflection (640), 16 cube and blur (320), 32 smaller, 256 1280 "
-                     "without depth (post-processing, HUD), 1024 depth-only targets (shadow atlas)")
+                     "without depth (post-processing, HUD), 1024 depth-only targets (shadow atlas); 2048 / 4096 the scene's "
+                     "draws whose vertex shader does / does not fetch vertices directly")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 #endif
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_omitir_sombras, false, "NFSMW",
@@ -2724,6 +2725,15 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       if (uint32_t(fh2_omitir_categorias_) & (1u << categoria)) {
         return Fh2DiagSalida(p, __LINE__, true);
       }
+      // 8192: the scene's draws without direct fetches are recorded with 3 indices at most (all their state and
+      // uploads stay): per-vertex cost against per-draw cost.
+      fh2_tres_indices_ = (uint32_t(fh2_omitir_categorias_) & 8192u) && categoria == kGpuEscena && p.vs &&
+                          !p.vs->fh2_buscas;
+      // 2048 / 4096: the scene's draws whose vertex shader does / does not fetch vertices directly (fh2_buscas).
+      if (categoria == kGpuEscena && p.vs &&
+          (uint32_t(fh2_omitir_categorias_) & (p.vs->fh2_buscas ? 2048u : 4096u))) {
+        return Fh2DiagSalida(p, __LINE__, true);
+      }
     }
 #endif
     CortarSubetapa(15, t_indices_185);  // render targets and discards
@@ -4490,7 +4500,13 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       // On the base-zero path, vertexOffset also carries where the copy starts (in vertices).
       const int32_t desplazamiento_vertices =
           base_cero ? int32_t(int64_t(primer_vertice) - int64_t(vmin)) : -int32_t(vmin);
-      NFSMW_SUB(10, dfn_.vkCmdDrawIndexed(cmd, uint32_t(indices_de_16 ? indices16_.size() : indices_.size()),
+      uint32_t cuenta_indices = uint32_t(indices_de_16 ? indices16_.size() : indices_.size());
+#if defined(FH2_RECOMP)
+      if (fh2_tres_indices_) {
+        cuenta_indices = std::min(cuenta_indices, 3u);  // fh2_nativo_omitir_categorias 8192 (FPS test)
+      }
+#endif
+      NFSMW_SUB(10, dfn_.vkCmdDrawIndexed(cmd, cuenta_indices,
                                           1, uint32_t(offset_indices / (indices_de_16 ? 2 : 4)),
                                           desplazamiento_vertices, 0));
     } else {
@@ -13808,7 +13824,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   uint32_t pase_ancho_ = 0;
   uint32_t pase_alto_ = 0;
   uint64_t fh2_pases_que_borran_ = 0;
-  int32_t fh2_omitir_categorias_ = -1;  // fh2_nativo_omitir_categorias, read once  // passes that did held clears (fh2_nativo_borrados_diferidos)
+  int32_t fh2_omitir_categorias_ = -1;  // fh2_nativo_omitir_categorias, read once
+  bool fh2_tres_indices_ = false;  // this draw: 3 indices at most (fh2_nativo_omitir_categorias 8192)  // passes that did held clears (fh2_nativo_borrados_diferidos)
   float pase_escala_ = 1.0f;  // 1 except in the scaled shadow map and render targets
   float pase_escala_render_ = 1.0f;  // pase_escala_ without the half-pitch 4x factor (FH2_COMPARTIDA_INV_ESCALA)
   uint64_t borrados_profundidad_en_pase_ = 0;  // ZCULL
