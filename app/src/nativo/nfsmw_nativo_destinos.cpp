@@ -676,6 +676,17 @@ REXCVAR_DEFINE_INT32(fh2_nativo_foto_indice, 0, "FH2",
 REXCVAR_DEFINE_STRING(fh2_nativo_foto_copia, "1C4E1000", "FH2",
                       "Debug (with nfsmw_nativo_diag_resueltas): the copy destination (hex physical address) whose "
                       "source render target is photographed into the mosaic's last cell right before the copy");
+// Render scale of the native renderer (the launcher's "render scale"). The 1280-pitch render targets (the scene, the
+// full-screen post-processing and the HUD) are drawn this many percent smaller, and so are the textures resolved from
+// them: everything stays in image pixels, with no extra blit. The guest still speaks in 1280x720 pixels: the pass
+// scales viewport and scissor (pase_escala_), the resolve converts its rectangle, the shaders get 1/guest size for
+// their texel fetches and the pixel position divided back (FH2_COMPARTIDA_INV_ESCALA). Smaller targets (the
+// luminance and exposure reductions, reflections, cube faces) and the shadow map keep their size.
+REXCVAR_DEFINE_INT32(fh2_nativo_escala, 100, "FH2",
+                     "Native renderer: render scale in percent of 1280x720 for the scene and post-processing "
+                     "(50-100); read once at start")
+    .range(50, 100)
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 #endif
 
 namespace nfsmw::guardia30 {
@@ -1518,6 +1529,17 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       return false;
     }
 #if defined(FH2_RECOMP)
+    // fh2_nativo_escala: the render target is smaller than the guest thinks. The rectangle stays in guest pixels for
+    // the address and the strip clears (gx0..gy1); the copy itself is done in image pixels, 1 to 1, into a resolved
+    // texture that is just as much smaller.
+    const bool fh2_escalado = destino_render->ancho_guest && destino_render->ancho_guest != destino_render->ancho;
+    const auto fh2_a_imagen_x = [&](int32_t v) {
+      return fh2_escalado ? int32_t(int64_t(v) * destino_render->ancho / destino_render->ancho_guest) : v;
+    };
+    const auto fh2_a_imagen_y = [&](int32_t v) {
+      return fh2_escalado ? int32_t(int64_t(v) * destino_render->alto / destino_render->alto_guest) : v;
+    };
+    const int32_t gx0 = x0, gy0 = y0, gx1 = x1, gy1 = y1;
     // FH2 diagnostics (nfsmw_nativo_diag_resueltas): the scene's render target right before its first strip is
     // copied, for the mosaic's last cell.
     if ((reg.rb_copy_dest_base & 0x1FFFFFFF) ==
@@ -1554,8 +1576,14 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     // The game has just said which area of this render target matters to it. It is the data RestaurarContenido
     // uses to stop copying the bottom rows that nobody draws or reads (the scene render target is created
     // 1280x1280 to draw 1280x720).
+#if defined(FH2_RECOMP)
+    AnotarAreaUtil(*destino_render, fh2_a_imagen_y(y1));
+    AnotarUsoBorrado(*destino_render, uint32_t(std::max(fh2_a_imagen_x(x1), 0)),
+                     uint32_t(std::max(fh2_a_imagen_y(y1), 0)));
+#else
     AnotarAreaUtil(*destino_render, y1);
     AnotarUsoBorrado(*destino_render, uint32_t(std::max(x1, 0)), uint32_t(std::max(y1, 0)));
+#endif
     uint32_t base_resuelta = 0;
     Resuelta* resuelta = nullptr;
     uint32_t dx = 0, dy = 0;
@@ -1633,6 +1661,17 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
             uint32_t(DesplazamientoMosaico2D(int32_t(base_x), int32_t(base_y), pitch_destino, bytes_log2_copia));
         dx = uint32_t(x0) - base_x;
         dy = uint32_t(y0) - base_y;
+#if defined(FH2_RECOMP)
+        if (fh2_escalado) {
+          resuelta = ObtenerResuelta(base & 0x1FFFFFFF, uint32_t(std::max(1, fh2_a_imagen_x(int32_t(pitch_destino)))),
+                                     uint32_t(std::max(1, fh2_a_imagen_y(int32_t(alto_destino)))), formato_destino,
+                                     (info_destino >> 24) & 0x1, formato_host_copia);
+          if (resuelta) {
+            resuelta->imagen.ancho_guest = pitch_destino;
+            resuelta->imagen.alto_guest = alto_destino;
+          }
+        } else
+#endif
         resuelta = ObtenerResuelta(base & 0x1FFFFFFF, pitch_destino, alto_destino, formato_destino,
                                    (info_destino >> 24) & 0x1, formato_host_copia);
         base_resuelta = base & 0x1FFFFFFF;
@@ -1657,6 +1696,16 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       }
     }
 
+#if defined(FH2_RECOMP)
+    if (fh2_escalado) {
+      x0 = fh2_a_imagen_x(x0);
+      x1 = fh2_a_imagen_x(x1);
+      y0 = fh2_a_imagen_y(y0);
+      y1 = fh2_a_imagen_y(y1);
+      dx = uint32_t(fh2_a_imagen_x(int32_t(dx)));
+      dy = uint32_t(fh2_a_imagen_y(int32_t(dy)));
+    }
+#endif
     if (!Grabar()) {
       return false;
     }
@@ -1814,25 +1863,26 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     // held back and done whole when the last one reaches the bottom of the copy's destination.
     const uint32_t alto_objetivo = ((reg.rb_copy_dest_pitch >> 16) & 0x3FFF) ? ((reg.rb_copy_dest_pitch >> 16) & 0x3FFF)
                                                                            : 720u;
+    // In guest pixels (gx0..gy1), whatever the render target's image size (fh2_nativo_escala).
     const auto fh2_borrar_ahora = [&](ImagenNativa& imagen) {
-      if (x0 > 0 || uint32_t(x1) < (pitch & ~7u)) {
+      if (gx0 > 0 || uint32_t(gx1) < (pitch & ~7u)) {
         imagen.fh2_borrado_pendiente = 0;
         return true;  // not a full-width strip: as always
       }
-      if (y0 <= 0) {
-        if (uint32_t(y1) >= alto_objetivo) {
+      if (gy0 <= 0) {
+        if (uint32_t(gy1) >= alto_objetivo) {
           imagen.fh2_borrado_pendiente = 0;
           return true;
         }
-        imagen.fh2_borrado_pendiente = uint32_t(y1);
+        imagen.fh2_borrado_pendiente = uint32_t(gy1);
         return false;
       }
-      if (imagen.fh2_borrado_pendiente && uint32_t(y0) == imagen.fh2_borrado_pendiente) {
-        if (uint32_t(y1) >= alto_objetivo) {
+      if (imagen.fh2_borrado_pendiente && uint32_t(gy0) == imagen.fh2_borrado_pendiente) {
+        if (uint32_t(gy1) >= alto_objetivo) {
           imagen.fh2_borrado_pendiente = 0;
           return true;
         }
-        imagen.fh2_borrado_pendiente = uint32_t(y1);
+        imagen.fh2_borrado_pendiente = uint32_t(gy1);
         return false;
       }
       imagen.fh2_borrado_pendiente = 0;
@@ -2050,6 +2100,11 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if (!resuelta || !Grabar()) {
       return;
     }
+    if (ancho_resuelta != pitch_destino) {
+      // The shaders take 1/size from the guest's size (their texel fetches are in guest texels).
+      resuelta->imagen.ancho_guest = pitch_destino;
+      resuelta->imagen.alto_guest = alto_destino;
+    }
     // Depth is also included in the per-render-target inventory. Previously only the square cubemap faces were
     // recorded, so the shadow map (the most expensive copy in the frame) did not show up.
     AnotarCopia(base & 0x1FFFFFFF, ancho_resuelta, alto_resuelta, 0);
@@ -2066,13 +2121,18 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     const uint32_t ancho_guest = profundidad->ancho_guest ? profundidad->ancho_guest : profundidad->ancho;
     const uint32_t alto_guest = profundidad->alto_guest ? profundidad->alto_guest : profundidad->alto;
     const bool escalado = ancho_guest != profundidad->ancho || alto_guest != profundidad->alto;
+    // The resolved texture's size in guest pixels too (it is as much smaller as the render target).
+    const uint32_t ancho_guest_resuelta = resuelta->imagen.ancho_guest ? resuelta->imagen.ancho_guest
+                                                                       : resuelta->imagen.ancho;
+    const uint32_t alto_guest_resuelta = resuelta->imagen.alto_guest ? resuelta->imagen.alto_guest
+                                                                     : resuelta->imagen.alto;
     const uint32_t ancho = std::min({uint32_t(x1 - x0), ancho_guest - uint32_t(x0),
-                                     resuelta->imagen.ancho - dx});
+                                     ancho_guest_resuelta - std::min(dx, ancho_guest_resuelta)});
     const uint32_t alto = std::min({uint32_t(y1 - y0), alto_guest - uint32_t(y0),
-                                    resuelta->imagen.alto - dy});
+                                    alto_guest_resuelta - std::min(dy, alto_guest_resuelta)});
     if (!ancho || !alto || uint32_t(x0) >= ancho_guest ||
-        uint32_t(y0) >= alto_guest || dx >= resuelta->imagen.ancho ||
-        dy >= resuelta->imagen.alto) {
+        uint32_t(y0) >= alto_guest || dx >= ancho_guest_resuelta ||
+        dy >= alto_guest_resuelta) {
       return;
     }
     // nfsmw_nativo_resolver_contenido_valido. If the content of this render target went away in an earlier
@@ -2092,9 +2152,27 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     const bool fh2_saltar = REXCVAR_GET(fh2_nativo_empaquetar_primera) && fh2_empaquetadas_fotograma_.count(base & 0x1FFFFFFF);
     fh2_empaquetadas_fotograma_.insert(base & 0x1FFFFFFF);
     if (const uint32_t formato_copia = (info_destino >> 7) & 0x3F; formato_copia != 22 && formato_copia != 23 &&
-                                                                  !escalado && !fh2_saltar) {
-      Fh2EmpaquetarProfundidad(*profundidad, base & 0x1FFFFFFF, (info >> 16) & 0x1, x0, y0, dx, dy, ancho, alto,
-                               resuelta->imagen.ancho, resuelta->imagen.alto);
+                                                                  !fh2_saltar) {
+      if (escalado) {
+        // fh2_nativo_escala: in image pixels, into a companion as small as the resolved texture.
+        const auto iX = [&](uint32_t v) { return uint32_t(uint64_t(v) * profundidad->ancho / ancho_guest); };
+        const auto iY = [&](uint32_t v) { return uint32_t(uint64_t(v) * profundidad->alto / alto_guest); };
+        const uint32_t w = std::max(1u, std::min(iX(uint32_t(x0) + ancho) - iX(uint32_t(x0)),
+                                                 resuelta->imagen.ancho - iX(dx)));
+        const uint32_t h = std::max(1u, std::min(iY(uint32_t(y0) + alto) - iY(uint32_t(y0)),
+                                                 resuelta->imagen.alto - iY(dy)));
+        Fh2EmpaquetarProfundidad(*profundidad, base & 0x1FFFFFFF, (info >> 16) & 0x1, int32_t(iX(uint32_t(x0))),
+                                 int32_t(iY(uint32_t(y0))), iX(dx), iY(dy), w, h, resuelta->imagen.ancho,
+                                 resuelta->imagen.alto);
+        const auto e = fh2_empaquetadas_.find(base & 0x1FFFFFFF);
+        if (e != fh2_empaquetadas_.end()) {
+          e->second.ancho_guest = resuelta->imagen.ancho_guest;
+          e->second.alto_guest = resuelta->imagen.alto_guest;
+        }
+      } else {
+        Fh2EmpaquetarProfundidad(*profundidad, base & 0x1FFFFFFF, (info >> 16) & 0x1, x0, y0, dx, dy, ancho, alto,
+                                 resuelta->imagen.ancho, resuelta->imagen.alto);
+      }
     }
 #endif
     if (escalado) {
@@ -4247,6 +4325,24 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     return true;
   }
 
+#if defined(FH2_RECOMP)
+  // fh2_nativo_escala: the image size of a render target of that pitch (only 1280 is scaled; see the cvar).
+  void Fh2Escalar(uint32_t pitch, uint32_t alto, uint32_t& ancho_imagen, uint32_t& alto_imagen) {
+    if (fh2_escala_ == 0) {
+      fh2_escala_ = uint32_t(std::clamp(REXCVAR_GET(fh2_nativo_escala), 50, 100));
+      if (fh2_escala_ < 100) {
+        REXLOG_INFO("[fh2 nativo] escala de render {} %: los destinos de 1280 se dibujan a {}x{}", fh2_escala_,
+                    ((1280 * fh2_escala_ / 100) + 15) & ~15u, (((1280 * fh2_escala_ / 100) + 15) & ~15u) * 720 / 1280);
+      }
+    }
+    if (fh2_escala_ >= 100 || pitch != 1280) {
+      return;
+    }
+    ancho_imagen = ((pitch * fh2_escala_ / 100) + 15) & ~15u;
+    alto_imagen = uint32_t(uint64_t(alto) * ancho_imagen / pitch);
+  }
+#endif
+
   Imagen* ObtenerDestino(uint32_t base, uint32_t formato, uint32_t pitch) {
     if (!pitch) {
       Rechazar(7, "destino de render con pitch 0");
@@ -4290,12 +4386,20 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       Rechazar(100 + formato, "formato de destino de render todavia no soportado");
       return nullptr;
     }
-    if (!Crear(imagen, pitch, alto,
+    uint32_t ancho_imagen = pitch, alto_imagen = alto;
+#if defined(FH2_RECOMP)
+    Fh2Escalar(pitch, alto, ancho_imagen, alto_imagen);
+#endif
+    if (!Crear(imagen, ancho_imagen, alto_imagen,
                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                formato_host)) {
       Rechazar(8, "no se pudo crear un destino de render");
       return nullptr;
+    }
+    if (ancho_imagen != pitch) {
+      imagen.ancho_guest = pitch;
+      imagen.alto_guest = alto;
     }
     const VkClearColorValue diag = ColorDiagnostico(base, formato, pitch);
     REXLOG_INFO("[nativo] C2: destino de render base {:03X}, formato {}, {}x{} (color de "
@@ -4344,6 +4448,13 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                     escala_sombras_, ancho_imagen, alto_imagen, pitch, alto);
       }
     }
+#if defined(FH2_RECOMP)
+    Fh2Escalar(pitch, alto, ancho_imagen, alto_imagen);
+    if (ancho_imagen != pitch && !ancho_guest) {
+      ancho_guest = pitch;
+      alto_guest = alto;
+    }
+#endif
     // The usage flag that decides whether there is hierarchical depth culling.
     //
     // The driver only assigns a ZCULL plane if the usage flags fit in
@@ -6362,6 +6473,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         resuelta.imagen.formato != kFormatoColor) {
       return;
     }
+    if (resuelta.imagen.ancho_guest && resuelta.imagen.ancho_guest != resuelta.imagen.ancho) {
+      return;  // fh2_nativo_escala: in image pixels, not the guest's; the game never reads these back
+    }
     const uint64_t clave_destino =
         (uint64_t(reg.rb_copy_dest_base) << 28) ^ (uint64_t(ancho) << 14) ^ uint64_t(alto);
     DestinoLectura& destino = lecturas_por_destino_[clave_destino];
@@ -6807,6 +6921,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   static constexpr uint32_t kLadoSombras = 1600;
   bool profundidad_escalable_ = false;
   uint32_t escala_sombras_ = 0;
+#if defined(FH2_RECOMP)
+  uint32_t fh2_escala_ = 0;  // fh2_nativo_escala, read once; 0 = not read yet
+#endif
   uint64_t sombras_subidas_ = 0;
   std::vector<uint32_t> resueltas_fotograma_;
 #if defined(FH2_RECOMP)

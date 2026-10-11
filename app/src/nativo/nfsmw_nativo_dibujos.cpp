@@ -1179,8 +1179,10 @@ constexpr size_t kMaxRegistrosLista = 4096;
 // FH2: NFS Carbon's 128 words, then FH2's own area up to byte 1152 (FH2_COMPARTIDA_BYTES in tools/xenos/recomp's
 // shader_common.h): vertex shader samplers at 512, direct vertex fetches at 640, loop constants at 768, the patched
 // parameters of each declared vertex element at 896.
-constexpr uint32_t kPalabrasCompartidas = 308;  // up to FH2_COMPARTIDA_BYTES (1232): element parameters, exp_adjust
+constexpr uint32_t kPalabrasCompartidas = 312;  // up to FH2_COMPARTIDA_BYTES (1248): element parameters, exp_adjust
 constexpr uint32_t kPalabraFh2ExpAjuste = 1152 / 4;  // FH2_COMPARTIDA_EXP: a texture slot's exp_adjust (0-19)
+// FH2_COMPARTIDA_INV_ESCALA: 1 / the pass's render scale (fh2_nativo_escala), for the pixel position register.
+constexpr uint32_t kPalabraFh2InvEscala = 1232 / 4;
 constexpr uint32_t kPalabraRemapeosAltos = 122;
 constexpr uint32_t kPalabraFh2TexturasVs = 128;     // 512: dimension * 4 + slot - 16
 constexpr uint32_t kPalabraFh2SamplersVs = 140;     // 560
@@ -1315,7 +1317,7 @@ constexpr VkDeviceSize kUboBytesPs = 256 * 16;
 constexpr VkDeviceSize kUboBytesPs = 224 * 16;
 #endif
 #if defined(FH2_RECOMP)
-constexpr VkDeviceSize kUboBytesCompartidas = kPalabrasCompartidas * 4;  // 308 words
+constexpr VkDeviceSize kUboBytesCompartidas = kPalabrasCompartidas * 4;  // 312 words
 #elif defined(NFSC_RECOMP)
 constexpr VkDeviceSize kUboBytesCompartidas = 32 * 16;  // 128 words
 #else
@@ -3796,6 +3798,12 @@ class DibujosVulkanImpl final : public DibujosVulkan {
      * waste; if almost all do, the double memcpy is. They are two different fixes, and counting costs one
      * increment.
      */
+#if defined(FH2_RECOMP)
+    {
+      const float inv_escala = 1.0f / pase_escala_render_;
+      std::memcpy(&compartidas[kPalabraFh2InvEscala], &inv_escala, sizeof(inv_escala));
+    }
+#endif
     ++compartidas_miradas_;
     const auto t_compartidas =
         cronometrar_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
@@ -9306,8 +9314,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 #if defined(FH2_RECOMP)
       // The address holds another shape than the fetch asks for: the texture of that shape resolved there last (the
       // game reads last frame's luminance from an address it has since resolved other shapes to).
-      if (resuelta_fh2 && (resuelta_fh2->ancho != (f[2] & 0x1FFF) + 1 ||
-                           resuelta_fh2->alto != ((f[2] >> 13) & 0x1FFF) + 1)) {
+      if (resuelta_fh2 &&
+          ((resuelta_fh2->ancho_guest ? resuelta_fh2->ancho_guest : resuelta_fh2->ancho) != (f[2] & 0x1FFF) + 1 ||
+           (resuelta_fh2->alto_guest ? resuelta_fh2->alto_guest : resuelta_fh2->alto) !=
+               ((f[2] >> 13) & 0x1FFF) + 1)) {
         if (const ImagenNativa* forma = contexto_->Fh2VarianteResuelta(base & 0x1FFFFFFF, (f[2] & 0x1FFF) + 1,
                                                                         ((f[2] >> 13) & 0x1FFF) + 1)) {
           resuelta_fh2 = forma;
@@ -9320,8 +9330,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         // used to return without reporting the size: 0 was written and the tfetch offsets (the taps of the
         // shadow map's PCF filter) all landed on the same texel. The filtering disappeared and the edge
         // shimmered as the camera moved. Resolved textures report their size like any other.
-        ancho_host_out = resuelta->ancho;
-        alto_host_out = resuelta->alto;
+        // The guest's size, for a resolved texture drawn smaller (fh2_nativo_escala, nfsmw_nativo_sombras_escala):
+        // the shader's texel fetches and offsets are in guest texels.
+        ancho_host_out = resuelta->ancho_guest ? resuelta->ancho_guest : resuelta->ancho;
+        alto_host_out = resuelta->alto_guest ? resuelta->alto_guest : resuelta->alto;
         // One trace per size, to check in the log that the 1/size constant of resolved textures is no longer
         // 0 (that was the cause of the shadow flicker).
         if (avisos_invtam_resuelta_.insert(uint64_t(resuelta->ancho) << 32 | resuelta->alto).second) {
@@ -11080,10 +11092,16 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     pase_generacion_ = contexto_->GeneracionComandos();
     pase_ancho_ = ancho;
     pase_alto_ = alto;
-    // Only the shadow map is drawn at a size other than the one the guest thinks.
+    // The shadow map (nfsmw_nativo_sombras_escala) and, in FH2, the 1280 render targets (fh2_nativo_escala) are drawn
+    // at a size other than the one the guest thinks: their images are narrower than the pitch.
+#if defined(FH2_RECOMP)
+    pase_escala_ = (pitch && ancho && ancho != pitch) ? float(ancho) / float(pitch) : 1.0f;
+    pase_escala_render_ = pase_escala_;  // without the half-pitch 4x factor below
+#else
     pase_escala_ = (es_sombras && pitch && ancho && ancho != pitch)
                        ? float(ancho) / float(pitch)
                        : 1.0f;
+#endif
 #if defined(FH2_RECOMP)
     for (uint32_t i = 0; i < 5; ++i) {
       if (claves[i] & (uint64_t(1) << 15)) {  // a half-pitch 4x clear on the 1x surface (see Dibujar)
@@ -13708,7 +13726,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   uint64_t pase_generacion_ = UINT64_MAX;
   uint32_t pase_ancho_ = 0;
   uint32_t pase_alto_ = 0;
-  float pase_escala_ = 1.0f;  // 1 except in the scaled shadow map
+  float pase_escala_ = 1.0f;  // 1 except in the scaled shadow map and render targets
+  float pase_escala_render_ = 1.0f;  // pase_escala_ without the half-pitch 4x factor (FH2_COMPARTIDA_INV_ESCALA)
   uint64_t borrados_profundidad_en_pase_ = 0;  // ZCULL
   std::chrono::steady_clock::time_point inicio_pase_{};  // pass change breakdown
   uint32_t pase_formatos_[5] = {};

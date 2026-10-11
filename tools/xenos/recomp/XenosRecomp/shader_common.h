@@ -80,7 +80,9 @@
 #define FH2_COMPARTIDA_ELEMENTOS  896
 // The texture fetch constant's exp_adjust per slot (0-19), a signed int: the fetch is multiplied by 2^exp_adjust.
 #define FH2_COMPARTIDA_EXP        1152
-#define FH2_COMPARTIDA_BYTES      1232
+// 1 / the render scale of the pass (fh2_nativo_escala), a float: the pixel position register is in guest pixels.
+#define FH2_COMPARTIDA_INV_ESCALA 1232
+#define FH2_COMPARTIDA_BYTES      1248
 #define SPEC_CONSTANT_ALPHA_FUNC_SHIFT  16
 #define SPEC_CONSTANT_ALPHA_FUNC_MASK   (7 << 16)
 
@@ -121,6 +123,7 @@ struct NfsmwBloqueCompartidas { float4 v[FH2_COMPARTIDA_BYTES / 16]; };  // FH2:
 #define NFSMW_UBO true
 #define NFSMW_COMPARTIDA_UINT(B)  asuint(g_UboCompartidas.v[(B) / 16][((B) % 16) / 4])
 #define NFSMW_COMPARTIDA_FLOAT(B) g_UboCompartidas.v[(B) / 16][((B) % 16) / 4]
+#define FH2_INV_ESCALA (NFSMW_UBO ? asfloat(NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_INV_ESCALA)) : asfloat(vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + FH2_COMPARTIDA_INV_ESCALA)))
 #define FH2_BUCLE(ID) (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_BUCLES + (ID) * 4) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + FH2_COMPARTIDA_BUCLES + (ID) * 4))
 
 #define g_Booleans                 (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT(256) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256))
