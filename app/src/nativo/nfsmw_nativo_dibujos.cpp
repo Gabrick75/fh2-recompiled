@@ -197,6 +197,15 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_sin_desenfoque, true, "NFSMW",
                     "el difuminado de los bordes al acelerar y con el NOS: la imagen queda mas nitida");
 
 #if defined(FH2_RECOMP)
+// The ring used to submit about twice per frame, each time after recording half a frame, so the GPU sat idle while the
+// ring recorded the next half (S23 Ultra: 59 % busy, which kept its clock at 220 of 719 MHz). Every N draws, between
+// passes, what is recorded now goes to the GPU without a fence; the slot, its upload buffer, fence and read-backs stay
+// the same (ContextoDestinos::EnviarParcial). 0 = off.
+REXCVAR_DEFINE_INT32(fh2_nativo_envio_parcial, 250, "FH2",
+                     "Native renderer: submit what is recorded every N draws, between passes, in the same slot (0 = "
+                     "off)")
+    .range(0, 100000)
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_INT32(fh2_nativo_omitir_categorias, 0, "FH2",
                      "Native renderer (FPS test): bit mask of pass categories whose draws are skipped: 1 others, "
                      "4 scene (1280 with depth), 8 reflection (640), 16 cube and blur (320), 32 smaller, 256 1280 "
@@ -5555,6 +5564,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     subida_direccion_ = s.direccion;
     ranura_actual_ = uint32_t(ranura % subidas_.size());  // this slot's UBO set
     subida_usado_ = 0;
+#if defined(FH2_RECOMP)
+    dibujados_al_enviar_ = dibujados_;
+#endif
     if (compartidas_aparte_) {
       const BuferSubida& c = compartidas_bufs_[ranura_actual_];
       compartidas_datos_ = c.datos;
@@ -11120,6 +11132,17 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     }
     const auto antes_abrir = cronometrar_ ? std::chrono::steady_clock::now()
                                           : std::chrono::steady_clock::time_point{};
+#if defined(FH2_RECOMP)
+    // fh2_nativo_envio_parcial: every N draws, between passes, what is recorded goes to the GPU (same slot).
+    if (fh2_envio_parcial_ < 0) {
+      fh2_envio_parcial_ = REXCVAR_GET(fh2_nativo_envio_parcial);
+    }
+    if (fh2_envio_parcial_ > 0 && dibujados_ - dibujados_al_enviar_ >= uint64_t(fh2_envio_parcial_)) {
+      if (contexto_->EnviarParcial()) {
+        dibujados_al_enviar_ = dibujados_;
+      }
+    }
+#endif
     const VkCommandBuffer cmd = contexto_->ComandosTrabajo();
     if (!cmd) {
       return false;
@@ -13825,6 +13848,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   uint32_t pase_alto_ = 0;
   uint64_t fh2_pases_que_borran_ = 0;
   int32_t fh2_omitir_categorias_ = -1;  // fh2_nativo_omitir_categorias, read once
+  int32_t fh2_envio_parcial_ = -1;  // fh2_nativo_envio_parcial, read once
+  uint64_t dibujados_al_enviar_ = 0;  // dibujados_ at the last submission, full or partial
   bool fh2_tres_indices_ = false;  // this draw: 3 indices at most (fh2_nativo_omitir_categorias 8192)  // passes that did held clears (fh2_nativo_borrados_diferidos)
   float pase_escala_ = 1.0f;  // 1 except in the scaled shadow map and render targets
   float pase_escala_render_ = 1.0f;  // pase_escala_ without the half-pitch 4x factor (FH2_COMPARTIDA_INV_ESCALA)

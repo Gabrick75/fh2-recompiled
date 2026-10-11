@@ -887,6 +887,10 @@ struct RanuraTrabajo {
   VkCommandPool pool_trabajo = VK_NULL_HANDLE;
   VkCommandPool pool_subida = VK_NULL_HANDLE;
   VkCommandBuffer trabajo = VK_NULL_HANDLE;
+  // fh2_nativo_envio_parcial: the command buffers of the partial submissions of this slot, from its own pools (reset
+  // with them), and how many this recording has used.
+  std::vector<VkCommandBuffer> extra_trabajo, extra_subida;
+  uint32_t parciales = 0;
   VkCommandBuffer subida = VK_NULL_HANDLE;
   VkFence fence = VK_NULL_HANDLE;
   bool pendiente = false;
@@ -5981,6 +5985,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     comandos_trabajo_ = ranura.trabajo;
     comandos_subida_ = ranura.subida;
     grabando_subida_ = false;
+    ranura.parciales = 0;
     VkCommandBufferBeginInfo inicio{};
     inicio.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     inicio.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -6356,6 +6361,85 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     }
     return true;
   }
+
+#if defined(FH2_RECOMP)
+  // fh2_nativo_envio_parcial. What is recorded so far goes to the GPU now, without a fence, and the recording goes on
+  // in the same slot (same upload buffer, same fence at the end, same read-backs): the GPU starts on the frame while
+  // the ring records the rest, instead of waiting for half a frame per submission. Only between passes.
+  bool EnviarParcial() override {
+    if (!grabando_) {
+      return false;
+    }
+    if (dibujos_) {
+      dibujos_->AntesDeEnviar();  // closes the pass, gathers the texture work, flushes the upload buffer
+    }
+    std::array<VkCommandBuffer, 2> bufers{};
+    uint32_t n = 0;
+    if (grabando_subida_) {
+      grabando_subida_ = false;
+      if (REXCVAR_GET(nfsmw_nativo_sincronizacion_gpu)) {
+        VkMemoryBarrier barrera{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        barrera.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrera.dstAccessMask = kAccesosImagenes;
+        dfn_.vkCmdPipelineBarrier(comandos_subida_, VK_PIPELINE_STAGE_TRANSFER_BIT, kEtapasImagenes, 0, 1, &barrera,
+                                  0, nullptr, 0, nullptr);
+      }
+      if (dfn_.vkEndCommandBuffer(comandos_subida_) != VK_SUCCESS) {
+        return false;
+      }
+      bufers[n++] = comandos_subida_;
+    }
+    if (dfn_.vkEndCommandBuffer(comandos_trabajo_) != VK_SUCCESS) {
+      return false;
+    }
+    bufers[n++] = comandos_trabajo_;
+    VkSubmitInfo envio{};
+    envio.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    envio.commandBufferCount = n;
+    envio.pCommandBuffers = bufers.data();
+    {
+      const auto antes_candado = std::chrono::steady_clock::now();
+      const auto cola = dispositivo_->AcquireQueue(familia_, 0);
+      const auto antes_envio = std::chrono::steady_clock::now();
+      if (dfn_.vkQueueSubmit(cola.queue(), 1, &envio, VK_NULL_HANDLE) != VK_SUCCESS) {
+        return false;
+      }
+      ns_candado_parcial_ += Ns(antes_candado, antes_envio);
+      ns_submit_parcial_ += Ns(antes_envio, std::chrono::steady_clock::now());
+    }
+    RanuraTrabajo& ranura = ranuras_[ranura_];
+    const uint32_t k = ranura.parciales++;
+    while (ranura.extra_trabajo.size() <= k) {
+      VkCommandBufferAllocateInfo reserva{};
+      reserva.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+      reserva.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+      reserva.commandBufferCount = 1;
+      VkCommandBuffer t = VK_NULL_HANDLE, u = VK_NULL_HANDLE;
+      reserva.commandPool = ranura.pool_trabajo;
+      if (dfn_.vkAllocateCommandBuffers(device_, &reserva, &t) != VK_SUCCESS) return false;
+      reserva.commandPool = ranura.pool_subida;
+      if (dfn_.vkAllocateCommandBuffers(device_, &reserva, &u) != VK_SUCCESS) return false;
+      ranura.extra_trabajo.push_back(t);
+      ranura.extra_subida.push_back(u);
+    }
+    comandos_trabajo_ = ranura.extra_trabajo[k];
+    comandos_subida_ = ranura.extra_subida[k];
+    VkCommandBufferBeginInfo inicio{};
+    inicio.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    inicio.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (dfn_.vkBeginCommandBuffer(comandos_trabajo_, &inicio) != VK_SUCCESS) {
+      return false;
+    }
+    ++generacion_comandos_;  // DibujosVulkan: a new buffer, with nothing bound
+    ++fh2_envios_parciales_;
+    if ((fh2_envios_parciales_ % 2000) == 0) {
+      REXLOG_INFO("[fh2 nativo] envios parciales: {} (candado {:.2f} ms y vkQueueSubmit {:.2f} ms de media)",
+                  fh2_envios_parciales_, double(ns_candado_parcial_) / 1e6 / double(fh2_envios_parciales_),
+                  double(ns_submit_parcial_) / 1e6 / double(fh2_envios_parciales_));
+    }
+    return true;
+  }
+#endif
 
   void EsperarGpu() {
     if (grabando_) {
@@ -7141,7 +7225,8 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   std::unordered_map<uint64_t, Resuelta> fh2_variantes_;
   uint64_t fh2_variantes_cambiadas_ = 0;
   uint64_t fh2_entregas_lecturas_ = 0;
-  uint64_t fh2_envios_lecturas_ = 0;  // submissions for read-backs without waiting (fh2_nativo_lecturas_diferidas)
+  uint64_t fh2_envios_lecturas_ = 0;
+  uint64_t fh2_envios_parciales_ = 0, ns_candado_parcial_ = 0, ns_submit_parcial_ = 0;  // submissions for read-backs without waiting (fh2_nativo_lecturas_diferidas)
   // Resolved textures replaced by another shape, waiting for the GPU to finish with them (Fh2VaciarCementerio).
   struct Fh2Enterrada {
     Imagen imagen;
