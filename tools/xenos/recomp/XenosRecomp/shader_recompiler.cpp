@@ -449,7 +449,11 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
             out += "1.0 - ";
     #endif
 
+    #ifdef FH2_RECOMP
+        out += "(tfetch";  // times 2^exp_adjust (closed below)
+    #else
         out += "tfetch";
+    #endif
         break;
     }
     case FetchOpcode::GetTextureWeights:
@@ -513,6 +517,11 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
         break;
     }
 
+#ifdef FH2_RECOMP
+    if (instr.opcode == FetchOpcode::TextureFetch)
+        print(") * {}_ExpAjuste).", constNamePtr);
+    else
+#endif
     out += ").";
 
     printDstSwizzle(instr.dstSwizzle, true);
@@ -1446,6 +1455,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                 const uint32_t bi = FH2_BYTES_INV_TAMANO(slot);
                 println("#define {}_InvTamano (NFSMW_UBO ? float2(NFSMW_COMPARTIDA_FLOAT({}), NFSMW_COMPARTIDA_FLOAT({})) : vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + {}))",
                     constantName, bi, bi + 4, bi);
+                println("#define {}_ExpAjuste exp2(float(int(NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_EXP + {}))))", constantName,
+                    slot * 4);
                 fh2Textura1D(out, constantName);
                 samplers.emplace(slot, constantName);
                 break;
@@ -1499,6 +1510,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         const uint32_t bi = FH2_BYTES_INV_TAMANO(slot);
         println("#define s{}_InvTamano (NFSMW_UBO ? float2(NFSMW_COMPARTIDA_FLOAT({}), NFSMW_COMPARTIDA_FLOAT({})) : vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + {}))",
             n, bi, bi + 4, bi);
+        println("#define s{}_ExpAjuste exp2(float(int(NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_EXP + {}))))", n, slot * 4);
         fh2Textura1D(out, fmt::format("s{}", n));
     }
 #endif

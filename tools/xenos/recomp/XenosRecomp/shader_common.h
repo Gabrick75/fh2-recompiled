@@ -78,7 +78,9 @@
 // constant (bits 0-6), xenos::VertexFormat (8-13), flags as fh2BuscaVertices takes them (16-23) and the exponent
 // adjust (24-29, signed); word 1 the stride in dwords (0-7) and the offset in dwords (8-31, signed).
 #define FH2_COMPARTIDA_ELEMENTOS  896
-#define FH2_COMPARTIDA_BYTES      1152
+// The texture fetch constant's exp_adjust per slot (0-19), a signed int: the fetch is multiplied by 2^exp_adjust.
+#define FH2_COMPARTIDA_EXP        1152
+#define FH2_COMPARTIDA_BYTES      1232
 #define SPEC_CONSTANT_ALPHA_FUNC_SHIFT  16
 #define SPEC_CONSTANT_ALPHA_FUNC_MASK   (7 << 16)
 

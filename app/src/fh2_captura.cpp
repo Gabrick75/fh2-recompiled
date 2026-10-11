@@ -10,6 +10,8 @@
 #include <rex/filesystem.h>
 #include <rex/logging.h>
 #include <rex/ui/presenter.h>
+#include <rex/system/kernel_state.h>
+#include <rex/memory.h>
 
 #include <algorithm>
 #include <array>
@@ -17,6 +19,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -29,6 +33,10 @@ REXCVAR_DEFINE_INT32(fh2_captura_cada_s, 0, "FH2",
     .range(0, 3600);
 REXCVAR_DEFINE_INT32(fh2_captura_max, 20, "FH2", "Maximo de capturas por ejecucion")
     .range(1, 1000);
+REXCVAR_DEFINE_STRING(fh2_captura_memoria, "", "FH2",
+                      "Debug: 'ENDERECO:N' logs, at each capture, N big-endian dwords of guest physical memory from "
+                      "that hex address, as hex and as floats (to compare a resolve between the emulated and the "
+                      "native renderer)");
 
 namespace fh2::captura {
 namespace {
@@ -159,6 +167,21 @@ void Bucle(std::function<rex::ui::Presenter*()> obtener_presentador, int cada_s,
       continue;
     }
     REXLOG_INFO("[captura] {} ({}x{})", ruta.string(), imagen.width, imagen.height);
+    if (const std::string& pedido = REXCVAR_GET(fh2_captura_memoria); !pedido.empty()) {
+      unsigned direccion = 0, cuantas = 0;
+      if (std::sscanf(pedido.c_str(), "%x:%u", &direccion, &cuantas) == 2 && cuantas && cuantas <= 256) {
+        const uint8_t* m = rex::system::kernel_memory()->TranslatePhysical(direccion);
+        std::string texto;
+        for (unsigned k = 0; k < cuantas; ++k) {
+          const uint32_t w = (uint32_t(m[k * 4]) << 24) | (uint32_t(m[k * 4 + 1]) << 16) |
+                             (uint32_t(m[k * 4 + 2]) << 8) | m[k * 4 + 3];
+          float f;
+          std::memcpy(&f, &w, 4);
+          texto += fmt::format(" {:08X}({:.4g})", w, f);
+        }
+        REXLOG_INFO("[captura] memoria {:08X}:{}", direccion, texto);
+      }
+    }
   }
 }
 

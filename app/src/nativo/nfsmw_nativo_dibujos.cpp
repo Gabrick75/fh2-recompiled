@@ -1175,7 +1175,8 @@ constexpr size_t kMaxRegistrosLista = 4096;
 // FH2: NFS Carbon's 128 words, then FH2's own area up to byte 1152 (FH2_COMPARTIDA_BYTES in tools/xenos/recomp's
 // shader_common.h): vertex shader samplers at 512, direct vertex fetches at 640, loop constants at 768, the patched
 // parameters of each declared vertex element at 896.
-constexpr uint32_t kPalabrasCompartidas = 288;  // up to FH2_COMPARTIDA_BYTES (1152), with the element parameters
+constexpr uint32_t kPalabrasCompartidas = 308;  // up to FH2_COMPARTIDA_BYTES (1232): element parameters, exp_adjust
+constexpr uint32_t kPalabraFh2ExpAjuste = 1152 / 4;  // FH2_COMPARTIDA_EXP: a texture slot's exp_adjust (0-19)
 constexpr uint32_t kPalabraRemapeosAltos = 122;
 constexpr uint32_t kPalabraFh2TexturasVs = 128;     // 512: dimension * 4 + slot - 16
 constexpr uint32_t kPalabraFh2SamplersVs = 140;     // 560
@@ -1310,7 +1311,7 @@ constexpr VkDeviceSize kUboBytesPs = 256 * 16;
 constexpr VkDeviceSize kUboBytesPs = 224 * 16;
 #endif
 #if defined(FH2_RECOMP)
-constexpr VkDeviceSize kUboBytesCompartidas = kPalabrasCompartidas * 4;  // 288 words
+constexpr VkDeviceSize kUboBytesCompartidas = kPalabrasCompartidas * 4;  // 308 words
 #elif defined(NFSC_RECOMP)
 constexpr VkDeviceSize kUboBytesCompartidas = 32 * 16;  // 128 words
 #else
@@ -3221,6 +3222,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         continue;
       }
       const uint32_t* fetch = r + kRegFetch + uint32_t(sampler.registro) * 6;
+#if defined(FH2_RECOMP)
+      // The fetch's exp_adjust (dword 3 bits 13-18): FH2 resolves with a negative exponent bias and samples back
+      // with this; without it every post-processing input and the exposure's luminance were 4 to 16 times dark.
+      compartidas[kPalabraFh2ExpAjuste + sampler.registro] = uint32_t(int32_t(fetch[3] << 13) >> 26);
+#endif
       // nfsmw_reflejo_visibilidad. Here and not in TexturaResuelta, which, because of the caches, only sees
       // the first draw of each frame that samples it. Without checking the dimension: over-counting only
       // means the reflection gets drawn.
@@ -3328,6 +3334,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       for (const SamplerShader& sampler : p.vs->samplers) {
         if (sampler.registro >= 4) continue;
         const uint32_t* fetch = r + kRegFetch + (16u + sampler.registro) * 6;
+        compartidas[kPalabraFh2ExpAjuste + 16 + sampler.registro] = uint32_t(int32_t(fetch[3] << 13) >> 26);
         uint32_t ranura_textura = 0, monton = 0, ancho_host = 0, alto_host = 0;
         bool muestreo_puntual = false;
         uint64_t valido_hasta = fotograma_;
@@ -9249,6 +9256,15 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     }
     const uint32_t swizzle = (f[3] >> 1) & 0xFFF;
     const uint32_t base = (f[1] >> 12) << 12;
+#if defined(FH2_RECOMP)
+    if (const int32_t exp_adjust = int32_t(f[3] << 13) >> 26; exp_adjust != 0) {
+      static std::set<uint64_t> vistos_exp;
+      if (vistos_exp.size() < 40 && vistos_exp.insert((uint64_t(base) << 8) | uint32_t(exp_adjust & 0xFF)).second) {
+        REXLOG_INFO("[fh2 nativo] textura {:08X} formato {} {}x{} con exp_adjust {} (PS n{})", base, f[1] & 0x3F,
+                    (f[2] & 0x1FFF) + 1, ((f[2] >> 13) & 0x1FFF) + 1, exp_adjust, ps_encuadre_diag_);
+      }
+    }
+#endif
     if (!cubo && !volumen) {
 #if defined(FH2_RECOMP)
       // fh2_nativo_diag_textura: what a fetch of that address gets (first 30).
