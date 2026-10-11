@@ -90,6 +90,12 @@ class DestinosNativos {
   // FH2: before the ring writes a fence the CPU waits on, the read-backs of resolves already recorded reach guest
   // memory (the CPU reads them right after the fence, as on the console, where the copy is done by then).
   virtual void Fh2EntregarLecturas() {}
+  // fh2_nativo_lecturas_diferidas: instead of waiting, submits the work that carries read-backs and returns its
+  // submission number (0 if no read-back is pending). The ring holds its fence writes until that submission is done.
+  virtual uint64_t Fh2EnviarLecturas() { return 0; }
+  // Whether submission `envio` and the earlier ones are done, collecting (and writing the read-backs of) the finished
+  // ones; with esperar, waits for them.
+  virtual bool Fh2EnvioTerminado(uint64_t envio, bool esperar) { return true; }
   // Vertex copies queued and not done yet (only to measure the fences).
   virtual size_t CopiasPendientes() const { return 0; }
 

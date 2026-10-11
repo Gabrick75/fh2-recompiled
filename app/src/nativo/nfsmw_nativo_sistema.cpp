@@ -410,6 +410,16 @@ REXCVAR_DEFINE_INT32(nfsmw_nativo_oclusion_escala, 0, "NFSMW",
                      "modo de antialiasing que tiene elegido el juego, como en la Xbox 360; 1-16 = fijas, solo pruebas)")
     .range(0, 16)
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+#if defined(FH2_RECOMP)
+// A fence the CPU may act on (EVENT_WRITE_SHD, MEM_WRITE, INTERRUPT) while resolve read-backs are still on the GPU:
+// instead of waiting for the GPU there (fh2_nativo_lecturas_antes_de_valla, twice per frame on the S23 Ultra, which
+// left the GPU idle 40 % of the time and its clock at the minimum), the work is submitted and the fence and every
+// guest write behind it are held until that submission is done. The ring keeps recording meanwhile; before it waits
+// for the CPU (WAIT_REG_MEM) or for work, it lets them all out.
+REXCVAR_DEFINE_BOOL(fh2_nativo_lecturas_diferidas, true, "FH2",
+                    "Native renderer: hold fences behind pending read-backs instead of waiting for the GPU")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+#endif
 
 // The 30 FPS guard lives in nfsmw_recorte_sombras.cpp, which owns the switch.
 namespace nfsmw::guardia30 {
@@ -1611,6 +1621,17 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   }
 
   void EscribirMemoria(uint32_t direccion, uint32_t valor) {
+#if defined(FH2_RECOMP)
+    // fh2_nativo_lecturas_diferidas: behind a held fence, every guest write waits its turn (same order).
+    if (!fh2_diferidas_.empty() && std::this_thread::get_id() == hilo_anillo_id_) {
+      fh2_diferidas_.push_back({fh2_diferidas_.back().envio, false, direccion, valor});
+      return;
+    }
+#endif
+    EscribirMemoriaYa(direccion, valor);
+  }
+
+  void EscribirMemoriaYa(uint32_t direccion, uint32_t valor) {
     const uint32_t ordenado = xenos::GpuSwap(valor, static_cast<xenos::Endian>(direccion & 0x3));
     std::memcpy(memory_->TranslatePhysical(direccion & ~uint32_t(0x3)), &ordenado, sizeof(ordenado));
     SumarSoloAnillo(escrituras_memoria_);
@@ -1619,6 +1640,16 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   // --- Threads ------------------------------------------------------------------
 
   void Interrupcion(uint32_t fuente, uint32_t cpu) {
+#if defined(FH2_RECOMP)
+    if (!fh2_diferidas_.empty() && std::this_thread::get_id() == hilo_anillo_id_) {
+      fh2_diferidas_.push_back({fh2_diferidas_.back().envio, true, fuente, cpu});
+      return;
+    }
+#endif
+    InterrupcionYa(fuente, cpu);
+  }
+
+  void InterrupcionYa(uint32_t fuente, uint32_t cpu) {
     const uint32_t callback = callback_.load(std::memory_order_acquire);
     if (!callback || !dispatcher_) {
       return;
@@ -1633,6 +1664,48 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     interrupciones_.fetch_add(1, std::memory_order_relaxed);  // NOTE: also called from BucleVblank (another thread)
     AvisarProgresoAnillo();  // some D3D waits also check the interrupt counter
   }
+
+#if defined(FH2_RECOMP)
+  // fh2_nativo_lecturas_diferidas. A fence (or interrupt) the CPU may act on while read-backs are still on the GPU:
+  // the work is submitted without waiting and the write is held until that submission is done. Returns whether it
+  // was held (the caller then does not write it).
+  bool Fh2RetenerSiHayLecturas() {
+    if (!destinos_ || !fh2_lecturas_diferidas_) {
+      return false;
+    }
+    const uint64_t envio = destinos_->Fh2EnviarLecturas();
+    if (!envio && fh2_diferidas_.empty()) {
+      return false;
+    }
+    fh2_envio_retenido_ = std::max(fh2_envio_retenido_, envio);
+    return true;
+  }
+
+  // Writes the held entries whose submission is done, in order; with esperar, waits for the GPU.
+  void Fh2ProcesarDiferidas(bool esperar) {
+    while (!fh2_diferidas_.empty()) {
+      const Fh2Diferida d = fh2_diferidas_.front();
+      if (!destinos_->Fh2EnvioTerminado(d.envio, esperar)) {
+        return;
+      }
+      fh2_diferidas_.pop_front();
+      if (d.interrupcion) {
+        InterrupcionYa(d.a, d.b);
+      } else {
+        EscribirMemoriaYa(d.a, d.b);
+      }
+      ++fh2_diferidas_escritas_;
+    }
+  }
+
+  void Fh2Retener(bool interrupcion, uint32_t a, uint32_t b) {
+    fh2_diferidas_.push_back({fh2_envio_retenido_, interrupcion, a, b});
+    if ((++fh2_diferidas_retenidas_ % 500) == 0) {
+      REXLOG_INFO("[fh2 nativo] vallas retenidas por lecturas: {} retenidas, {} escritas, {} en cola",
+                  fh2_diferidas_retenidas_, fh2_diferidas_escritas_, fh2_diferidas_.size());
+    }
+  }
+#endif
 
   int BucleVblank() {
     rex::system::X_VIDEO_MODE modo;
@@ -1659,6 +1732,10 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   }
 
   int BucleAnillo() {
+#if defined(FH2_RECOMP)
+    hilo_anillo_id_ = std::this_thread::get_id();
+    fh2_lecturas_diferidas_ = REXCVAR_GET(fh2_nativo_lecturas_diferidas);
+#endif
     /*
      * The ring thread drops to 0x2D, because of the presenter.
      *
@@ -1713,7 +1790,13 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
       {
         std::unique_lock<std::mutex> cerrojo(anillo_mutex_);
         const auto antes_sin_trabajo = Reloj::now();  // for the "[tiron]" line
-        const bool con_senal = anillo_cv_.wait_for(cerrojo, std::chrono::milliseconds(4), [&] {
+#if defined(FH2_RECOMP)
+        // With held fences the ring checks back sooner, and lets them all out if no work came.
+        const auto espera_anillo = fh2_diferidas_.empty() ? std::chrono::milliseconds(4) : std::chrono::milliseconds(1);
+#else
+        const auto espera_anillo = std::chrono::milliseconds(4);
+#endif
+        const bool con_senal = anillo_cv_.wait_for(cerrojo, espera_anillo, [&] {
           return !activo_.load(std::memory_order_acquire) ||
                  puntero_escritura_.load(std::memory_order_acquire) != leido ||
                  generacion_anillo_.load(std::memory_order_acquire) != generacion;
@@ -1756,6 +1839,11 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
       }
       const uint32_t escrito = puntero_escritura_.load(std::memory_order_acquire) & (palabras - 1);
       if (escrito == leido) {
+#if defined(FH2_RECOMP)
+        if (!fh2_diferidas_.empty()) {
+          Fh2ProcesarDiferidas(true);  // nothing else to do: the CPU may be waiting for them
+        }
+#endif
         continue;
       }
       ++vueltas_anillo_con_datos_;
@@ -1796,6 +1884,11 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
 
   // Consumes a whole packet, or leaves the position untouched if it is not complete yet.
   bool Paquete(Lector& lector, int profundidad) {
+#if defined(FH2_RECOMP)
+    if (!fh2_diferidas_.empty() && profundidad == 0) {
+      Fh2ProcesarDiferidas(false);
+    }
+#endif
     const uint32_t paquete = lector.Mirar();
     uint32_t carga = 0;
     switch (paquete >> 30) {
@@ -1917,13 +2010,22 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
         if (palabras < 1) break;
         AnotarVallaCopias();  // Measurement only
 #if defined(FH2_RECOMP)
-        if (destinos_) {
+        const bool fh2_retener = Fh2RetenerSiHayLecturas();
+        if (destinos_ && !fh2_lecturas_diferidas_) {
           destinos_->Fh2EntregarLecturas();  // the CPU may read them in the interrupt (see EVENT_WRITE_SHD)
         }
+#else
+        const bool fh2_retener = false;
 #endif
         const uint32_t cpus = datos.Leer();
         for (uint32_t cpu = 0; cpu < 6; ++cpu) {
           if (cpus & (1u << cpu)) {
+#if defined(FH2_RECOMP)
+            if (fh2_retener) {
+              Fh2Retener(true, 1, cpu);
+              continue;
+            }
+#endif
             Interrupcion(1, cpu);
           }
         }
@@ -1958,6 +2060,12 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
         const uint32_t sondeo = datos.Leer();
         const uint32_t referencia = datos.Leer();
         const uint32_t mascara = datos.Leer();
+#if defined(FH2_RECOMP)
+        // The ring waits for the CPU, which may be waiting for a held fence: they all go out first.
+        if (!fh2_diferidas_.empty()) {
+          Fh2ProcesarDiferidas(true);
+        }
+#endif
         const auto inicio_regmem = Reloj::now();  // for the "[tiron]" line
         const auto limite = inicio_regmem + kEsperaRegMemMax;
         uint32_t vueltas = 0;
@@ -2024,13 +2132,24 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
         if (palabras < 1) break;
         AnotarVallaCopias();  // Measurement only
 #if defined(FH2_RECOMP)
-        if (destinos_) {
+        const bool fh2_retener = Fh2RetenerSiHayLecturas();
+        if (destinos_ && !fh2_lecturas_diferidas_) {
           destinos_->Fh2EntregarLecturas();  // a value the CPU may be polling (see EVENT_WRITE_SHD)
         }
+#else
+        const bool fh2_retener = false;
 #endif
         uint32_t direccion = datos.Leer();
         for (uint32_t i = 1; i < palabras; ++i) {
-          EscribirMemoria(direccion, datos.Leer());
+          const uint32_t v = datos.Leer();
+#if defined(FH2_RECOMP)
+          if (fh2_retener) {
+            Fh2Retener(false, direccion, v);
+            direccion += 4;
+            continue;
+          }
+#endif
+          EscribirMemoria(direccion, v);
           direccion += 4;
         }
         break;
@@ -2064,14 +2183,17 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
         const uint32_t direccion = datos.Leer();
         const uint32_t valor = datos.Leer();
         EscribirRegistro(rex::graphics::XE_GPU_REG_VGT_EVENT_INITIATOR, iniciador & 0x3F);
+        const uint32_t escrito_shd = ((iniciador >> 31) & 0x1) ? contador_.load(std::memory_order_relaxed) : valor;
 #if defined(FH2_RECOMP)
-        if (destinos_) {
+        if (Fh2RetenerSiHayLecturas()) {
+          Fh2Retener(false, direccion, escrito_shd);
+          break;
+        }
+        if (destinos_ && !fh2_lecturas_diferidas_) {
           destinos_->Fh2EntregarLecturas();
         }
 #endif
-        EscribirMemoria(direccion, ((iniciador >> 31) & 0x1)
-                                       ? contador_.load(std::memory_order_relaxed)
-                                       : valor);
+        EscribirMemoria(direccion, escrito_shd);
         break;
       }
       case xenos::PM4_EVENT_WRITE_EXT: {
@@ -4719,6 +4841,19 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   std::atomic<uint32_t> generacion_anillo_{0};
   std::atomic<uint32_t> lectura_devuelta_{0};
   std::atomic<uint32_t> puntero_escritura_{0};
+#if defined(FH2_RECOMP)
+  // fh2_nativo_lecturas_diferidas: guest writes and interrupts held behind a fence, in order (ring thread only).
+  struct Fh2Diferida {
+    uint64_t envio;
+    bool interrupcion;
+    uint32_t a, b;  // address and value, or source and cpu
+  };
+  std::deque<Fh2Diferida> fh2_diferidas_;
+  uint64_t fh2_envio_retenido_ = 0;
+  uint64_t fh2_diferidas_retenidas_ = 0, fh2_diferidas_escritas_ = 0;
+  bool fh2_lecturas_diferidas_ = false;
+  std::thread::id hilo_anillo_id_{};
+#endif
   // Ring wakeups: the game thread counts the writes; the ring thread counts the rest.
   std::atomic<uint64_t> escrituras_wptr_{0};
   uint64_t escrituras_wptr_previas_ = 0;

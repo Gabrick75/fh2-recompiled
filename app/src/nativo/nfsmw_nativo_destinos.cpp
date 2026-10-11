@@ -3271,6 +3271,43 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   }
 
 #if defined(FH2_RECOMP)
+  uint64_t Fh2EnviarLecturas() override {
+    bool pendientes = !lecturas_pendientes_.empty();
+    uint64_t ultimo = 0;
+    for (const RanuraTrabajo& r : ranuras_) {
+      if (r.pendiente && !r.lecturas.empty()) {
+        ultimo = std::max(ultimo, r.orden);
+      }
+    }
+    if (!pendientes && !ultimo) return 0;
+    if (pendientes || grabando_) {
+      EnviarTrabajo(false);  // the read-backs recorded so far start on the GPU now; nobody waits
+      ultimo = envios_;
+    }
+    ++fh2_envios_lecturas_;
+    return ultimo;
+  }
+
+  bool Fh2EnvioTerminado(uint64_t envio, bool esperar) override {
+    bool terminado = true;
+    // In submission order: each finished one writes its read-backs to guest memory (CompletarUna).
+    std::array<RanuraTrabajo*, 4> orden{};  // ranuras_
+    uint32_t n = 0;
+    for (RanuraTrabajo& r : ranuras_) {
+      if (r.pendiente && r.orden <= envio && n < orden.size()) orden[n++] = &r;
+    }
+    std::sort(orden.begin(), orden.begin() + n,
+              [](const RanuraTrabajo* a, const RanuraTrabajo* b) { return a->orden < b->orden; });
+    for (uint32_t i = 0; i < n; ++i) {
+      if (!esperar && dfn_.vkGetFenceStatus(device_, orden[i]->fence) != VK_SUCCESS) {
+        terminado = false;
+        break;
+      }
+      CompletarUna(*orden[i]);
+    }
+    return terminado;
+  }
+
   void Fh2EntregarLecturas() override {
     if (!REXCVAR_GET(fh2_nativo_lecturas_antes_de_valla)) return;
     bool pendientes = !lecturas_pendientes_.empty();
@@ -7083,6 +7120,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   std::unordered_map<uint64_t, Resuelta> fh2_variantes_;
   uint64_t fh2_variantes_cambiadas_ = 0;
   uint64_t fh2_entregas_lecturas_ = 0;
+  uint64_t fh2_envios_lecturas_ = 0;  // submissions for read-backs without waiting (fh2_nativo_lecturas_diferidas)
   // Resolved textures replaced by another shape, waiting for the GPU to finish with them (Fh2VaciarCementerio).
   struct Fh2Enterrada {
     Imagen imagen;
