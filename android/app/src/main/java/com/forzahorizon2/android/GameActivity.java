@@ -73,6 +73,16 @@ public final class GameActivity extends SDLActivity
 
     @Override
     protected void onCreate(Bundle state) {
+        if (state != null) {
+            // Configuration changes do not recreate this screen (configChanges in the manifest), so a saved state
+            // means the process died (the game closed, or Android reclaimed it) and Android brought the game screen
+            // back by itself. The game cannot resume from there, and one that closes while loading would reopen in
+            // a loop: go back to the launcher instead.
+            Log.w(TAG, "Tela do jogo recriada depois que o processo morreu: volta ao launcher");
+            super.onCreate(state);
+            finish();
+            return;
+        }
         File appRoot = new File(getFilesDir(), "fh2");
         gameRoot = new File(Environment.getExternalStorageDirectory(), MainActivity.GAME_FOLDER_NAME).getAbsolutePath();
         userRoot = new File(appRoot, "user").getAbsolutePath();
