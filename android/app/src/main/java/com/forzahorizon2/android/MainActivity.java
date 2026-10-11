@@ -112,8 +112,49 @@ public final class MainActivity extends AppCompatActivity {
     //       --esa fh2.args "--fh2_teste_botoes=8:start,10:a"
     // starts the game at once with the saved options; each fh2.args option replaces the one of the same
     // name (the cvar parser rejects an option given twice).
+    // The save import list: exports first, then the automatic backups, newest first.
+    private void chooseSaveToImport() {
+        List<File> saves = SaveTransfer.importable();
+        if (saves.isEmpty()) {
+            toast("Nenhum save para importar em jogos/" + GAME_FOLDER_NAME + "-saves-exportados ou -saves.");
+            return;
+        }
+        String[] names = new String[saves.size()];
+        for (int i = 0; i < names.length; i++) {
+            File f = saves.get(i);
+            names[i] = f.getName() + (f.getParentFile().equals(SaveTransfer.exportsFolder()) ? " · exportado"
+                                                                                               : " · backup");
+        }
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Importar save")
+                .setItems(names, (dialog, which) -> new android.app.AlertDialog.Builder(this)
+                        .setTitle("Trocar o progresso atual?")
+                        .setMessage("O save de " + names[which] + " substitui o atual. O atual continua no backup " +
+                                "automático da última vez que o jogo abriu.")
+                        .setPositiveButton("Importar", (d, w) -> importSave(saves.get(which)))
+                        .setNegativeButton("Cancelar", null)
+                        .show())
+                .show();
+    }
+
+    private void importSave(File source) {
+        try {
+            SaveTransfer.importFrom(this, source);
+            toast("Save importado de " + source.getName());
+        } catch (IOException e) {
+            toast("Não foi possível importar: " + e.getMessage());
+        }
+    }
+
     private void startBenchIfAsked(Intent intent) {
-        if (intent == null || !intent.getBooleanExtra("fh2.banco", false)) return;
+        if (intent == null) return;
+        // From adb: --es fh2.importar_save <folder> (SaveTransfer.resolve), before the bench if both are given.
+        String save = intent.getStringExtra("fh2.importar_save");
+        if (save != null) {
+            intent.removeExtra("fh2.importar_save");
+            importSave(SaveTransfer.resolve(save));
+        }
+        if (!intent.getBooleanExtra("fh2.banco", false)) return;
         Intent game = new Intent(this, GameActivity.class);
         String[] extra = intent.getStringArrayExtra("fh2.args");
         if (extra != null) game.putExtra("fh2.args", extra);
@@ -190,17 +231,27 @@ public final class MainActivity extends AppCompatActivity {
         launchGame.setLayoutParams(playParams);
         left.addView(card(section("Jogo"), importStatus, checksList, launchGame, space(4), selectFolder));
 
-        // --- Save (export / import come later: the buttons only show where they will be)
+        // --- Save (SaveTransfer)
         MaterialButton exportSave = new MaterialButton(this);
         exportSave.setText("Exportar save");
         secondaryButton(exportSave);
-        exportSave.setOnClickListener(v -> toast("Exportar o save ainda não foi implementado."));
+        exportSave.setOnClickListener(v -> {
+            try {
+                File target = SaveTransfer.export(this);
+                toast("Save exportado para jogos/" + target.getParentFile().getName() + "/" + target.getName());
+            } catch (IOException e) {
+                toast("Não foi possível exportar: " + e.getMessage());
+            }
+        });
         MaterialButton importSave = new MaterialButton(this);
         importSave.setText("Importar save");
         secondaryButton(importSave);
-        importSave.setOnClickListener(v -> toast("Importar um save ainda não foi implementado."));
+        importSave.setOnClickListener(v -> chooseSaveToImport());
         left.addView(card(section("Save do jogo"),
-                summary("Copie o seu progresso (perfil e saves) para um arquivo .zip, ou traga de volta um que você exportou antes."),
+                summary("Exportar copia o seu progresso (perfil e saves) para jogos/" + GAME_FOLDER_NAME +
+                        "-saves-exportados. Importar troca o progresso atual por uma cópia de lá ou por um dos " +
+                        "backups automáticos (jogos/" + GAME_FOLDER_NAME + "-saves). Para levar o save a outro " +
+                        "celular, copie a pasta exportada para o mesmo lugar nele e importe."),
                 space(8), buttonRow(exportSave, importSave)));
 
         // --- Diagnostics

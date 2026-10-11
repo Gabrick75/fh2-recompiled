@@ -178,7 +178,7 @@ public final class GameActivity extends SDLActivity
         }
     }
 
-    private static void copyTree(File source, File target) throws IOException {
+    static void copyTree(File source, File target) throws IOException {
         if (source.isDirectory()) {
             if (!target.mkdirs() && !target.isDirectory()) {
                 throw new IOException("mkdir " + target);
@@ -195,7 +195,7 @@ public final class GameActivity extends SDLActivity
         }
     }
 
-    private static void deleteTree(File file) {
+    static void deleteTree(File file) {
         File[] children = file.listFiles();
         if (children != null) {
             for (File child : children) {
