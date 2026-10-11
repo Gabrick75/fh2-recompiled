@@ -23,6 +23,9 @@ void main() {
     return;
   }
   vec4 texel = texelFetch(origen, c.origen_xy + i, 0);
+  // A NaN is stored as 0: min(NaN, maximo) may return maximo, and a NaN in one channel then saturated to 1 in the
+  // unorm texture (green in FH2's bloom pyramid, which feeds itself back frame after frame).
+  texel = mix(texel, vec4(0.0), isnan(texel));
   texel.rgb = min(texel.rgb, vec3(c.maximo));
   imageStore(destino, c.destino_xy + i, texel * c.escala);
 }

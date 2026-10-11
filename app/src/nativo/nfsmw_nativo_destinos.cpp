@@ -1516,7 +1516,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if ((reg.rb_copy_dest_base & 0x1FFFFFFF) ==
         uint32_t(std::strtoul(REXCVAR_GET(fh2_nativo_foto_copia).c_str(), nullptr, 16))) {
       static int avisos = 0;
-      if (avisos < 400 && x1 - x0 == 640) {
+      if (avisos < 400) {
         ++avisos;
         REXLOG_INFO("[fh2 nativo] copia a {:08X} lee la imagen {} (base {:03X} formato {} pitch {}) rect ({},{})-({},{})",
                     reg.rb_copy_dest_base, static_cast<const void*>(destino_render->imagen), info_color & 0xFFF,
@@ -1839,6 +1839,15 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         fh2_borrar_profundidad = fh2_borrar_ahora(*p);
       }
     }
+    if (base_resuelta == uint32_t(std::strtoul(REXCVAR_GET(fh2_nativo_foto_copia).c_str(), nullptr, 16))) {
+      static int avisos_borrar = 0;
+      if (avisos_borrar < 12 && ++avisos_borrar) {
+        REXLOG_INFO("[fh2 nativo] copia a {:08X} control {:08X}: borrar_color {} fh2 {} crudo {:08X}{:08X} imagen {} "
+                    "vk {} rect ({},{})-({},{})", base_resuelta, control, borrar_color, fh2_borrar_color,
+                    reg.rb_color_clear_lo, reg.rb_color_clear, static_cast<const void*>(destino_render),
+                    static_cast<const void*>(destino_render->imagen), x0, y0, x1, y1);
+      }
+    }
     if (borrar_color && fh2_borrar_color) {
 #else
     if (borrar_color) {
@@ -1863,7 +1872,15 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       destino_render->contenido_invalido = false;
       const uint64_t valor_estado =
           REXCVAR_GET(nfsmw_nativo_diag_borrado) ? ~uint64_t(0) : valor_crudo;
-      if (BorradoRedundante(*destino_render, valor_estado)) {
+      const bool fh2_redundante = BorradoRedundante(*destino_render, valor_estado);
+      if (base_resuelta == uint32_t(std::strtoul(REXCVAR_GET(fh2_nativo_foto_copia).c_str(), nullptr, 16))) {
+        static int avisos_r = 0;
+        if (avisos_r < 6 && ++avisos_r) {
+          REXLOG_INFO("[fh2 nativo] borrado tras copia a {:08X}: redundante {} formato vk {}", base_resuelta,
+                      fh2_redundante, int(destino_render->formato));
+        }
+      }
+      if (fh2_redundante) {
         ++borrados_saltados_;
       } else {
         // nfsmw_nativo_frontal_perezoso. If this render target is the source of a deferred front buffer, the
@@ -1886,6 +1903,13 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
             color.float32[1] = siete_e3((w >> 10) & 0x3FF);
             color.float32[2] = siete_e3((w >> 20) & 0x3FF);
             color.float32[3] = float(w >> 30) * (1.0f / 3.0f);
+#if defined(FH2_RECOMP)
+            static std::set<uint64_t> vistos_borrado;
+            if (vistos_borrado.size() < 20 && vistos_borrado.insert(valor_crudo).second) {
+              REXLOG_INFO("[fh2 nativo] borrado 7e3 crudo {:016X} -> ({}, {}, {}, {})", valor_crudo, color.float32[0],
+                          color.float32[1], color.float32[2], color.float32[3]);
+            }
+#endif
           } else {
             for (uint32_t j = 0; j < 4; ++j) {
               color.float32[j] = float((valor_crudo >> (j * 8)) & 0xFF) * (1.0f / 255.0f);

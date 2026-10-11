@@ -6,7 +6,9 @@ big-endian words); only the small ones (up to 64 words) are the D3D's own, the r
 - No constant table: the translator reads the constants straight from the registers (FH2_RECOMP).
 - Vertex shader: one vertex element per vertex fetch (the first POSITION0, then TEXCOORD0..), and interpolators
   TEXCOORD0-3 in registers 0-3, whichever it exports.
-- Pixel shader: no inputs, COLOR0 out.
+- Pixel shader: interpolators TEXCOORD0-3 in registers 0-3 (what the D3D vertex shaders export) and COLOR0 out.
+  The pixel position register is left out (fieldC 4, as in the game's own containers): with it at register 0 the
+  translator put the pixel's screen position in r0, and the D3D clear shader (oC0 = r0) wrote green and red.
 
     python3 tools/xenos/d3d_internos.py <dump folder> <containers folder>"""
 import glob, os, struct, sys
@@ -47,8 +49,11 @@ def contenedor(words, vertices):
         sh += [a | (usos[n][0] << 12) | (usos[n][1] << 16) for n, a in enumerate(elementos)]
         sh += interp
     else:
-        sh.append(0)       # no interpolators
+        sh[3] = 4          # fieldC: no pixel position register (as the game's own pixel shaders)
+        interp = [(i << 8) | (5 << 4) | i for i in range(4)]       # register i <- TEXCOORD i
+        sh.append(len(interp) << 5)
         sh += [0, 1]       # field18, outputs: COLOR0
+        sh += interp
     w += sh
     virtual = len(w) * 4
     w[1] = virtual
