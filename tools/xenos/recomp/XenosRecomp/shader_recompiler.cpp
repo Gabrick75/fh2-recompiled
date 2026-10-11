@@ -379,8 +379,15 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
 
 void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicubic)
 {
+#ifdef FH2_RECOMP
+    // FH2: getGradients too (its vector UI fonts compute the antialiasing width from screen derivatives).
+    if (instr.opcode != FetchOpcode::TextureFetch && instr.opcode != FetchOpcode::GetTextureWeights &&
+        instr.opcode != FetchOpcode::GetTextureGradients)
+        return;
+#else
     if (instr.opcode != FetchOpcode::TextureFetch && instr.opcode != FetchOpcode::GetTextureWeights)
         return;
+#endif
 
     if (instr.isPredicated)
         abrirPredicado(instr.predCondition);
@@ -395,6 +402,25 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
             for (size_t i = 0; i < componentCount; i++)
                 out += SWIZZLES[((instr.srcSwizzle >> (i * 2))) & 0x3];
         };
+
+#ifdef FH2_RECOMP
+    if (instr.opcode == FetchOpcode::GetTextureGradients)
+    {
+        // As Xenia (spirv_translator_fetch.cpp): (ddx(src.x), ddy(src.x), ddx(src.y), ddy(src.y)), coarse derivatives;
+        // no texture is read. Zero in a vertex shader.
+        indent();
+        print("r{}.", instr.dstRegister);
+        printDstSwizzle(instr.dstSwizzle, false);
+        out += " = fh2Gradientes(";
+        printSrcRegister(2);
+        out += ").";
+        printDstSwizzle(instr.dstSwizzle, true);
+        out += ";\n";
+        printDstSwizzle01(instr.dstRegister, instr.dstSwizzle);
+        cerrarSiEscribePredicado(marcaPredicado);
+        return;
+    }
+#endif
 
     std::string constName;
     const char* constNamePtr = nullptr;

@@ -321,6 +321,16 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
 #define Sample(SAMPLER, COORD) SampleLevel(SAMPLER, COORD, 0)
 #endif
 
+// FH2: the getGradients fetch.
+float4 fh2Gradientes(float2 v)
+{
+#ifdef FH2_SOMBREADOR_VERTICES
+    return 0.0;
+#else
+    return float4(ddx_coarse(v.x), ddy_coarse(v.x), ddx_coarse(v.y), ddy_coarse(v.y));
+#endif
+}
+
 // FH2: a 2D texture coordinate in texels (tfetch with unnormalized coordinates) to 0-1.
 float2 fh2Normalizar(uint resourceDescriptorIndex, float2 texCoord, float2 invSize)
 {
