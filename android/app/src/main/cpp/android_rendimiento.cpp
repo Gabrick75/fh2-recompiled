@@ -109,13 +109,24 @@ std::atomic<float>* PluginCounter(const char* name, std::atomic<float>*& cache) 
 
 }  // namespace
 
+// The native renderer (nfsmw_renderizador = nativo) does not load the GPU plugin: it counts its own Swaps
+// (app/src/nativo/nfsmw_nativo_destinos.cpp).
+extern std::atomic<float> g_fh2_nativo_fps;
+extern std::atomic<float> g_fh2_nativo_ms;
+
 extern "C" JNIEXPORT jfloat JNICALL Java_com_forzahorizon2_android_GameActivity_nativeFps(JNIEnv*, jclass) {
+  if (const float nativo = g_fh2_nativo_fps.load(std::memory_order_relaxed); nativo >= 0.0f) {
+    return nativo;
+  }
   static std::atomic<float>* fps = nullptr;
   auto* value = PluginCounter("rex_fps_guest", fps);
   return value ? value->load(std::memory_order_relaxed) : -1.0f;
 }
 
 extern "C" JNIEXPORT jfloat JNICALL Java_com_forzahorizon2_android_GameActivity_nativeFrameMs(JNIEnv*, jclass) {
+  if (const float nativo = g_fh2_nativo_ms.load(std::memory_order_relaxed); nativo >= 0.0f) {
+    return nativo;
+  }
   static std::atomic<float>* ms = nullptr;
   auto* value = PluginCounter("rex_frame_ms_guest", ms);
   return value ? value->load(std::memory_order_relaxed) : -1.0f;

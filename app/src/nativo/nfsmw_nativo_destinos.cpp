@@ -66,6 +66,13 @@ extern "C" void RexSwitchPerfTiron(uint64_t inicio, uint64_t fin);
 #include <unordered_set>
 #include <vector>
 
+#if defined(FH2_RECOMP)
+// Frames per second and milliseconds per frame of the native renderer (the Swaps it presents), for the Android
+// overlay; -1 until the first half second.
+std::atomic<float> g_fh2_nativo_fps{-1.0f};
+std::atomic<float> g_fh2_nativo_ms{-1.0f};
+#endif
+
 REXCVAR_DEFINE_STRING(nfsmw_consultas_oclusion, "auto", "NFSMW",
                      "Consultas Vulkan: auto evita oclusiones en Mali Android; off las evita en todas las GPU; on las permite")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
@@ -2422,6 +2429,20 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       ultimo_swap_ = ahora;
     }
 #if defined(FH2_RECOMP)
+    {
+      // The frame rate for the Android overlay (android_rendimiento.cpp, nativeFps): Swaps over the last half second.
+      static auto inicio = std::chrono::steady_clock::now();
+      static uint32_t swaps = 0;
+      ++swaps;
+      const auto ahora_fps = std::chrono::steady_clock::now();
+      const double segundos = std::chrono::duration<double>(ahora_fps - inicio).count();
+      if (segundos >= 0.5) {
+        g_fh2_nativo_fps.store(float(swaps / segundos), std::memory_order_relaxed);
+        g_fh2_nativo_ms.store(float(segundos * 1000.0 / swaps), std::memory_order_relaxed);
+        swaps = 0;
+        inicio = ahora_fps;
+      }
+    }
     fh2_empaquetadas_fotograma_.clear();
 #endif
     const uint32_t base = (swap.dword[1] & 0xFFFFF000) & 0x1FFFFFFF;
