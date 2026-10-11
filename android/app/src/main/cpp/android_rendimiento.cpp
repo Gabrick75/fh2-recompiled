@@ -223,7 +223,7 @@ void AffinityLoop(std::vector<AffinityRule> rules) {
 
 }  // namespace
 
-// 'auto': the command processor (the bottleneck) alone on the core with the highest top clock, every other thread
+// 'auto': the command processor (the bottleneck) of either renderer alone on the core with the highest top clock, every other thread
 // on the remaining cores whose top clock is at least 70 % of it. Measured on the S23 Ultra (Snapdragon 8 Gen 2, one
 // 3.36 GHz X3 at cpu7 and four 2.8 GHz cores): event menu 18.5 -> 21.5 fps (+16 %). Nothing when all the cores run
 // at the same top clock.
@@ -248,7 +248,11 @@ std::string AutoAffinityRules() {
     }
   }
   if (fastest < 0 || !any_slower || others.empty()) return "";
-  return "GPU Commands=" + std::to_string(fastest) + ";*=" + others;
+  // The command processor is "GPU Commands" with the emulated GPU and "GPU anillo nativo" (the ring thread,
+  // app/src/nativo/nfsmw_nativo_sistema.cpp) with the native renderer. Before the second rule the native mode left
+  // the fastest core idle and put its ring thread with the game's threads on the other four.
+  const std::string rapido = std::to_string(fastest);
+  return "GPU Commands=" + rapido + ";GPU anillo=" + rapido + ";*=" + others;
 }
 
 extern "C" void fh2_android_afinidade_iniciar() {
