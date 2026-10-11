@@ -682,6 +682,14 @@ REXCVAR_DEFINE_STRING(fh2_nativo_foto_copia, "1C4E1000", "FH2",
 // scales viewport and scissor (pase_escala_), the resolve converts its rectangle, the shaders get 1/guest size for
 // their texel fetches and the pixel position divided back (FH2_COMPARTIDA_INV_ESCALA). Smaller targets (the
 // luminance and exposure reductions, reflections, cube faces) and the shadow map keep their size.
+// Clears held back until the next pass on that render target, which does them with loadOp = CLEAR. On the S23 Ultra
+// (Adreno 740) the 79 clears per frame cost 16-21 ms of GPU: outside a pass, vkCmdClearColorImage writes the whole
+// 1280x1280 image to memory, and the next pass then loads it back. Anything else that touches a render target with a
+// clear pending (a resolve, a copy or blit from or to it, a swap, the scaled copy, the depth packing, presenting it)
+// records it first as before.
+REXCVAR_DEFINE_BOOL(fh2_nativo_borrados_diferidos, true, "FH2",
+                    "Native renderer: render target clears done by the next pass on it (loadOp = CLEAR)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_INT32(fh2_nativo_escala, 100, "FH2",
                      "Native renderer: render scale in percent of 1280x720 for the scene and post-processing "
                      "(50-100); read once at start")
@@ -1568,7 +1576,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         foto.srcOffsets[1] = {int32_t(std::max(x1, 1)), int32_t(std::max(y1, 1)), 1};
         foto.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         foto.dstOffsets[1] = {1280, 720, 1};
-        blit_(comandos_trabajo_, destino_render->imagen, VK_IMAGE_LAYOUT_GENERAL, fh2_instantanea_.imagen,
+        Fh2Blit(comandos_trabajo_, destino_render->imagen, VK_IMAGE_LAYOUT_GENERAL, fh2_instantanea_.imagen,
               VK_IMAGE_LAYOUT_GENERAL, 1, &foto, VK_FILTER_NEAREST);
       }
     }
@@ -1759,7 +1767,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         reduccion.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         reduccion.dstOffsets[0] = {int32_t(dx), int32_t(dy), 0};
         reduccion.dstOffsets[1] = {int32_t(dx + cabe_ancho), int32_t(dy + cabe_alto), 1};
-        blit_(comandos_trabajo_, destino_render->imagen, VK_IMAGE_LAYOUT_GENERAL,
+        Fh2Blit(comandos_trabajo_, destino_render->imagen, VK_IMAGE_LAYOUT_GENERAL,
               resuelta->imagen.imagen, VK_IMAGE_LAYOUT_GENERAL, 1, &reduccion, VK_FILTER_LINEAR);
         ++copias_;
         ++reducciones_;
@@ -1836,7 +1844,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
             conversion.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
             conversion.dstOffsets[0] = {int32_t(dx), int32_t(dy), 0};
             conversion.dstOffsets[1] = {int32_t(dx + ancho), int32_t(dy + alto), 1};
-            blit_(comandos_trabajo_, destino_render->imagen, VK_IMAGE_LAYOUT_GENERAL, resuelta->imagen.imagen,
+            Fh2Blit(comandos_trabajo_, destino_render->imagen, VK_IMAGE_LAYOUT_GENERAL, resuelta->imagen.imagen,
                   VK_IMAGE_LAYOUT_GENERAL, 1, &conversion, VK_FILTER_NEAREST);
             ++copias_;
             AnotarCopia(ancho, alto);
@@ -1848,7 +1856,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         } else if (!AplazarCopiaFrontal(base_resuelta, *destino_render, *resuelta, copia) &&
             !AplazarCompuesta(base_resuelta, *destino_render, *resuelta, copia,
                               (info_color & 0xFFF) | (pitch << 12))) {
-          copiar_imagen_(comandos_trabajo_, destino_render->imagen, VK_IMAGE_LAYOUT_GENERAL,
+          Fh2CopiarImagen(comandos_trabajo_, destino_render->imagen, VK_IMAGE_LAYOUT_GENERAL,
                          resuelta->imagen.imagen, VK_IMAGE_LAYOUT_GENERAL, 1, &copia);
           ++copias_;
           AnotarCopia(ancho, alto);
@@ -1973,6 +1981,18 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
             }
           }
         }
+#if defined(FH2_RECOMP)
+        if (fh2_diferir_borrados_ < 0) {
+          fh2_diferir_borrados_ = REXCVAR_GET(fh2_nativo_borrados_diferidos) ? 1 : 0;
+        }
+        if (fh2_diferir_borrados_ == 1) {
+          // Held until the next pass on it (fh2_nativo_borrados_diferidos); the whole image, as below.
+          VkClearValue valor{};
+          valor.color = color;
+          Fh2DiferirBorrado(*destino_render, valor);
+          QuitarBanda(*destino_render);
+        } else
+#endif
         // nfsmw_nativo_borrar_area_util. Only the rows in use; the bottom band, if needed.
         if (!BorrarColorAreaUtil(*destino_render, color)) {
           dfn_.vkCmdClearColorImage(comandos_trabajo_, destino_render->imagen,
@@ -2018,6 +2038,18 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     // nfsmw_nativo_diag_borrados. Without TRANSFER_DST the clear is done by opening a pass (ZCULL).
     AnotarBorradoDiag(*profundidad, info & 0xFFF, (info >> 16) & 0x1, pitch, true,
                       !profundidad->admite_destino_de_copia);
+#if defined(FH2_RECOMP)
+    if (fh2_diferir_borrados_ < 0) {
+      fh2_diferir_borrados_ = REXCVAR_GET(fh2_nativo_borrados_diferidos) ? 1 : 0;
+    }
+    if (fh2_diferir_borrados_ == 1) {
+      // Held until the next pass on it, which also resets the ZCULL plane (loadOp = CLEAR).
+      VkClearValue v{};
+      v.depthStencil = valor;
+      Fh2DiferirBorrado(*profundidad, v);
+      return;
+    }
+#endif
     // ZCULL: see Preparar. Without TRANSFER_DST the clear has to be done by opening a pass.
     if (!profundidad->admite_destino_de_copia && dibujos_) {
       // This bool cannot be dropped. If the clear pass cannot be opened, the depth keeps the previous frame's
@@ -2199,7 +2231,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       copia.dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
       copia.dstOffset = {aX(int32_t(dx)), aY(int32_t(dy)), 0};
       copia.extent = {ancho_img, alto_img, 1};
-      copiar_imagen_(comandos_trabajo_, profundidad->imagen, VK_IMAGE_LAYOUT_GENERAL,
+      Fh2CopiarImagen(comandos_trabajo_, profundidad->imagen, VK_IMAGE_LAYOUT_GENERAL,
                      resuelta->imagen.imagen, VK_IMAGE_LAYOUT_GENERAL, 1, &copia);
       ++copias_;
       ++sombras_subidas_;
@@ -2252,7 +2284,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if (AplazarCopiaProfundidad(base & 0x1FFFFFFF, *profundidad, *resuelta, copia)) {
       return;
     }
-    copiar_imagen_(comandos_trabajo_, profundidad->imagen, VK_IMAGE_LAYOUT_GENERAL,
+    Fh2CopiarImagen(comandos_trabajo_, profundidad->imagen, VK_IMAGE_LAYOUT_GENERAL,
                    resuelta->imagen.imagen, VK_IMAGE_LAYOUT_GENERAL, 1, &copia);
     ++copias_;
     AnotarCopia(ancho, alto);
@@ -2664,7 +2696,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       dibujos_->TerminarPase();  // it can arrive from a draw: the copy goes outside the pass
     }
     MarcarGpu(kGpuCopias);
-    copiar_imagen_(comandos_trabajo_, p.origen_vk, VK_IMAGE_LAYOUT_GENERAL, p.textura_vk, VK_IMAGE_LAYOUT_GENERAL, 1,
+    Fh2CopiarImagen(comandos_trabajo_, p.origen_vk, VK_IMAGE_LAYOUT_GENERAL, p.textura_vk, VK_IMAGE_LAYOUT_GENERAL, 1,
                    &p.copia);
     ++copias_;
     AnotarCopia(p.copia.extent.width, p.copia.extent.height);
@@ -3714,7 +3746,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       dibujos_->TerminarPase();  // it can arrive from a draw (TexturaResuelta): the copy goes outside the pass
     }
     MarcarGpu(kGpuCopias);
-    copiar_imagen_(comandos_trabajo_, pendiente.origen_vk, VK_IMAGE_LAYOUT_GENERAL, pendiente.destino_vk,
+    Fh2CopiarImagen(comandos_trabajo_, pendiente.origen_vk, VK_IMAGE_LAYOUT_GENERAL, pendiente.destino_vk,
                    VK_IMAGE_LAYOUT_GENERAL, 1, &pendiente.copia);
     ++copias_;
     AnotarCopia(pendiente.copia.extent.width, pendiente.copia.extent.height);
@@ -3839,7 +3871,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       dibujos_->TerminarPase();  // may come from a draw (TexturaResuelta): the copy goes outside the pass
     }
     MarcarGpu(kGpuCopias);
-    copiar_imagen_(comandos_trabajo_, pendiente.origen_vk, VK_IMAGE_LAYOUT_GENERAL, pendiente.textura_vk,
+    Fh2CopiarImagen(comandos_trabajo_, pendiente.origen_vk, VK_IMAGE_LAYOUT_GENERAL, pendiente.textura_vk,
                    VK_IMAGE_LAYOUT_GENERAL, 1, &pendiente.copia);
     ++copias_;
     AnotarCopia(pendiente.copia.extent.width, pendiente.copia.extent.height);
@@ -4056,6 +4088,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     } else {
       ++frontal_pintadas_destino_;
     }
+#if defined(FH2_RECOMP)
+    Fh2AplicarBorrado(*origen);  // the output samples it
+#endif
     return origen;
   }
 
@@ -4326,6 +4361,87 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   }
 
 #if defined(FH2_RECOMP)
+  // fh2_nativo_borrados_diferidos. The clear is held in the image (fh2_borrar) and the image in fh2_por_borrar_.
+  void Fh2DiferirBorrado(Imagen& imagen, const VkClearValue& valor) {
+    imagen.fh2_borrar = true;
+    imagen.fh2_valor_borrar = valor;
+    if (std::find(fh2_por_borrar_.begin(), fh2_por_borrar_.end(), &imagen) == fh2_por_borrar_.end()) {
+      fh2_por_borrar_.push_back(&imagen);
+    }
+    ++fh2_borrados_diferidos_;
+    if ((fh2_borrados_diferidos_ % 4000) == 0) {
+      REXLOG_INFO("[fh2 nativo] borrados diferidos: {} pedidos, {} hechos fuera de un pase (el resto los hizo el pase "
+                  "siguiente con loadOp = CLEAR o se sustituyeron por otro borrado)",
+                  fh2_borrados_diferidos_, fh2_borrados_aplicados_);
+    }
+  }
+
+  // Records the held clear now, as a normal clear, if the image has one.
+  void Fh2AplicarBorrado(Imagen& imagen) {
+    if (!imagen.fh2_borrar) {
+      return;
+    }
+    imagen.fh2_borrar = false;
+    fh2_por_borrar_.erase(std::remove(fh2_por_borrar_.begin(), fh2_por_borrar_.end(), &imagen), fh2_por_borrar_.end());
+    if (comandos_trabajo_ == VK_NULL_HANDLE) {
+      return;
+    }
+    if (dibujos_) {
+      dibujos_->TerminarPase();
+    }
+    const bool profundidad = imagen.formato == VK_FORMAT_D24_UNORM_S8_UINT ||
+                             imagen.formato == VK_FORMAT_D32_SFLOAT_S8_UINT;
+    if (!profundidad) {
+      dfn_.vkCmdClearColorImage(comandos_trabajo_, imagen.imagen, VK_IMAGE_LAYOUT_GENERAL,
+                                &imagen.fh2_valor_borrar.color, 1, &kRangoColor);
+    } else if (imagen.admite_destino_de_copia) {
+      borrar_profundidad_(comandos_trabajo_, imagen.imagen, VK_IMAGE_LAYOUT_GENERAL,
+                          &imagen.fh2_valor_borrar.depthStencil, 1, &kRangoProfundidad);
+    } else if (dibujos_) {
+      dibujos_->BorrarProfundidadEnPase(comandos_trabajo_, imagen, imagen.fh2_valor_borrar.depthStencil.depth,
+                                        imagen.fh2_valor_borrar.depthStencil.stencil);
+    }
+    VkMemoryBarrier barrera{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrera.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barrera.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    dfn_.vkCmdPipelineBarrier(comandos_trabajo_,
+                              VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                  VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                              VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrera, 0, nullptr, 0, nullptr);
+    ++fh2_borrados_aplicados_;
+  }
+
+  void Fh2AplicarBorradoDe(VkImage vk) {
+    if (fh2_por_borrar_.empty()) {
+      return;
+    }
+    // The ones a pass has already cleared (DibujosVulkan clears the flag) leave the list here.
+    fh2_por_borrar_.erase(std::remove_if(fh2_por_borrar_.begin(), fh2_por_borrar_.end(),
+                                         [](const Imagen* i) { return !i->fh2_borrar; }),
+                          fh2_por_borrar_.end());
+    for (Imagen* imagen : fh2_por_borrar_) {
+      if (imagen->imagen == vk) {
+        Fh2AplicarBorrado(*imagen);
+        return;
+      }
+    }
+  }
+
+  // Every image copy and blit of this file goes through these: a render target with a held clear gets it first.
+  void Fh2CopiarImagen(VkCommandBuffer cmd, VkImage origen, VkImageLayout lo, VkImage destino, VkImageLayout ld,
+                       uint32_t n, const VkImageCopy* regiones) {
+    Fh2AplicarBorradoDe(origen);
+    Fh2AplicarBorradoDe(destino);
+    copiar_imagen_(cmd, origen, lo, destino, ld, n, regiones);
+  }
+  void Fh2Blit(VkCommandBuffer cmd, VkImage origen, VkImageLayout lo, VkImage destino, VkImageLayout ld, uint32_t n,
+               const VkImageBlit* regiones, VkFilter filtro) {
+    Fh2AplicarBorradoDe(origen);
+    Fh2AplicarBorradoDe(destino);
+    blit_(cmd, origen, lo, destino, ld, n, regiones, filtro);
+  }
+
   // fh2_nativo_escala: the image size of a render target of that pitch (only 1280 is scaled; see the cvar).
   void Fh2Escalar(uint32_t pitch, uint32_t alto, uint32_t& ancho_imagen, uint32_t& alto_imagen) {
     if (fh2_escala_ == 0) {
@@ -4766,6 +4882,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         destino.formato != resuelta.imagen.formato) {
       return false;
     }
+#if defined(FH2_RECOMP)
+    Fh2AplicarBorrado(destino);  // its content goes to the texture: with the clear it was asked for
+#endif
     // ZCULL safety net. If the render target was created without TRANSFER_DST (so it can have a ZCULL
     // plane), swapping it would put it in the resolved texture's place, which does receive copies: an
     // illegal write. And the other way round, the resolved texture (with TRANSFER_DST and no plane) would
@@ -4940,7 +5059,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     copia.extent = {destino.ancho, alto, 1};
     AnotarUsoBorrado(destino, destino.ancho, alto);  // nfsmw_nativo_diag_borrados
     MarcarGpu(kGpuCopias);
-    copiar_imagen_(comandos_trabajo_, it->second.imagen.imagen, VK_IMAGE_LAYOUT_GENERAL,
+    Fh2CopiarImagen(comandos_trabajo_, it->second.imagen.imagen, VK_IMAGE_LAYOUT_GENERAL,
                    destino.imagen, VK_IMAGE_LAYOUT_GENERAL, 1, &copia);
     ++restauraciones_;
     pixeles_restaurados_ += uint64_t(destino.ancho) * alto;
@@ -5045,6 +5164,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   bool Fh2CopiarConEscala(Imagen& origen, Imagen& destino, int32_t x0, int32_t y0, uint32_t dx, uint32_t dy, uint32_t w,
                           uint32_t h, float escala, float maximo) {
     if (!destino.fh2_almacenamiento || origen.vista == VK_NULL_HANDLE || destino.vista == VK_NULL_HANDLE) return false;
+    Fh2AplicarBorrado(origen);
     const VkPipeline pipeline = Fh2PipelineEscala(destino.formato);
     if (pipeline == VK_NULL_HANDLE) return false;
     if (fh2_escala_pool_ == VK_NULL_HANDLE) {
@@ -5174,6 +5294,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                                 uint32_t dx, uint32_t dy, uint32_t w, uint32_t h, uint32_t ancho_tex,
                                 uint32_t alto_tex) {
     if (!Fh2PreparaEmpaquetado() || !Grabar()) return;
+    Fh2AplicarBorrado(profundidad);
     Imagen& destino = fh2_empaquetadas_[base];
     if (destino.imagen != VK_NULL_HANDLE && (destino.ancho != ancho_tex || destino.alto != alto_tex)) {
       EnviarTrabajo(true);
@@ -5314,7 +5435,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     copia.extent = {destino.ancho, destino.alto, 1};
     AnotarUsoBorrado(destino, destino.ancho, destino.alto);  // nfsmw_nativo_diag_borrados, like the restore
     MarcarGpu(kGpuCopias);
-    copiar_imagen_(comandos_trabajo_, origen.imagen, VK_IMAGE_LAYOUT_GENERAL, destino.imagen, VK_IMAGE_LAYOUT_GENERAL,
+    Fh2CopiarImagen(comandos_trabajo_, origen.imagen, VK_IMAGE_LAYOUT_GENERAL, destino.imagen, VK_IMAGE_LAYOUT_GENERAL,
                    1, &copia);
     // And the copied data made visible to what follows: the current resolve (copy or swap), the draws that
     // sample the texture that receives it, and the pass that draws to the render target again.
@@ -5656,6 +5777,10 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   }
 
   void Destruir(Imagen& imagen) {
+#if defined(FH2_RECOMP)
+    imagen.fh2_borrar = false;  // its held clear goes with it
+    fh2_por_borrar_.erase(std::remove(fh2_por_borrar_.begin(), fh2_por_borrar_.end(), &imagen), fh2_por_borrar_.end());
+#endif
     SoltarReferencias(imagen);
     // The DibujosVulkan framebuffers that use this view are destroyed before it: Vulkan may give the same
     // handle to a new view and FramebufferDe would return a stale one (see
@@ -6244,7 +6369,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       copia.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
       copia.dstOffsets[0] = {x + 2, y + 2, 0};
       copia.dstOffsets[1] = {x + 318, y + 178, 1};
-      blit_(comandos_trabajo_, imagen.imagen, VK_IMAGE_LAYOUT_GENERAL, mosaico_.imagen,
+      Fh2Blit(comandos_trabajo_, imagen.imagen, VK_IMAGE_LAYOUT_GENERAL, mosaico_.imagen,
             VK_IMAGE_LAYOUT_GENERAL, 1, &copia,
             imagen.formato == VK_FORMAT_R32_SFLOAT ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
       lista += fmt::format(" {}{}:{:08X} {}x{} f{}", i, bases[i] == base_swap ? "*" : "", bases[i],
@@ -6266,7 +6391,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
           copia.dstOffsets[0] = {0, 0, 0};
           copia.dstOffsets[1] = {1280, 720, 1};
         }
-        blit_(comandos_trabajo_, fh2_instantanea_.imagen, VK_IMAGE_LAYOUT_GENERAL, mosaico_.imagen,
+        Fh2Blit(comandos_trabajo_, fh2_instantanea_.imagen, VK_IMAGE_LAYOUT_GENERAL, mosaico_.imagen,
               VK_IMAGE_LAYOUT_GENERAL, 1, &copia, VK_FILTER_LINEAR);
       }
       // fh2_nativo_foto_empaquetada: the depth resolve at that address as 8_8_8_8, over the whole mosaic.
@@ -6291,7 +6416,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         copia.srcOffsets[1] = {int32_t(it->ancho), int32_t(it->alto), 1};
         copia.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         copia.dstOffsets[1] = {1280, 720, 1};
-        blit_(comandos_trabajo_, it->imagen, VK_IMAGE_LAYOUT_GENERAL, mosaico_.imagen,
+        Fh2Blit(comandos_trabajo_, it->imagen, VK_IMAGE_LAYOUT_GENERAL, mosaico_.imagen,
               VK_IMAGE_LAYOUT_GENERAL, 1, &copia, VK_FILTER_NEAREST);
         lista += " 15:destino de la escena antes de copiarla";
       }
@@ -6923,6 +7048,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   uint32_t escala_sombras_ = 0;
 #if defined(FH2_RECOMP)
   uint32_t fh2_escala_ = 0;  // fh2_nativo_escala, read once; 0 = not read yet
+  std::vector<Imagen*> fh2_por_borrar_;  // render targets with a held clear (fh2_nativo_borrados_diferidos)
+  uint64_t fh2_borrados_diferidos_ = 0, fh2_borrados_aplicados_ = 0;
+  int fh2_diferir_borrados_ = -1;  // the cvar, read once
 #endif
   uint64_t sombras_subidas_ = 0;
   std::vector<uint32_t> resueltas_fotograma_;

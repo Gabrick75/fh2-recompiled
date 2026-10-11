@@ -196,6 +196,13 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_sin_desenfoque, true, "NFSMW",
                     "unico cuadrilatero a pantalla completa del posproceso (1,5-2,0 ms reales). Se pierde "
                     "el difuminado de los bordes al acelerar y con el NOS: la imagen queda mas nitida");
 
+#if defined(FH2_RECOMP)
+REXCVAR_DEFINE_INT32(fh2_nativo_omitir_categorias, 0, "FH2",
+                     "Native renderer (FPS test): bit mask of pass categories whose draws are skipped: 1 others, "
+                     "4 scene (1280 with depth), 8 reflection (640), 16 cube and blur (320), 32 smaller, 256 1280 "
+                     "without depth (post-processing, HUD), 1024 depth-only targets (shadow atlas)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+#endif
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_omitir_sombras, false, "NFSMW",
                     "Renderizador nativo (prueba de FPS): no graba los dibujos del mapa de sombras "
                     "(destino solo de profundidad de 1600 o mas de pitch); recorte visible");
@@ -2706,6 +2713,19 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
     }
 
+#if defined(FH2_RECOMP)
+    // fh2_nativo_omitir_categorias (FPS test): the draws of these pass categories are not recorded.
+    if (fh2_omitir_categorias_ < 0) {
+      fh2_omitir_categorias_ = REXCVAR_GET(fh2_nativo_omitir_categorias);
+    }
+    if (fh2_omitir_categorias_ > 0) {
+      const bool solo_profundidad = claves[4] && !claves[0] && !claves[1] && !claves[2] && !claves[3];
+      const uint32_t categoria = solo_profundidad ? 10u : CategoriaDeDestino(pitch, claves);
+      if (uint32_t(fh2_omitir_categorias_) & (1u << categoria)) {
+        return Fh2DiagSalida(p, __LINE__, true);
+      }
+    }
+#endif
     CortarSubetapa(15, t_indices_185);  // render targets and discards
     // --- Rango de vertices e indices --------------------------------------------
     const uint32_t desplazamiento = r[gr::XE_GPU_REG_VGT_INDX_OFFSET] & 0xFFFFFF;
@@ -11026,7 +11046,24 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     contexto_->MarcarGpu(categoria_pase_);
     const bool sombras_sin_load =
         es_sombras && REXCVAR_GET(nfsmw_nativo_pase_sombras_sin_load);
-    const VkRenderPass pase = PaseDe(formatos, sombras_sin_load ? kCargaIgnorar : kCargaLeer);
+    // fh2_nativo_borrados_diferidos: the attachments with a held clear are cleared by this pass (loadOp = CLEAR); the
+    // mask goes in bits 4-8 of the load mode.
+    uint32_t mascara_borrar = 0;
+    std::array<VkClearValue, 5> valores_borrar{};
+    uint32_t n_valores_borrar = 0;
+#if defined(FH2_RECOMP)
+    for (uint32_t i = 0; i < 5; ++i) {
+      if (imagenes[i]) {
+        if (imagenes[i]->fh2_borrar) {
+          mascara_borrar |= 1u << i;
+          valores_borrar[n_valores_borrar] = imagenes[i]->fh2_valor_borrar;
+        }
+        ++n_valores_borrar;
+      }
+    }
+#endif
+    const VkRenderPass pase =
+        PaseDe(formatos, (sombras_sin_load ? kCargaIgnorar : kCargaLeer) | (mascara_borrar << 4));
     if (pase == VK_NULL_HANDLE) {
       return Rechazar(42, "no se pudo crear el render pass");
     }
@@ -11048,9 +11085,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     inicio.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     inicio.renderPass = pase;
     inicio.framebuffer = framebuffer;
-    // Only the rectangle the game uses (see nfsmw_nativo_pase_area_util).
+    // Only the rectangle the game uses (see nfsmw_nativo_pase_area_util). A pass that clears takes the whole image,
+    // as the clear it replaces did.
     uint32_t alto_pase = alto;
-    if (area_util_) {
+    if (mascara_borrar) {
+      inicio.clearValueCount = n_valores_borrar;
+      inicio.pClearValues = valores_borrar.data();
+      ++fh2_pases_que_borran_;
+    } else if (area_util_) {
       const auto it = alto_util_.find(pitch);
       if (it != alto_util_.end() && it->second < alto) {
         alto_pase = it->second;
@@ -11070,6 +11112,13 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     dfn_.vkCmdBeginRenderPass(cmd, &inicio, VK_SUBPASS_CONTENTS_INLINE);
     ns_render_pass_ += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now() - antes_inicio).count());
+#if defined(FH2_RECOMP)
+    for (uint32_t i = 0; i < 5; ++i) {
+      if (mascara_borrar & (1u << i)) {
+        imagenes[i]->fh2_borrar = false;  // done (ContextoDestinos drops it from its list)
+      }
+    }
+#endif
     if (cronometrar_) {
       etapas_ns_[11] += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now() - antes_abrir).count());
@@ -11289,13 +11338,15 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       a.samples = VK_SAMPLE_COUNT_1_BIT;
       // With the test active, the shadow map does not load its previous content: the game clears it before
       // drawing it, so fetching the 1600x1600 tile only to throw it away is wasted work.
-      a.loadOp = modo_carga == kCargaIgnorar ? VK_ATTACHMENT_LOAD_OP_DONT_CARE
-                 : modo_carga == kCargaBorrar ? VK_ATTACHMENT_LOAD_OP_CLEAR
-                                              : VK_ATTACHMENT_LOAD_OP_LOAD;
+      // Bits 4-8: attachments cleared by this pass whatever the mode (fh2_nativo_borrados_diferidos).
+      const uint32_t modo = ((modo_carga >> 4) & (1u << i)) ? uint32_t(kCargaBorrar) : (modo_carga & 0xF);
+      a.loadOp = modo == kCargaIgnorar ? VK_ATTACHMENT_LOAD_OP_DONT_CARE
+                 : modo == kCargaBorrar ? VK_ATTACHMENT_LOAD_OP_CLEAR
+                                        : VK_ATTACHMENT_LOAD_OP_LOAD;
       a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-      a.stencilLoadOp = i != 4                       ? VK_ATTACHMENT_LOAD_OP_DONT_CARE
-                        : modo_carga == kCargaBorrar ? VK_ATTACHMENT_LOAD_OP_CLEAR
-                                                     : VK_ATTACHMENT_LOAD_OP_LOAD;
+      a.stencilLoadOp = i != 4                 ? VK_ATTACHMENT_LOAD_OP_DONT_CARE
+                        : modo == kCargaBorrar ? VK_ATTACHMENT_LOAD_OP_CLEAR
+                                               : VK_ATTACHMENT_LOAD_OP_LOAD;
       a.stencilStoreOp = i == 4 ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
       a.initialLayout = VK_IMAGE_LAYOUT_GENERAL;
       a.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -13726,6 +13777,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   uint64_t pase_generacion_ = UINT64_MAX;
   uint32_t pase_ancho_ = 0;
   uint32_t pase_alto_ = 0;
+  uint64_t fh2_pases_que_borran_ = 0;
+  int32_t fh2_omitir_categorias_ = -1;  // fh2_nativo_omitir_categorias, read once  // passes that did held clears (fh2_nativo_borrados_diferidos)
   float pase_escala_ = 1.0f;  // 1 except in the scaled shadow map and render targets
   float pase_escala_render_ = 1.0f;  // pase_escala_ without the half-pitch 4x factor (FH2_COMPARTIDA_INV_ESCALA)
   uint64_t borrados_profundidad_en_pase_ = 0;  // ZCULL

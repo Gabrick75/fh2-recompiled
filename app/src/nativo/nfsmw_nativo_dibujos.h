@@ -87,6 +87,11 @@ struct ImagenNativa {
   // whose clear is held back until the last strip (see Fh2BorrarAhora in nfsmw_nativo_destinos.cpp).
   uint32_t fh2_borrado_pendiente = 0;
   bool fh2_almacenamiento = false;  // created with STORAGE usage (the scaled resolve copy writes it)
+  // fh2_nativo_borrados_diferidos: a clear the game asked for and that has not been recorded yet. The next pass that
+  // draws on this render target does it with loadOp = CLEAR (a tiled GPU then neither clears it in memory nor loads
+  // it); anything else that touches the image first records it as a normal clear (ContextoDestinos).
+  bool fh2_borrar = false;
+  VkClearValue fh2_valor_borrar{};
 #endif
   uint32_t resuelta_base = 0;  // where its content is while contenido_invalido
 };
