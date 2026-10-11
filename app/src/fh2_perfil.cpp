@@ -10,7 +10,7 @@
 
 #include <dlfcn.h>
 #include <signal.h>
-#include <execinfo.h>
+#include <unwind.h>
 #include <sys/syscall.h>
 #include <time.h>
 #include <ucontext.h>
@@ -55,6 +55,23 @@ constexpr size_t kPilas = 32768, kMarcos = 12;
 void* g_pilas[kPilas][kMarcos];
 int g_marcos[kPilas];
 
+// backtrace() is not in Android's libc before API 33: the same with the unwinder.
+struct Pila {
+  void** marcos;
+  int maximo, n;
+};
+_Unwind_Reason_Code AnotarMarco(_Unwind_Context* contexto, void* datos) {
+  auto* pila = static_cast<Pila*>(datos);
+  if (pila->n >= pila->maximo) return _URC_END_OF_STACK;
+  pila->marcos[pila->n++] = reinterpret_cast<void*>(_Unwind_GetIP(contexto));
+  return _URC_NO_REASON;
+}
+int Pilas(void** marcos, int maximo) {
+  Pila pila{marcos, maximo, 0};
+  _Unwind_Backtrace(&AnotarMarco, &pila);
+  return pila.n;
+}
+
 void OnSample(int, siginfo_t*, void* context) {
   auto* uc = static_cast<ucontext_t*>(context);
 #if defined(__x86_64__)
@@ -73,7 +90,7 @@ void OnSample(int, siginfo_t*, void* context) {
     g_callers[i] = caller;
   }
   if (i < kPilas) {
-    g_marcos[i] = backtrace(g_pilas[i], int(kMarcos));
+    g_marcos[i] = Pilas(g_pilas[i], int(kMarcos));
   }
 }
 
@@ -157,7 +174,7 @@ void Run() {
   }
   {
     void* calentar[2];
-    backtrace(calentar, 2);  // the first call loads libgcc: not inside the signal handler
+    Pilas(calentar, 2);  // the first call loads libgcc: not inside the signal handler
   }
   std::string nombre;
   {
