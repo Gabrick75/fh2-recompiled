@@ -257,6 +257,42 @@ Falta, na corrida:
 - faixa verde na borda;
 - desempenho no PC, hoje com 60–100 ms por quadro.
 
+### Etapa 2, estado (2026-10-11)
+
+No PC, a corrida roda a 30 fps (o teto do jogo), com 30–36 ms por quadro. Corrigido desde a madrugada de 09/10:
+- **Culling:** listas de retângulos nunca são descartadas.
+- **Texturas resolvidas:** as substituídas por outro formato no mesmo endereço vão para um "cemitério", em vez de esperar a
+  GPU.
+- **Leituras de volta:** chegam à memória do jogo antes das cercas.
+- **Buffers de ossos e instâncias:** vigiados por escrita de página.
+- **Texturas com gama:** lidas em sRGB.
+- **Samplers de vertex shader:** associados.
+- **Cubemap do reflexo:** montado com faces 2_10_10_10.
+- **Cascatas de sombra:** cada uma na própria textura.
+
+Falta: a máscara de sombra sai uniforme (a cena fica toda iluminada por igual e mais escura que na emulação), e o logo das
+distribuidoras na abertura sai branco.
+
+### A biblioteca no celular (decidido, ainda não implementado)
+
+`fh2_shaders.nfsp` é feito a partir dos arquivos do jogo de cada um, então não pode ir no APK. Decisão do dono do
+projeto: **gerar no próprio celular**, a partir dos arquivos do jogo que o jogador copiou. Por enquanto ela é gerada no PC
+(`tools/xenos/biblioteca.sh`) e enviada por `tools/enviar_biblioteca_android.sh`.
+
+O que a geração no celular precisa:
+- **Extração:** os passos de `tools/xenos/biblioteca.sh` em código nativo do app: descompactar os `.fxobj` das pistas
+  (LZX), extrair os contêineres do executável e das pistas, e montar os contêineres sintéticos dos shaders internos do
+  D3D.
+- **Tradução:** o XenosRecomp (`tools/xenos/recomp`) compilado para Android.
+- **HLSL → SPIR-V:** o DXC não tem build oficial para Android e é pesado. Alternativas: glslang com entrada HLSL
+  (verificar se compila o HLSL gerado, que usa `vk::RawBufferLoad` e recursos de HLSL 2021), ou levar o DXC para o NDK.
+- **Pacote:** o empacotador (`tools/xenos/empaquetar.cpp`, já em C++).
+- **Tempo e espaço:** ~3700 shaders. No PC leva alguns minutos; no celular, rodar em segundo plano com progresso no
+  launcher e só uma vez por versão da biblioteca. São ~72 MB de saída.
+- **Os shaders internos do D3D:** hoje vêm de um despejo feito pelo próprio renderizador em execução
+  (`--fh2_nativo_volcar_sueltos`). No celular isso exige uma primeira execução, ou levar esses microcódigos para dentro do
+  app, se a licença permitir.
+
 ### Etapas
 
 1. Biblioteca de shaders do FH2: XenosRecomp + DXC no PC sobre os `.fxobj` (e o XEX); medir quantos traduzem e quantos

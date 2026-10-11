@@ -13,7 +13,9 @@ import java.util.List;
  *
  * Forza Horizon 2 runs on the emulated Xenos GPU by default, so the fixed arguments are the ones nfsmw-android found
  * the emulation needs on Android drivers. The native renderer (RENDERER) replaces it; it needs the translated shader
- * library, fh2_shaders.nfsp, next to the game files.
+ * library, fh2_shaders.nfsp, next to the game files. For now it is built on the PC (tools/xenos/biblioteca.sh) and copied
+ * with tools/enviar_biblioteca_android.sh; the plan is to build it on the phone from the player's own game files (see
+ * docs/renderizador_nativo.md, "A biblioteca no celular").
  */
 final class GameOptions {
     private static final String PREFS = "fh2_game";
