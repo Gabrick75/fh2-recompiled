@@ -1978,8 +1978,17 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     }
     const uint32_t pitch_destino = reg.rb_copy_dest_pitch & 0x3FFF;
     const uint32_t alto_destino = (reg.rb_copy_dest_pitch >> 16) & 0x3FFF;
-    const uint32_t base_x = uint32_t(x0) & ~uint32_t(31);
-    const uint32_t base_y = uint32_t(y0) & ~uint32_t(31);
+    uint32_t base_x = uint32_t(x0) & ~uint32_t(31);
+    uint32_t base_y = uint32_t(y0) & ~uint32_t(31);
+#if defined(FH2_RECOMP)
+    // FH2's shadow map is a 1024x1024 atlas of four 512x512 cascades, each resolved to a texture of its own from its
+    // quadrant: the tiled offset only locates the quadrant inside the texture at RB_COPY_DEST_BASE (as the colour
+    // strips). Keyed at the offset address, the cascades the shadow pass reads were empty: no shadows at all.
+    if (uint32_t(x1) <= pitch_destino && uint32_t(y1) <= alto_destino) {
+      base_x = 0;
+      base_y = 0;
+    }
+#endif
     const uint32_t base =
         reg.rb_copy_dest_base +
         uint32_t(DesplazamientoMosaico2D(int32_t(base_x), int32_t(base_y), pitch_destino, 2));
