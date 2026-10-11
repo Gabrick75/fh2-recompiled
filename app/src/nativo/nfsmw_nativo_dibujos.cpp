@@ -1139,7 +1139,11 @@ constexpr uint32_t kRegFetch = 0x4800;
 constexpr uint32_t kRegBooleanos = 0x4900;
 constexpr uint32_t kRegistrosConstantes = 0x400;  // 256 constantes x 4
 
-constexpr uint32_t kCapacidadMonton[4] = {4096, 16, 64, 512};  // 2D, 3D, cubo, samplers
+// 2D, 3D, cube, samplers. FH2 keeps over 4300 textures alive late in a race (S23 Ultra): with 4096 2D slots the heap
+// filled up ("monton de texturas lleno") and the textures created after that were drawn with the wrong slot, the
+// "dream" look at the end of a race. The shaders index unsized arrays; devices with descriptor indexing allow far
+// more (the Adreno 740 16777216 per stage).
+constexpr uint32_t kCapacidadMonton[4] = {16384, 64, 256, 512};
 // Work slots. The ones actually used are chosen by nfsmw_nativo_ranuras_trabajo; this is the room reserved
 // for them, and it has to match the array in nfsmw_nativo_destinos.cpp.
 constexpr size_t kRanurasDeTrabajo = 3;
@@ -3531,8 +3535,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
       // With a single binding, at a multiple of its stride (nfsmw_nativo_vertices_base_cero).
       if (vertices_base_cero_ && entrada->enlaces.size() == 1) {
+        cat_subida_ = 0;
         ReservarMultiplo(origen.bytes, entrada->enlaces[0].zancada, offset);
       } else {
+        cat_subida_ = 0;
         Reservar(origen.bytes, 4, offset);
       }
       const TrabajoCopia trabajo{origen.datos, subida_datos_ + offset, origen.bytes / 4, origen.orden};
@@ -3591,6 +3597,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
             vigilado->sucio.store(0, std::memory_order_release);
             memoria_->EnablePhysicalMemoryAccessCallbacks(b.direccion, bytes_busca, true, false);
           }
+          cat_subida_ = 1;
           Reservar(VkDeviceSize(bytes_busca), 4, offset);
           CopiarVertices(TrabajoCopia{datos_busca, subida_datos_ + offset, b.palabras, b.orden});
           if (vigilado) {
@@ -3604,6 +3611,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
             REXLOG_INFO("[fh2 nativo] buscas vigiladas: {} rangos, {} reusadas, {} copiadas, {} avisos de escritura",
                         fh2_vigilados_n_.load(), fh2_vigilados_reusados_, fh2_vigilados_copiados_,
                         fh2_avisos_escritura_.load());
+            double mb[7];
+            for (size_t c = 0; c < 7; ++c) {
+              mb[c] = double(bytes_por_categoria_[c] - bytes_por_categoria_previos_[c]) / 1048576.0;
+            }
+            bytes_por_categoria_previos_ = bytes_por_categoria_;
+            REXLOG_INFO("[fh2 nativo] subidas en 10 s (MB): vertices {:.0f} buscas {:.0f} indices {:.0f} constantes VS "
+                        "{:.0f} PS {:.0f} compartidas {:.0f} texturas {:.0f}",
+                        mb[0], mb[1], mb[2], mb[3], mb[4], mb[5], mb[6]);
           }
         }
         w[0] = uint32_t(offset / 4);  // in dwords from the start of the upload buffer (binding 3 covers it whole)
@@ -3629,6 +3644,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 #endif
     VkDeviceSize offset_indices = 0;
     if (con_indices) {
+      cat_subida_ = 2;
       Reservar(bytes_indices, 4, offset_indices);
       bytes_indices_subidos_ += bytes_indices;
       std::memcpy(subida_datos_ + offset_indices,
@@ -3646,6 +3662,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                       : constantes_vs_epoca_ != epoca_subida_                 ? 1
                                                                               : 2];
       // With UBOs the block goes whole (the driver may read the full range) and aligned to the device minimum
+      cat_subida_ = 3;
       Reservar(usar_ubo_ ? std::max<VkDeviceSize>(bytes_vs, kUboBytesVs) : bytes_vs, usar_ubo_ ? alineacion_ubo_ : 16,
                constantes_vs_offset_);
       std::memcpy(subida_datos_ + constantes_vs_offset_, r + kRegConstantesVs, bytes_vs);
@@ -3660,6 +3677,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       ++resubidas_ps_[constantes_ps_generacion_ != p.generacion_constantes_ps ? 0
                       : constantes_ps_epoca_ != epoca_subida_                 ? 1
                                                                               : 2];
+      cat_subida_ = 4;
       Reservar(usar_ubo_ ? std::max<VkDeviceSize>(bytes_ps, kUboBytesPs) : bytes_ps, usar_ubo_ ? alineacion_ubo_ : 16,
                constantes_ps_offset_);
       std::memcpy(subida_datos_ + constantes_ps_offset_, r + kRegConstantesPs, bytes_ps);
@@ -3792,6 +3810,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         compartidas_usado_ = offset_compartidas + kUboBytesCompartidas;
         std::memcpy(compartidas_datos_ + offset_compartidas, compartidas, sizeof(compartidas));
       } else {
+        cat_subida_ = 5;
         Reservar(usar_ubo_ ? kUboBytesCompartidas : kPalabrasCompartidas * 4, usar_ubo_ ? alineacion_ubo_ : 16,
                  offset_compartidas);
         std::memcpy(subida_datos_ + offset_compartidas, compartidas, sizeof(compartidas));
@@ -8169,6 +8188,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       return;
     }
     VkDeviceSize offset = 0;
+    cat_subida_ = 4;
     if (modo == 0 || !Reservar(usar_ubo_ ? std::max<VkDeviceSize>(bytes_ps, kUboBytesPs) : bytes_ps,
                                usar_ubo_ ? alineacion_ubo_ : 16, offset)) {
       return;
@@ -8188,6 +8208,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     offset = inicio;
     subida_usado_ = inicio + bytes;
     megas_bytes_ += bytes;
+    bytes_por_categoria_[cat_subida_] += bytes;
+    cat_subida_ = 0;
     return true;
   }
 
@@ -8202,6 +8224,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     offset = inicio;
     subida_usado_ = inicio + bytes;
     megas_bytes_ += bytes;
+    bytes_por_categoria_[cat_subida_] += bytes;
+    cat_subida_ = 0;
     return true;
   }
 
@@ -10583,9 +10607,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
      */
     if (textura.huella_trabajo && textura.huella_trabajo != kTrabajoHuellaPublicado) {
       const size_t bytes = BytesHuellaPlaneada(textura);
+      cat_subida_ = 6;
       Reservar(bytes, 16, offset);  // BC: offset multiple of the block
       PublicarHuella(textura, subida_datos_ + offset, bytes);
     } else {
+      cat_subida_ = 6;
       Reservar(textura.datos.size(), 16, offset);  // BC: offset multiple of the block
       std::memcpy(subida_datos_ + offset, textura.datos.data(), textura.datos.size());
     }
@@ -13714,6 +13740,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   uint32_t entrada_causa_ = 0;  // cause of the failed vertex input
   uint64_t subidas_textura_ = 0;
   uint64_t megas_bytes_ = 0;
+  // Upload buffer bytes by what asked for them (measurement): vertices, direct fetches, indices, VS constants, PS
+  // constants, shared constants, textures. cat_subida_ is set right before each Reservar.
+  uint32_t cat_subida_ = 0;
+  std::array<uint64_t, 7> bytes_por_categoria_{};
+  std::array<uint64_t, 7> bytes_por_categoria_previos_{};
   uint64_t bytes_texturas_ = 0;  // texture images created (C6 report)
   int32_t texturas_mb_max_ = 0;   // nfsmw_nativo_texturas_mb_max
   // Large slabs from which textures take chunks, instead of a dedicated allocation per texture (1.9 ms of
