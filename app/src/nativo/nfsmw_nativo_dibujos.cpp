@@ -9424,14 +9424,21 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       for (uint32_t c = 0; c < 6 && resueltas; ++c) {
         caras[c] = contexto_->TexturaResuelta(
             uint32_t((uint64_t(base) + c * zancada_cara) & 0x1FFFFFFF));
+#if defined(FH2_RECOMP)
+        // FH2's car reflection resolves its faces in 2_10_10_10 (A2B10G10R10): any colour format the six share.
+        resueltas = caras[c] && !EsProfundidad(caras[c]->formato) && caras[c]->formato == caras[0]->formato &&
+                    caras[c]->ancho >= ancho && caras[c]->alto >= alto;
+#else
         resueltas = caras[c] && caras[c]->formato == VK_FORMAT_R8G8B8A8_UNORM &&
                     caras[c]->ancho >= ancho && caras[c]->alto >= alto;
+#endif
       }
+      const VkFormat formato_cubo = resueltas ? caras[0]->formato : VK_FORMAT_R8G8B8A8_UNORM;
       if (resueltas) {
         const uint64_t clave_resuelto = clave ^ 0x9E3779B97F4A7C15ull;
         Textura& textura = texturas_[clave_resuelto];
         if (textura.imagen.imagen == VK_NULL_HANDLE) {
-          if (!CrearTextura(textura.imagen, VK_FORMAT_R8G8B8A8_UNORM, ancho, alto, capas)) {
+          if (!CrearTextura(textura.imagen, formato_cubo, ancho, alto, capas)) {
             texturas_.erase(clave_resuelto);
             Avisar(32, "no se pudo crear una textura");
             return;
@@ -9474,7 +9481,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
             fotograma_informe_cubos_ = fotograma_;
           }
         }
-        ranura = RanuraVista(textura.imagen.imagen, VK_FORMAT_R8G8B8A8_UNORM, swizzle,
+        ranura = RanuraVista(textura.imagen.imagen, formato_cubo, swizzle,
                              caras[0]->intercambio_rb ? kSwizzleBGRA : kSwizzleRGBA, monton);
         // The cubemap with the resolved faces must also report its size, or its 1/size stays at 0 and the
         // tfetch offsets are lost (see the branch above).
