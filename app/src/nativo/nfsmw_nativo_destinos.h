@@ -93,6 +93,8 @@ class DestinosNativos {
   // fh2_nativo_lecturas_diferidas: instead of waiting, submits the work that carries read-backs and returns its
   // submission number (0 if no read-back is pending). The ring holds its fence writes until that submission is done.
   virtual uint64_t Fh2EnviarLecturas() { return 0; }
+  // fh2_nativo_envio_parcial: ring time spent in partial submissions (queue lock and vkQueueSubmit), cumulative.
+  virtual uint64_t Fh2NsEnviosParciales() const { return 0; }
   // Whether submission `envio` and the earlier ones are done, collecting (and writing the read-backs of) the finished
   // ones; with esperar, waits for them.
   virtual bool Fh2EnvioTerminado(uint64_t envio, bool esperar) { return true; }

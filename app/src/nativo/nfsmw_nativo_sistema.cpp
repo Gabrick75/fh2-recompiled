@@ -4061,6 +4061,37 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
         vueltas_anillo_con_datos_previas_ = vueltas_anillo_con_datos_;
         esperas_anillo_agotadas_previas_ = esperas_anillo_agotadas_;
       }
+#if defined(FH2_RECOMP)
+      // The ring's time per Swap, split into what it waited for and what it really worked. The waits are inside the
+      // ring's busy time (they happen while it reads packets), so they are subtracted, not added.
+      if (destinos_) {
+        static uint64_t previos_regmem = 0, previos_gpu = 0, previos_parciales = 0, previos_swaps = 0;
+        uint64_t veces_gpu = 0, ns_gpu = 0;
+        destinos_->EsperasGpu(veces_gpu, ns_gpu);
+        const uint64_t regmem = nfsmw::esperas::g_ns[nfsmw::esperas::kAnilloRegMem].load(std::memory_order_relaxed);
+        const uint64_t parciales = destinos_->Fh2NsEnviosParciales();
+        const uint64_t swaps_ahora = swaps_.load(std::memory_order_relaxed);
+        const uint64_t d_swaps = swaps_ahora - previos_swaps;
+        if (d_swaps && previos_swaps) {
+          const double por = 1e6 * double(d_swaps);
+          const double ocupado = double(tiempo_anillo_ns_) / por;
+          const double gpu = double(ns_gpu - previos_gpu) / por;
+          const double juego = double(regmem - previos_regmem) / por;
+          const double envios = double(parciales - previos_parciales) / por;
+          const double dibujos_op = double(tiempo_opcode_ns_[0x22] + tiempo_opcode_ns_[0x36]) / por;
+          NFSMW_INFORME_SEGUN(diferir_informe,
+                              "[fh2 nativo] anillo por Swap (ms): ocupado {:.1f} = espera a la GPU {:.1f} + espera al "
+                              "juego (WAIT_REG_MEM) {:.1f} + envios parciales {:.1f} + CPU {:.1f}; paquetes de dibujo "
+                              "{:.1f} (con sus esperas), copias {:.1f}; {:.0f} dibujos por Swap",
+                              ocupado, gpu, juego, envios, std::max(0.0, ocupado - gpu - juego - envios), dibujos_op,
+                              double(tiempo_copias_ns_) / por, double(dibujos_medidos_) / double(d_swaps));
+        }
+        previos_regmem = regmem;
+        previos_gpu = ns_gpu;
+        previos_parciales = parciales;
+        previos_swaps = swaps_ahora;
+      }
+#endif
       // Breakdown per packet, largest first (top 8).
       std::vector<std::tuple<uint64_t, int, uint64_t>> partes;
       if (tiempo_registros_ns_) {

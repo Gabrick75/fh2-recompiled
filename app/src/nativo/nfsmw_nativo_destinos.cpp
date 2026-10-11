@@ -3296,6 +3296,8 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   }
 
 #if defined(FH2_RECOMP)
+  uint64_t Fh2NsEnviosParciales() const override { return ns_candado_parcial_ + ns_submit_parcial_ + ns_antes_parcial_; }
+
   uint64_t Fh2EnviarLecturas() override {
     bool pendientes = !lecturas_pendientes_.empty();
     uint64_t ultimo = 0;
@@ -6370,9 +6372,11 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if (!grabando_) {
       return false;
     }
+    const auto antes_parcial = std::chrono::steady_clock::now();
     if (dibujos_) {
       dibujos_->AntesDeEnviar();  // closes the pass, gathers the texture work, flushes the upload buffer
     }
+    ns_antes_parcial_ += Ns(antes_parcial, std::chrono::steady_clock::now());
     std::array<VkCommandBuffer, 2> bufers{};
     uint32_t n = 0;
     if (grabando_subida_) {
@@ -7226,7 +7230,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   uint64_t fh2_variantes_cambiadas_ = 0;
   uint64_t fh2_entregas_lecturas_ = 0;
   uint64_t fh2_envios_lecturas_ = 0;
-  uint64_t fh2_envios_parciales_ = 0, ns_candado_parcial_ = 0, ns_submit_parcial_ = 0;  // submissions for read-backs without waiting (fh2_nativo_lecturas_diferidas)
+  uint64_t fh2_envios_parciales_ = 0, ns_candado_parcial_ = 0, ns_submit_parcial_ = 0, ns_antes_parcial_ = 0;  // submissions for read-backs without waiting (fh2_nativo_lecturas_diferidas)
   // Resolved textures replaced by another shape, waiting for the GPU to finish with them (Fh2VaciarCementerio).
   struct Fh2Enterrada {
     Imagen imagen;

@@ -4041,7 +4041,20 @@ class DibujosVulkanImpl final : public DibujosVulkan {
      * Record how far down the game draws in this render target. It only grows, so the pass is never opened
      * smaller than what has already been seen drawn.
      */
-    if (area_util_) {
+#if defined(FH2_RECOMP)
+    // FH2's half-pitch 4x clears are drawn on the 1x surface with the framing doubled (pase_escala_ x2): their
+    // scissor reaches row 1280, and since the useful height only grows, from the first one on every scene and
+    // post-processing pass opened 1280x1280 to draw 1280x720. They do not count.
+    //
+    // Nor do the D3D's surface clears, drawn with a scissor over the whole surface (rows 0-1280 of a 1280 target):
+    // the game draws and resolves 720 rows, and nothing reads the rest. Only for targets taller than 720 (the height
+    // comes from the pitch, so only those have rows nobody uses).
+    const uint32_t fh2_hasta = uint32_t(std::max(0, tijera.offset.y + int32_t(tijera.extent.height)));
+    const bool fh2_cuenta_alto = pase_escala_ == pase_escala_render_ && !(pitch > 720 && fh2_hasta >= pitch);
+#else
+    const bool fh2_cuenta_alto = true;
+#endif
+    if (area_util_ && fh2_cuenta_alto) {
       const uint32_t hasta = uint32_t(std::max(0, tijera.offset.y + int32_t(tijera.extent.height)));
       const uint32_t redondeado = (hasta + 63u) & ~63u;
       uint32_t& apuntado = AltoUtilDe(pitch);  // without a map lookup on every draw
@@ -11151,14 +11164,16 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     inicio.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     inicio.renderPass = pase;
     inicio.framebuffer = framebuffer;
-    // Only the rectangle the game uses (see nfsmw_nativo_pase_area_util). A pass that clears takes the whole image,
-    // as the clear it replaces did.
+    // Only the rectangle the game uses (see nfsmw_nativo_pase_area_util).
+    // The clear of a held clear covers the same rows: the rows below the useful area are neither drawn nor
+    // resolved by anyone.
     uint32_t alto_pase = alto;
     if (mascara_borrar) {
       inicio.clearValueCount = n_valores_borrar;
       inicio.pClearValues = valores_borrar.data();
       ++fh2_pases_que_borran_;
-    } else if (area_util_) {
+    }
+    if (area_util_) {
       const auto it = alto_util_.find(pitch);
       if (it != alto_util_.end() && it->second < alto) {
         alto_pase = it->second;
