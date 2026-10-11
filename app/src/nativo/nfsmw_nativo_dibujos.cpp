@@ -3594,26 +3594,44 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         const uint8_t* datos_busca = static_cast<const uint8_t*>(memoria_->TranslatePhysical(b.direccion));
         const uint32_t bytes_busca = b.palabras * 4;
         Fh2Vigilado* vigilado = nullptr;
+        uint32_t motivo = 0;  // why it is copied (bytes per reason in the 10 s report)
         if (fh2_vigilancia_ && bytes_busca >= (4u << 10)) {
-          const uint32_t n = fh2_vigilados_n_.load(std::memory_order_relaxed);
-          for (uint32_t i = 0; i < n && !vigilado; ++i) {
-            if (fh2_vigilados_[i].direccion == b.direccion && fh2_vigilados_[i].bytes == bytes_busca) {
-              vigilado = &fh2_vigilados_[i];
+          // Looked up by hash: with a race grid there are thousands of ranges, and the linear walk over a table
+          // that had filled up (1024) cost the ring thread more than the copies.
+          const uint64_t clave = (uint64_t(b.direccion) << 32) | bytes_busca;
+          const auto it = fh2_indice_vigilados_.find(clave);
+          if (it != fh2_indice_vigilados_.end()) {
+            vigilado = &fh2_vigilados_[it->second];
+          } else {
+            const uint32_t n = fh2_vigilados_n_.load(std::memory_order_relaxed);
+            if (n < fh2_vigilados_.size()) {
+              vigilado = &fh2_vigilados_[n];
+              vigilado->direccion = b.direccion;
+              vigilado->bytes = bytes_busca;
+              vigilado->sucio.store(1, std::memory_order_relaxed);
+              fh2_vigilados_n_.store(n + 1, std::memory_order_release);
+              fh2_indice_vigilados_.emplace(clave, n);
+            } else {
+              motivo = 1;  // the table is full
             }
           }
-          if (!vigilado && n < fh2_vigilados_.size()) {
-            vigilado = &fh2_vigilados_[n];
-            vigilado->direccion = b.direccion;
-            vigilado->bytes = bytes_busca;
-            vigilado->sucio.store(1, std::memory_order_relaxed);
-            fh2_vigilados_n_.store(n + 1, std::memory_order_release);
-          }
+        } else {
+          motivo = 0;  // under 4 KB (or no watch): copied every time
         }
-        if (vigilado && vigilado->fotograma == fotograma_ &&
+        // The same frame AND the same upload buffer: when it fills up in the middle of a frame the work continues
+        // in another slot's buffer, and an offset into the previous one would read someone else's data.
+        if (vigilado && vigilado->fotograma == fotograma_ && vigilado->epoca == epoca_subida_ &&
             !vigilado->sucio.load(std::memory_order_acquire) && uint32_t(b.orden) == 2) {
           offset = vigilado->offset;
           ++fh2_vigilados_reusados_;
         } else {
+          if (vigilado) {
+            motivo = uint32_t(b.orden) != 2                                    ? 5
+                     : vigilado->fotograma != fotograma_                         ? 2
+                     : vigilado->epoca != epoca_subida_                          ? 3
+                                                                                : 4;  // written by the guest
+          }
+          fh2_bytes_busca_motivo_[motivo] += bytes_busca;
           if (vigilado) {
             // Cleared, then watched, then copied: a write during the copy marks it dirty again.
             vigilado->sucio.store(0, std::memory_order_release);
@@ -3624,6 +3642,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
           CopiarVertices(TrabajoCopia{datos_busca, subida_datos_ + offset, b.palabras, b.orden});
           if (vigilado) {
             vigilado->fotograma = uint32_t(b.orden) == 2 ? fotograma_ : 0;
+            vigilado->epoca = epoca_subida_;
             vigilado->offset = offset;
             ++fh2_vigilados_copiados_;
           }
@@ -3633,6 +3652,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
             REXLOG_INFO("[fh2 nativo] buscas vigiladas: {} rangos, {} reusadas, {} copiadas, {} avisos de escritura",
                         fh2_vigilados_n_.load(), fh2_vigilados_reusados_, fh2_vigilados_copiados_,
                         fh2_avisos_escritura_.load());
+            double motivos[6];
+            for (size_t m = 0; m < 6; ++m) {
+              motivos[m] = double(fh2_bytes_busca_motivo_[m]) / 1048576.0;
+              fh2_bytes_busca_motivo_[m] = 0;
+            }
+            REXLOG_INFO("[fh2 nativo] buscas copiadas en 10 s (MB): menos de 4 KB {:.0f}, tabla llena {:.0f}, primera vez "
+                        "en el fotograma {:.0f}, otro bufer de subida {:.0f}, escritas por el juego {:.0f}, otro orden "
+                        "{:.0f}", motivos[0], motivos[1], motivos[2], motivos[3], motivos[4], motivos[5]);
             double mb[7];
             for (size_t c = 0; c < 7; ++c) {
               mb[c] = double(bytes_por_categoria_[c] - bytes_por_categoria_previos_[c]) / 1048576.0;
@@ -13531,9 +13558,12 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     uint32_t direccion = 0, bytes = 0;  // immutable once published in fh2_vigilados_n_
     std::atomic<uint32_t> sucio{1};
     uint64_t fotograma = 0;
+    uint64_t epoca = 0;  // epoca_subida_ of the copy at offset
     VkDeviceSize offset = 0;
   };
-  std::array<Fh2Vigilado, 1024> fh2_vigilados_;
+  std::array<Fh2Vigilado, 16384> fh2_vigilados_;
+  std::unordered_map<uint64_t, uint32_t> fh2_indice_vigilados_;  // (address << 32 | bytes) -> index; ring only
+  std::array<uint64_t, 6> fh2_bytes_busca_motivo_{};
   std::atomic<uint32_t> fh2_vigilados_n_{0};
   void* fh2_vigilancia_ = nullptr;
   uint64_t fh2_vigilados_reusados_ = 0, fh2_vigilados_copiados_ = 0;
