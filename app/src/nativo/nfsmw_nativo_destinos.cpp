@@ -50,6 +50,7 @@
 #include <cstdlib>
 #include <array>
 #include <map>
+#include <set>
 #include <chrono>
 
 #if REX_PLATFORM_SWITCH
@@ -650,6 +651,8 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_lecturas_antes_de_valla, true, "FH2",
                     "frame); without it they arrive submissions late and the race's exposure can end up black");
 REXCVAR_DEFINE_STRING(fh2_nativo_prueba_magenta, "", "FH2",
                       "Debug: hex address whose colour copies take a render target painted magenta");
+REXCVAR_DEFINE_BOOL(fh2_nativo_empaquetar_primera, false, "FH2",
+                    "Debug: a depth resolve is packed as 8_8_8_8 only on its address's first copy of the frame");
 REXCVAR_DEFINE_BOOL(fh2_nativo_prof_constante, false, "FH2",
                     "Debug: depth resolves read as 8_8_8_8 carry one constant depth");
 REXCVAR_DEFINE_BOOL(fh2_nativo_prof_orden_inverso, false, "FH2",
@@ -2054,8 +2057,11 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 #if defined(FH2_RECOMP)
     // To a color format (8_8_8_8): FH2's motion blur reads the depth's raw bits. The depth texture is kept for
     // the fetches in 24_8 (the shadows read this same address that way).
+    // fh2_nativo_empaquetar_primera (debug): only the first such copy of each frame, to photograph it.
+    const bool fh2_saltar = REXCVAR_GET(fh2_nativo_empaquetar_primera) && fh2_empaquetadas_fotograma_.count(base & 0x1FFFFFFF);
+    fh2_empaquetadas_fotograma_.insert(base & 0x1FFFFFFF);
     if (const uint32_t formato_copia = (info_destino >> 7) & 0x3F; formato_copia != 22 && formato_copia != 23 &&
-                                                                  !escalado) {
+                                                                  !escalado && !fh2_saltar) {
       Fh2EmpaquetarProfundidad(*profundidad, base & 0x1FFFFFFF, (info >> 16) & 0x1, x0, y0, dx, dy, ancho, alto,
                                resuelta->imagen.ancho, resuelta->imagen.alto);
     }
@@ -2391,6 +2397,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       }
       ultimo_swap_ = ahora;
     }
+#if defined(FH2_RECOMP)
+    fh2_empaquetadas_fotograma_.clear();
+#endif
     const uint32_t base = (swap.dword[1] & 0xFFFFF000) & 0x1FFFFFFF;
     DiagLectoresAlPresentar(base);  // nfsmw_nativo_diag_lectores_s
     // nfsmw_nativo_frontal_perezoso. Before submitting the work: either it is drawn from the image that
@@ -6772,6 +6781,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   uint32_t fh2_prof_sets_libres_ = 0;
   bool fh2_prof_fallo_ = false;
   uint64_t fh2_profundidades_empaquetadas_ = 0;
+  std::set<uint32_t> fh2_empaquetadas_fotograma_;  // addresses packed this frame (fh2_nativo_empaquetar_primera)
   // Resolved textures of other shapes kept aside per address (ObtenerResuelta).
   std::unordered_map<uint64_t, Resuelta> fh2_variantes_;
   uint64_t fh2_variantes_cambiadas_ = 0;

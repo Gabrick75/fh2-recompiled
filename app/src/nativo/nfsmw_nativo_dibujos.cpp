@@ -2485,7 +2485,20 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     std::chrono::steady_clock::time_point t_indices_185 = marca;  // C6 subetapas 15-18
 
     // --- Destinos --------------------------------------------------------------
+#if defined(FH2_RECOMP)
+    // FH2 clears EDRAM the Xbox 360 way: a rectangle on a 4x MSAA surface of half the pitch (640 4x over the
+    // 1280-wide 1x depth pre-pass, 520 4x over the 1040-wide 1x shadow atlas) covers the 1x surface four times
+    // faster, each 4x pixel being 2x2 1x pixels. Such a draw goes to the 1x surface of twice the pitch, with its
+    // viewport and scissor doubled (EmpezarPase: pase_escala_). Taken as its own surface, the clear was lost, the
+    // reverse-Z pre-pass (GEQUAL) tested against a depth of 1.0 and wrote nothing, and the shadows read no scene.
+    // Same threshold as the SDK's MSAA cap (kMsaaCapMinPitch).
+    const uint32_t superficie_fh2 = r[gr::XE_GPU_REG_RB_SURFACE_INFO];
+    const bool fh2_limpieza_4x = ((superficie_fh2 >> 16) & 0x3) == 2 && (superficie_fh2 & 0x3FFF) &&
+                                 (superficie_fh2 & 0x3FFF) < 1024;
+    const uint32_t pitch = (superficie_fh2 & 0x3FFF) << (fh2_limpieza_4x ? 1 : 0);
+#else
     const uint32_t pitch = r[gr::XE_GPU_REG_RB_SURFACE_INFO] & 0x3FFF;
+#endif
     const uint32_t mascara_registro =
         modo_edram == uint32_t(xenos::EdramMode::kColorDepth) ? r[gr::XE_GPU_REG_RB_COLOR_MASK] : 0;
     static constexpr uint32_t kInfoColor[4] = {
@@ -2643,6 +2656,13 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                   (uint64_t((info >> 16) & 0x1) << 16) | pitch;
       hay_destino = true;
     }
+#if defined(FH2_RECOMP)
+    if (fh2_limpieza_4x) {
+      for (uint64_t& c : claves) {
+        if (c) c |= uint64_t(1) << 15;  // its own pass (doubled framing); the targets are still found by pitch
+      }
+    }
+#endif
     if (!hay_destino || !pitch) {
       // Diagnostic: a draw inside an occlusion query that writes nothing counts no samples.
       if (oclusion_abierta_ && pitch >= 640 && avisos_oclusion_dibujo_ < 8) {
@@ -11014,6 +11034,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     pase_escala_ = (es_sombras && pitch && ancho && ancho != pitch)
                        ? float(ancho) / float(pitch)
                        : 1.0f;
+#if defined(FH2_RECOMP)
+    for (uint32_t i = 0; i < 5; ++i) {
+      if (claves[i] & (uint64_t(1) << 15)) {  // a half-pitch 4x clear on the 1x surface (see Dibujar)
+        pase_escala_ *= 2.0f;
+        break;
+      }
+    }
+#endif
     std::copy(std::begin(formatos), std::end(formatos), std::begin(pase_formatos_));
     pase_rp_ = pase;
     // Phase 0b (nfsmw_nativo_pipeline_entre_pases). Vulkan keeps the bound pipeline across passes of the

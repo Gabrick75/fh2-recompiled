@@ -2548,14 +2548,14 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     const uint32_t iniciador = Registro(g::XE_GPU_REG_VGT_DRAW_INITIATOR);
     REXLOG_INFO("[traza] dibujo VS n{} PS n{} tipo {} cuenta {} sup {:08X} rt0 {:08X} rt1 {:08X} "
                 "mascara {:08X} mezcla {:08X} colorctl {:08X} prof {:08X} stencil {:08X} "
-                "modo {:08X}{}",
+                "modo {:08X} zinfo {:08X}{}",
                 vs_dibujo_ ? int(vs_dibujo_->numero) : -1, ps_dibujo_ ? int(ps_dibujo_->numero) : -1,
                 iniciador & 0x3F, iniciador >> 16, Registro(g::XE_GPU_REG_RB_SURFACE_INFO),
                 Registro(g::XE_GPU_REG_RB_COLOR_INFO), Registro(g::XE_GPU_REG_RB_COLOR1_INFO),
                 Registro(g::XE_GPU_REG_RB_COLOR_MASK), Registro(g::XE_GPU_REG_RB_BLENDCONTROL0),
                 Registro(g::XE_GPU_REG_RB_COLORCONTROL), Registro(g::XE_GPU_REG_RB_DEPTHCONTROL),
                 Registro(g::XE_GPU_REG_RB_STENCILREFMASK), Registro(g::XE_GPU_REG_RB_MODECONTROL),
-                texturas);
+                Registro(g::XE_GPU_REG_RB_DEPTH_INFO), texturas);
     TrazarVertices(iniciador);
   }
 
