@@ -9653,6 +9653,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
     }
     ranura = RanuraVista(textura.imagen.imagen, formato_host, swizzle, tf.swizzle_host, monton);
+#if defined(FH2_RECOMP)
+    if (fh2_diag_textura_ && (base & 0x1FFFFFFF) == fh2_diag_textura_ && fh2_diag_textura_avisos_ < 60) {
+      ++fh2_diag_textura_avisos_;
+      REXLOG_INFO("[fh2 nativo] textura {:08X}: ranura {} formato vk {} swizzle {:03X} host {:03X} imagen {} preparada {} "
+                  "subidas {}", base, ranura, int(formato_host), swizzle, tf.swizzle_host,
+                  static_cast<const void*>(textura.imagen.imagen), textura.imagen.preparada, texturas_a_subir_.size());
+    }
+#endif
     ancho_host_out = textura.imagen.ancho;  // the host's, which is what the shader sees
     alto_host_out = textura.imagen.alto;
     if (textura.fotograma == fotograma_) {

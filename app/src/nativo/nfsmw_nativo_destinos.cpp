@@ -4239,6 +4239,13 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     } else if (formato == 10) {
       formato = 2;
     }
+#if defined(FH2_RECOMP)
+    // 8_8_8_8_GAMMA is the same EDRAM as 8_8_8_8: FH2 draws its intro videos into the gamma view and resolves them
+    // from the plain one. As two images, the resolve took an empty target: white logos.
+    else if (formato == 1) {
+      formato = 0;
+    }
+#endif
     const uint64_t clave = (uint64_t(base) << 20) | (uint64_t(formato) << 16) | pitch;
     auto it = destinos_.find(clave);
     if (it != destinos_.end()) {
