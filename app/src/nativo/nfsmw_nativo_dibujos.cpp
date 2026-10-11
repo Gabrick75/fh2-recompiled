@@ -1896,6 +1896,22 @@ bool FormatoTexturaDe(uint32_t formato, FormatoTextura& f) {
 }
 
 
+#if defined(FH2_RECOMP)
+// The sRGB variant of an 8-bit colour format, or the same format if it has none.
+VkFormat FormatoSrgb(VkFormat formato) {
+  switch (formato) {
+    case VK_FORMAT_R8G8B8A8_UNORM: return VK_FORMAT_R8G8B8A8_SRGB;
+    case VK_FORMAT_B8G8R8A8_UNORM: return VK_FORMAT_B8G8R8A8_SRGB;
+    case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+    case VK_FORMAT_BC1_RGB_UNORM_BLOCK: return VK_FORMAT_BC1_RGB_SRGB_BLOCK;
+    case VK_FORMAT_BC2_UNORM_BLOCK: return VK_FORMAT_BC2_SRGB_BLOCK;
+    case VK_FORMAT_BC3_UNORM_BLOCK: return VK_FORMAT_BC3_SRGB_BLOCK;
+    case VK_FORMAT_BC7_UNORM_BLOCK: return VK_FORMAT_BC7_SRGB_BLOCK;
+    default: return formato;
+  }
+}
+#endif
+
 bool EsProfundidad(VkFormat formato) {
   return formato == VK_FORMAT_D24_UNORM_S8_UINT || formato == VK_FORMAT_D32_SFLOAT_S8_UINT;
 }
@@ -9199,6 +9215,17 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     const uint32_t capas = cubo ? 6 : 1;
     if ((f[0] >> 2) & 0xFF) {
       Avisar(31, "texturas con signo o gamma: se leen sin signo");
+#if defined(FH2_RECOMP)
+      static std::set<uint64_t> vistas_signo;
+      if (vistas_signo.size() < 40 &&
+          vistas_signo.insert((uint64_t((f[0] >> 2) & 0xFF) << 32) | (f[1] & 0x3F) | (uint64_t(ps_encuadre_diag_) << 8))
+              .second) {
+        REXLOG_INFO("[fh2 nativo] textura con signo/gamma {:02X} (x {} y {} z {} w {}) formato {} {}x{} direccion {:08X} "
+                    "PS n{}", (f[0] >> 2) & 0xFF, (f[0] >> 2) & 3, (f[0] >> 4) & 3, (f[0] >> 6) & 3, (f[0] >> 8) & 3,
+                    f[1] & 0x3F, (f[2] & 0x1FFF) + 1, ((f[2] >> 13) & 0x1FFF) + 1, f[1] & 0xFFFFF000,
+                    ps_encuadre_diag_);
+      }
+#endif
     }
     const uint32_t swizzle = (f[3] >> 1) & 0xFFF;
     const uint32_t base = (f[1] >> 12) << 12;
@@ -9292,8 +9319,18 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     const bool bc_cpu = indice_bc && bc_cpu_[indice_bc - 1];
     const auto formato_bc = static_cast<nfsmw::bc::Formato>(indice_bc);
     // Keep tf in the guest format for untiling, mip addresses and byte order.
+#if defined(FH2_RECOMP)
+    // Gamma textures (fetch constant sign fields at 3 for X, Y and Z): almost every colour texture of FH2. They are
+    // created in the sRGB variant of their format, so sampling returns linear values as on the console (its curve is
+    // a piecewise linear 2.2; sRGB is close). Read raw they were too bright, and the exposure darkened the picture.
+    const bool gamma = ((f[0] >> 2) & 0x3F) == 0x3F;
+    const VkFormat formato_lineal = !bc_cpu ? tf.formato : indice_bc == 4 ? VK_FORMAT_R8_UNORM
+        : indice_bc == 5 ? VK_FORMAT_R8G8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
+    const VkFormat formato_host = gamma ? FormatoSrgb(formato_lineal) : formato_lineal;
+#else
     const VkFormat formato_host = !bc_cpu ? tf.formato : indice_bc == 4 ? VK_FORMAT_R8_UNORM
         : indice_bc == 5 ? VK_FORMAT_R8G8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
+#endif
     // size_2d: 13 + 13 bits; size_3d: 11 + 11 + 10 bits (xenos.h:1222-1233).
     const uint32_t ancho = volumen ? (f[2] & 0x7FF) + 1 : (f[2] & 0x1FFF) + 1;
     const uint32_t alto = volumen ? ((f[2] >> 11) & 0x7FF) + 1 : ((f[2] >> 13) & 0x1FFF) + 1;
