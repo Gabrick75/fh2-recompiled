@@ -270,8 +270,19 @@ No PC, a corrida roda a 30 fps (o teto do jogo), com 30–36 ms por quadro. Corr
 - **Cubemap do reflexo:** montado com faces 2_10_10_10.
 - **Cascatas de sombra:** cada uma na própria textura.
 
-Falta: a máscara de sombra sai uniforme (a cena fica toda iluminada por igual e mais escura que na emulação), e o logo das
-distribuidoras na abertura sai branco.
+Depois, no mesmo dia:
+- **Limpezas MSAA 4x de meio pitch:** vão para a superfície 1x. Assim o pré-passe de profundidade é zerado e as sombras
+  aparecem.
+- **`exp_adjust` dos fetches de textura:** aplicado. A exposição da corrida ficou igual à da emulação.
+- **Shader de limpeza do D3D:** os contêineres sintéticos agora declaram interpoladores. Isso tirou o brilho verde nas
+  bordas.
+- **8_8_8_8_GAMMA:** usa a mesma imagem de 8_8_8_8. Os vídeos da abertura e do título aparecem.
+
+Com isso, abertura, título, carregamento, menu e corrida saem no PC como na emulação, a 30 fps.
+
+**Android:** no Moto G9 Play (Adreno 610, driver Vulkan 1.1.128 da Qualcomm) o renderizador nativo não desenha. Falta
+`VK_EXT_descriptor_indexing`, de que ele precisa para as tabelas de texturas. Caminhos possíveis: carregar o Turnip
+(libadrenotools; o launcher já importa drivers) ou um modo sem descriptor indexing.
 
 ### A biblioteca no celular (decidido, ainda não implementado)
 
