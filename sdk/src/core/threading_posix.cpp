@@ -1116,6 +1116,12 @@ class PosixCondition<Thread> : public PosixConditionBase {
   static void* ThreadStartRoutine(void* parameter);
   inline bool signaled() const override { return signaled_; }
   inline void post_execution() override {
+    // Every successful wait on a finished thread lands here. Join it once only: a second pthread_join on the same
+    // thread (a guest thread waited on twice, or by two waiters) is undefined, and Android's bionic aborts the
+    // process ("invalid pthread_t passed to pthread_join").
+    if (joined_.exchange(true, std::memory_order_acq_rel)) {
+      return;
+    }
     if (thread_) {
       pthread_join(thread_, nullptr);
     }
@@ -1128,6 +1134,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
     sem_destroy(&suspend_sem_);
 #endif
   }
+  std::atomic<bool> joined_{false};
   pthread_t thread_;
   bool signaled_;
   int exit_code_;
