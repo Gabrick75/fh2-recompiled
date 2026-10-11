@@ -9,6 +9,7 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <atomic>
 #include <algorithm>
 #include <cstring>
 #include <utility>
@@ -20,6 +21,10 @@
 #include <rex/platform.h>
 #include <rex/system/mmio_handler.h>
 #include <rex/types.h>
+
+#if !REX_PLATFORM_WIN32
+#include <dlfcn.h>
+#endif
 
 using namespace rex::arch;
 
@@ -417,8 +422,26 @@ bool MMIOHandler::ExceptionCallback(arch::Exception* ex) {
     // The address is not found within any range, so either a write watch or an
     // actual access violation.
     if (access_violation_callback_) {
-      return access_violation_callback_(std::move(lock), access_violation_callback_context_,
-                                        fault_host_address, is_write);
+      if (access_violation_callback_(std::move(lock), access_violation_callback_context_,
+                                     fault_host_address, is_write)) {
+        return true;
+      }
+#if !REX_PLATFORM_WIN32
+      // An access the game does not survive: say which host code made it (the recompiled function, by symbol on
+      // Android, by module offset for addr2line elsewhere), for the first few only.
+      static std::atomic<int> reported{0};
+      if (reported.fetch_add(1, std::memory_order_relaxed) < 4) {
+        Dl_info info{};
+        const uint64_t pc = ex->pc();
+        if (dladdr(reinterpret_cast<void*>(pc), &info) && info.dli_fname) {
+          REXLOG_ERROR("  at host pc 0x{:X} = {}+0x{:X} ({}+0x{:X})", pc, info.dli_fname,
+                       pc - reinterpret_cast<uint64_t>(info.dli_fbase), info.dli_sname ? info.dli_sname : "?",
+                       info.dli_saddr ? pc - reinterpret_cast<uint64_t>(info.dli_saddr) : 0);
+        } else {
+          REXLOG_ERROR("  at host pc 0x{:X}", pc);
+        }
+      }
+#endif
     }
     return false;
   }
