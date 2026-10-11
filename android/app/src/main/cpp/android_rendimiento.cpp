@@ -19,6 +19,8 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <pthread.h>
@@ -266,4 +268,167 @@ extern "C" void fh2_android_afinidade_iniciar() {
   }
   REXLOG_INFO("[afinidade] {} regras: {}", rules.size(), text);
   std::thread(AffinityLoop, std::move(rules)).detach();
+}
+
+// ADPF: Android's performance hints (APerformanceHint, NDK, API 33+). The system is told the frame time we aim for
+// (33.3 ms) and how long each frame really took, for the threads that make it: the native ring thread and the game's
+// busiest threads. On the S23 Ultra the native renderer's work comes in bursts (threads at 30-50 %, GPU 59 % busy),
+// so the governors kept the big cores at 0.9-2.2 GHz of 3.36 and the GPU at 220 of 719 MHz; with the hints the
+// system raises the clocks for a frame that misses its target. From API 35 the report also carries the GPU time
+// (AWorkDuration), which the system may use for the GPU's clock. Looked up with dlsym: the app runs from API 26.
+//
+//   --fh2_android_adpf=false   turns it off
+REXCVAR_DEFINE_BOOL(fh2_android_adpf, true, "FH2",
+                    "Android: performance hints (ADPF) for the ring and the game's busiest threads, 33.3 ms target")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
+namespace {
+
+struct Adpf {
+  using GetManager = void* (*)();
+  using CreateSession = void* (*)(void*, const int32_t*, size_t, int64_t);
+  using ReportActual = int (*)(void*, int64_t);
+  using SetThreads = int (*)(void*, const pid_t*, size_t);
+  using SetPreferPowerEfficiency = int (*)(void*, bool);
+  using ReportActual2 = int (*)(void*, void*);
+  using WorkCreate = void* (*)();
+  using WorkRelease = void (*)(void*);
+  using WorkSetI64 = void (*)(void*, int64_t);
+  GetManager get_manager = nullptr;
+  CreateSession create_session = nullptr;
+  ReportActual report_actual = nullptr;
+  SetThreads set_threads = nullptr;
+  SetPreferPowerEfficiency prefer_efficiency = nullptr;
+  ReportActual2 report_actual2 = nullptr;
+  WorkCreate work_create = nullptr;
+  WorkRelease work_release = nullptr;
+  WorkSetI64 work_start = nullptr, work_total = nullptr, work_cpu = nullptr, work_gpu = nullptr;
+  void* session = nullptr;
+  std::vector<pid_t> tids;
+  std::mutex mutex;
+  bool tried = false;
+  uint64_t reports = 0;
+};
+
+Adpf& AdpfState() {
+  static Adpf adpf;
+  return adpf;
+}
+
+constexpr int64_t kAdpfTargetNs = 33333333;
+
+// CPU ticks of every thread, by name.
+std::map<pid_t, std::pair<std::string, unsigned long long>> ThreadTicks() {
+  std::map<pid_t, std::pair<std::string, unsigned long long>> out;
+  for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task")) {
+    const pid_t tid = pid_t(std::atoi(entry.path().filename().c_str()));
+    std::ifstream stat(entry.path() / "stat");
+    std::string line;
+    std::getline(stat, line);
+    const size_t open = line.find('('), close = line.rfind(')');
+    if (open == std::string::npos || close == std::string::npos) continue;
+    std::istringstream fields(line.substr(close + 2));
+    std::string field;
+    unsigned long long utime = 0, stime = 0;
+    for (int i = 3; i <= 15 && fields >> field; ++i) {
+      if (i == 14) utime = std::stoull(field);
+      if (i == 15) stime = std::stoull(field);
+    }
+    out[tid] = {line.substr(open + 1, close - open - 1), utime + stime};
+  }
+  return out;
+}
+
+// Every 2 s: the session's threads are the native ring thread and the three game threads (XThread*) that used the
+// most CPU in the last 2 s.
+void AdpfThreadLoop() {
+  pthread_setname_np(pthread_self(), "fh2 adpf");
+  auto before = ThreadTicks();
+  while (true) {
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    const auto now = ThreadTicks();
+    std::vector<std::pair<unsigned long long, pid_t>> game;
+    std::vector<pid_t> chosen;
+    for (const auto& [tid, info] : now) {
+      const auto b = before.find(tid);
+      const unsigned long long used = b == before.end() ? 0 : info.second - b->second.second;
+      if (info.first.rfind("GPU anillo", 0) == 0 || info.first.rfind("GPU Commands", 0) == 0) {
+        chosen.push_back(tid);
+      } else if (info.first.rfind("XThread", 0) == 0 && used > 0) {
+        game.emplace_back(used, tid);
+      }
+    }
+    before = now;
+    std::sort(game.rbegin(), game.rend());
+    for (size_t i = 0; i < game.size() && i < 3; ++i) chosen.push_back(game[i].second);
+    std::sort(chosen.begin(), chosen.end());
+    Adpf& a = AdpfState();
+    std::lock_guard<std::mutex> lock(a.mutex);
+    if (chosen.empty() || chosen == a.tids) continue;
+    if (!a.session) {
+      a.session = a.create_session(a.get_manager(), chosen.data(), chosen.size(), kAdpfTargetNs);
+      if (a.session && a.prefer_efficiency) a.prefer_efficiency(a.session, false);
+      REXLOG_INFO("[adpf] sessao {} com {} threads (alvo 33,3 ms; GPU no relatorio: {})",
+                  a.session ? "criada" : "NAO criada", chosen.size(), a.report_actual2 ? "sim" : "nao");
+    } else if (a.set_threads) {
+      a.set_threads(a.session, chosen.data(), chosen.size());
+    }
+    a.tids = chosen;
+  }
+}
+
+}  // namespace
+
+// Called by the native renderer at each Swap (app/src/nativo/nfsmw_nativo_destinos.cpp): the time since the previous
+// Swap and the GPU time of that frame (0 if unknown).
+extern "C" void fh2_android_fotograma(int64_t periodo_ns, int64_t gpu_ns) {
+  Adpf& a = AdpfState();
+  if (!a.tried) {
+    a.tried = true;
+    if (!REXCVAR_GET(fh2_android_adpf)) return;
+    void* lib = dlopen("libandroid.so", RTLD_NOW);
+    if (!lib) return;
+    a.get_manager = reinterpret_cast<Adpf::GetManager>(dlsym(lib, "APerformanceHint_getManager"));
+    a.create_session = reinterpret_cast<Adpf::CreateSession>(dlsym(lib, "APerformanceHint_createSession"));
+    a.report_actual = reinterpret_cast<Adpf::ReportActual>(dlsym(lib, "APerformanceHint_reportActualWorkDuration"));
+    a.set_threads = reinterpret_cast<Adpf::SetThreads>(dlsym(lib, "APerformanceHint_setThreads"));
+    a.prefer_efficiency =
+        reinterpret_cast<Adpf::SetPreferPowerEfficiency>(dlsym(lib, "APerformanceHint_setPreferPowerEfficiency"));
+    a.report_actual2 = reinterpret_cast<Adpf::ReportActual2>(dlsym(lib, "APerformanceHint_reportActualWorkDuration2"));
+    a.work_create = reinterpret_cast<Adpf::WorkCreate>(dlsym(lib, "AWorkDuration_create"));
+    a.work_release = reinterpret_cast<Adpf::WorkRelease>(dlsym(lib, "AWorkDuration_release"));
+    a.work_start = reinterpret_cast<Adpf::WorkSetI64>(dlsym(lib, "AWorkDuration_setWorkPeriodStartTimestampNanos"));
+    a.work_total = reinterpret_cast<Adpf::WorkSetI64>(dlsym(lib, "AWorkDuration_setActualTotalDurationNanos"));
+    a.work_cpu = reinterpret_cast<Adpf::WorkSetI64>(dlsym(lib, "AWorkDuration_setActualCpuDurationNanos"));
+    a.work_gpu = reinterpret_cast<Adpf::WorkSetI64>(dlsym(lib, "AWorkDuration_setActualGpuDurationNanos"));
+    if (!a.work_create || !a.work_release || !a.work_start || !a.work_total || !a.work_cpu || !a.work_gpu) {
+      a.report_actual2 = nullptr;
+    }
+    if (!a.get_manager || !a.create_session || !a.report_actual || !a.get_manager()) {
+      REXLOG_INFO("[adpf] dicas de desempenho indisponiveis neste Android");
+      a.get_manager = nullptr;
+      return;
+    }
+    std::thread(AdpfThreadLoop).detach();
+  }
+  if (!a.get_manager || periodo_ns <= 0) return;
+  std::lock_guard<std::mutex> lock(a.mutex);
+  if (!a.session) return;
+  if (a.report_actual2 && gpu_ns > 0) {
+    void* work = a.work_create();
+    const int64_t now = int64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch()).count());
+    a.work_start(work, now - periodo_ns);
+    a.work_total(work, periodo_ns);
+    a.work_cpu(work, periodo_ns);
+    a.work_gpu(work, gpu_ns);
+    a.report_actual2(a.session, work);
+    a.work_release(work);
+  } else {
+    a.report_actual(a.session, periodo_ns);
+  }
+  if (++a.reports == 300) {
+    REXLOG_INFO("[adpf] 300 quadros relatados (ultimo {:.1f} ms, GPU {:.1f} ms)", double(periodo_ns) / 1e6,
+                double(gpu_ns) / 1e6);
+  }
 }

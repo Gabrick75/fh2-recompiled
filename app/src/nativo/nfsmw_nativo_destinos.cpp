@@ -70,6 +70,8 @@ extern "C" void RexSwitchPerfTiron(uint64_t inicio, uint64_t fin);
 // Frames per second and milliseconds per frame of the native renderer (the Swaps it presents), for the Android
 // overlay; -1 until the first half second.
 std::atomic<float> g_fh2_nativo_fps{-1.0f};
+// Android's performance hints (android/app/src/main/cpp/android_rendimiento.cpp); absent on the PC.
+extern "C" void fh2_android_fotograma(int64_t periodo_ns, int64_t gpu_ns) __attribute__((weak));
 std::atomic<float> g_fh2_nativo_ms{-1.0f};
 #endif
 
@@ -624,6 +626,12 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_salida_sin_espera, true, "NFSMW",
  * ever ships without that line, the improvement silently disappears. Three cvars like this were found, one
  * of them worth 2 ms and dead for several builds.
  */
+// The GPU measurements of the reports: timestamps between pass categories and pipeline statistics per pass. Only
+// measurements (the image does not change), but on a tiled GPU each timestamp at the bottom of the pipe and each
+// statistics query makes the GPU wait for what is in flight.
+REXCVAR_DEFINE_BOOL(fh2_nativo_medir_gpu, true, "FH2",
+                    "Native renderer: GPU timestamps and pipeline statistics for the reports (measurement only)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_marcas_precisas, true, "NFSMW",
                     "Renderizador nativo (medida): marcas de tiempo de GPU entre categorias con BOTTOM_OF_PIPE (se "
                     "sueltan al terminar lo anterior) en vez de TOP_OF_PIPE (al leer el comando): reparto por "
@@ -1123,7 +1131,8 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
           ifn.vkGetDeviceProcAddr(device_, "vkCmdWriteTimestamp"));
       leer_consultas_ = reinterpret_cast<FnLeerConsultas>(
           ifn.vkGetDeviceProcAddr(device_, "vkGetQueryPoolResults"));
-      if (familia_ < familias && colas[familia_].timestampValidBits && escribir_marca_ &&
+      const bool fh2_medir_gpu = REXCVAR_GET(fh2_nativo_medir_gpu);
+      if (fh2_medir_gpu && familia_ < familias && colas[familia_].timestampValidBits && escribir_marca_ &&
           leer_consultas_ && fisico.limits.timestampPeriod > 0.0f) {
         VkQueryPoolCreateInfo info_consultas{};
         info_consultas.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
@@ -1172,7 +1181,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       }
       // Pipeline statistics per pass. The order of the counters is the order of the bits,
       // not the order of this list: vertices, clipped primitives and fragments.
-      if (dispositivo_->properties().pipelineStatisticsQuery && leer_consultas_) {
+      if (fh2_medir_gpu && dispositivo_->properties().pipelineStatisticsQuery && leer_consultas_) {
         VkQueryPoolCreateInfo info_estadisticas{};
         info_estadisticas.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
         info_estadisticas.queryType = VK_QUERY_TYPE_PIPELINE_STATISTICS;
@@ -2546,6 +2555,18 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       ++swaps;
       const auto ahora_fps = std::chrono::steady_clock::now();
       const double segundos = std::chrono::duration<double>(ahora_fps - inicio).count();
+      // ADPF on Android (android_rendimiento.cpp): this frame's time and its GPU work time.
+      {
+        static auto anterior = ahora_fps;
+        static uint64_t gpu_anterior = 0;
+        const int64_t periodo = int64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(ahora_fps - anterior).count());
+        anterior = ahora_fps;
+        const int64_t gpu = int64_t(ns_trabajo_gpu_ - gpu_anterior);
+        gpu_anterior = ns_trabajo_gpu_;
+        if (fh2_android_fotograma) {
+          fh2_android_fotograma(periodo, gpu);
+        }
+      }
       if (segundos >= 0.5) {
         g_fh2_nativo_fps.store(float(swaps / segundos), std::memory_order_relaxed);
         g_fh2_nativo_ms.store(float(segundos * 1000.0 / swaps), std::memory_order_relaxed);
