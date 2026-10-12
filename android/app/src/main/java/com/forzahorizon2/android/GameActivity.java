@@ -35,6 +35,8 @@ import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
+import static com.forzahorizon2.android.AppLanguage.tr;
+
 
 import org.libsdl.app.SDLActivity;
 
@@ -83,6 +85,7 @@ public final class GameActivity extends SDLActivity
             finish();
             return;
         }
+        AppLanguage.load(this);
         File appRoot = new File(getFilesDir(), "fh2");
         gameRoot = new File(Environment.getExternalStorageDirectory(), MainActivity.GAME_FOLDER_NAME).getAbsolutePath();
         userRoot = new File(appRoot, "user").getAbsolutePath();
@@ -611,7 +614,8 @@ public final class GameActivity extends SDLActivity
         bar.setBackground(bg);
 
         TextView hint = new TextView(this);
-        hint.setText("Toque um controle para escolhê-lo · arraste para mover · faça pinça para mudar o tamanho");
+        hint.setText(tr("Toque um controle para escolhê-lo · arraste para mover · faça pinça para mudar o tamanho",
+                "Tap a control to pick it · drag to move it · pinch to resize it"));
         hint.setTextColor(0xCCFFFFFF);
         hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         hint.setGravity(Gravity.CENTER);
@@ -619,12 +623,12 @@ public final class GameActivity extends SDLActivity
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        row.addView(toolButton("Tamanho −", v -> controls.resizeSelected(1f / 1.12f)));
-        row.addView(toolButton("Tamanho +", v -> controls.resizeSelected(1.12f)));
-        row.addView(toolButton("Mostrar / ocultar", v -> controls.toggleSelectedVisible()));
-        row.addView(toolButton("Ajustes", v -> showSettings()));
-        row.addView(toolButton("Restaurar", v -> confirmReset()));
-        Button done = toolButton("Pronto", v -> controls.setEditing(false));
+        row.addView(toolButton(tr("Tamanho −", "Size −"), v -> controls.resizeSelected(1f / 1.12f)));
+        row.addView(toolButton(tr("Tamanho +", "Size +"), v -> controls.resizeSelected(1.12f)));
+        row.addView(toolButton(tr("Mostrar / ocultar", "Show / hide"), v -> controls.toggleSelectedVisible()));
+        row.addView(toolButton(tr("Ajustes", "Settings"), v -> showSettings()));
+        row.addView(toolButton(tr("Restaurar", "Reset"), v -> confirmReset()));
+        Button done = toolButton(tr("Pronto", "Done"), v -> controls.setEditing(false));
         ((GradientDrawable) done.getBackground()).setColor(0xFFE07B00);
         row.addView(done);
         bar.addView(row);
@@ -654,10 +658,11 @@ public final class GameActivity extends SDLActivity
 
     private void confirmReset() {
         new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle("Restaurar controles")
-                .setMessage("Voltar à posição e ao tamanho originais de todos os controles?")
-                .setPositiveButton("Restaurar", (d, w) -> controls.resetLayout())
-                .setNegativeButton("Cancelar", null)
+                .setTitle(tr("Restaurar controles", "Reset the controls"))
+                .setMessage(tr("Voltar à posição e ao tamanho originais de todos os controles?",
+                        "Put every control back in its original place and size?"))
+                .setPositiveButton(tr("Restaurar", "Reset"), (d, w) -> controls.resetLayout())
+                .setNegativeButton(tr("Cancelar", "Cancel"), null)
                 .show();
     }
 
@@ -666,29 +671,29 @@ public final class GameActivity extends SDLActivity
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(dp(20), dp(8), dp(20), dp(8));
 
-        panel.addView(toggle("Imagem esticada na tela inteira", controls.stretch, on -> {
+        panel.addView(toggle(tr("Imagem esticada na tela inteira", "Image stretched to the whole screen"), controls.stretch, on -> {
             controls.stretch = on;
             applyStretch(on);
         }));
-        panel.addView(toggle("Vibrar ao tocar", controls.haptics, on -> controls.haptics = on));
-        panel.addView(toggle("Ocultar os controles ao usar um controle físico", controls.hideWithGamepad,
+        panel.addView(toggle(tr("Vibrar ao tocar", "Vibrate on touch"), controls.haptics, on -> controls.haptics = on));
+        panel.addView(toggle(tr("Ocultar os controles ao usar um controle físico", "Hide the controls when a gamepad is used"), controls.hideWithGamepad,
                 on -> controls.hideWithGamepad = on));
-        panel.addView(toggle("Direção inclinando o celular", controls.tiltSteering, on -> {
+        panel.addView(toggle(tr("Direção inclinando o celular", "Steer by tilting the phone"), controls.tiltSteering, on -> {
             controls.tiltSteering = on;
             updateTiltListener();
         }));
-        panel.addView(slider("Sensibilidade da inclinação", 50, 250,
+        panel.addView(slider(tr("Sensibilidade da inclinação", "Tilt sensitivity"), 50, 250,
                 Math.round(controls.tiltSensitivity * 100), v -> controls.tiltSensitivity = v / 100f));
-        panel.addView(slider("Opacidade dos controles", 15, 100,
+        panel.addView(slider(tr("Opacidade dos controles", "Controls opacity"), 15, 100,
                 Math.round(controls.opacity * 100), v -> {
                     controls.opacity = v / 100f;
                     controls.invalidate();
                 }));
 
         new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle("Ajustes dos controles")
+                .setTitle(tr("Ajustes dos controles", "Controls settings"))
                 .setView(panel)
-                .setPositiveButton("Fechar", (d, w) -> controls.save())
+                .setPositiveButton(tr("Fechar", "Close"), (d, w) -> controls.save())
                 .setOnDismissListener(d -> controls.save())
                 .show();
     }

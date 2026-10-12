@@ -10,6 +10,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
+import static com.forzahorizon2.android.AppLanguage.tr;
+
 /**
  * Moving the player's progress between phones. A save is what GameActivity.backUpSaves copies before every run: the
  * profile folders (16 hex digits, the XUID, with the saves of every title inside) and achievements.
@@ -61,7 +63,7 @@ final class SaveTransfer {
     static File export(Context context) throws IOException {
         File[] entries = userRoot(context).listFiles(SaveTransfer::isSaveEntry);
         if (entries == null || entries.length == 0) {
-            throw new IOException("ainda não há save");
+            throw new IOException(tr("ainda não há save", "there is no save yet"));
         }
         String stamp = new java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", java.util.Locale.ROOT)
                 .format(new java.util.Date());
@@ -77,7 +79,7 @@ final class SaveTransfer {
     static void importFrom(Context context, File source) throws IOException {
         File[] entries = source.listFiles(SaveTransfer::isSaveEntry);
         if (entries == null || entries.length == 0) {
-            throw new IOException("a pasta não tem um save: " + source);
+            throw new IOException(tr("a pasta não tem um save: ", "the folder has no save: ") + source);
         }
         File root = userRoot(context);
         if (!root.mkdirs() && !root.isDirectory()) {

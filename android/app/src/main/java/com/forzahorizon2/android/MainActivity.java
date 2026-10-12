@@ -29,6 +29,8 @@ import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.documentfile.provider.DocumentFile;
 
+import static com.forzahorizon2.android.AppLanguage.tr;
+
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.slider.Slider;
 
@@ -75,6 +77,7 @@ public final class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        AppLanguage.load(this);
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
                 View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_FULLSCREEN |
@@ -99,23 +102,26 @@ public final class MainActivity extends AppCompatActivity {
     private void chooseSaveToImport() {
         List<File> saves = SaveTransfer.importable();
         if (saves.isEmpty()) {
-            toast("Nenhum save para importar em jogos/" + GAME_FOLDER_NAME + "-saves-exportados ou -saves.");
+            toast(tr("Nenhum save para importar em jogos/", "No save to import in jogos/") + GAME_FOLDER_NAME +
+                    tr("-saves-exportados ou -saves.", "-saves-exportados or -saves."));
             return;
         }
         String[] names = new String[saves.size()];
         for (int i = 0; i < names.length; i++) {
             File f = saves.get(i);
-            names[i] = f.getName() + (f.getParentFile().equals(SaveTransfer.exportsFolder()) ? " · exportado"
+            names[i] = f.getName() + (f.getParentFile().equals(SaveTransfer.exportsFolder()) ? tr(" · exportado", " · export")
                                                                                                : " · backup");
         }
         new android.app.AlertDialog.Builder(this)
-                .setTitle("Importar save")
+                .setTitle(tr("Importar save", "Import a save"))
                 .setItems(names, (dialog, which) -> new android.app.AlertDialog.Builder(this)
-                        .setTitle("Trocar o progresso atual?")
-                        .setMessage("O save de " + names[which] + " substitui o atual. O atual continua no backup " +
-                                "automático da última vez que o jogo abriu.")
-                        .setPositiveButton("Importar", (d, w) -> importSave(saves.get(which)))
-                        .setNegativeButton("Cancelar", null)
+                        .setTitle(tr("Trocar o progresso atual?", "Replace the current progress?"))
+                        .setMessage(tr("O save de " + names[which] + " substitui o atual. O atual continua no " +
+                                        "backup automático da última vez que o jogo abriu.",
+                                "The save from " + names[which] + " replaces the current one. The current one " +
+                                        "stays in the automatic backup of the last time the game started."))
+                        .setPositiveButton(tr("Importar", "Import"), (d, w) -> importSave(saves.get(which)))
+                        .setNegativeButton(tr("Cancelar", "Cancel"), null)
                         .show())
                 .show();
     }
@@ -123,9 +129,9 @@ public final class MainActivity extends AppCompatActivity {
     private void importSave(File source) {
         try {
             SaveTransfer.importFrom(this, source);
-            toast("Save importado de " + source.getName());
+            toast(tr("Save importado de ", "Save imported from ") + source.getName());
         } catch (IOException e) {
-            toast("Não foi possível importar: " + e.getMessage());
+            toast(tr("Não foi possível importar: ", "Could not import: ") + e.getMessage());
         }
     }
 
@@ -158,18 +164,19 @@ public final class MainActivity extends AppCompatActivity {
     // ---- Screen --------------------------------------------------------------------------------------------
     // A sidebar with the pages, one under the other, and the Play button always at hand at its foot; on the right
     // the chosen page, in grouped lists (Menu). Graphics comes first and starts with the renderer: the options under
-    // it are the chosen renderer's own, so the emulated and the native ones never mix.
+    // it are the chosen renderer's own, so the emulated and the native ones never mix. Every text is in the app's
+    // two languages (AppLanguage.tr); changing the language builds the screen again.
 
-    private static final int GRAPHICS = 0, DISPLAY = 1, PERFORMANCE = 2, SOUND = 3, GAME = 4, ABOUT = 5;
-    private static final String[] PAGE_NAMES = {"Gráficos", "Tela", "Desempenho", "Som", "Jogo e saves", "Sobre"};
+    private static final int GRAPHICS = 0, DISPLAY = 1, PERFORMANCE = 2, SOUND = 3, LANGUAGE = 4, GAME = 5, ABOUT = 6;
     private static final int[] PAGE_ICONS = {R.drawable.ic_menu_graficos, R.drawable.ic_menu_tela,
-            R.drawable.ic_menu_desempenho, R.drawable.ic_menu_som, R.drawable.ic_menu_jogo, R.drawable.ic_menu_sobre};
+            R.drawable.ic_menu_desempenho, R.drawable.ic_menu_som, R.drawable.ic_menu_idioma, R.drawable.ic_menu_jogo,
+            R.drawable.ic_menu_sobre};
     private static final String STATE_PAGE = "page";
 
     private Menu ui;
     private FrameLayout content;
-    private final ScrollView[] pages = new ScrollView[PAGE_NAMES.length];
-    private final LinearLayout[] navRows = new LinearLayout[PAGE_NAMES.length];
+    private final ScrollView[] pages = new ScrollView[PAGE_ICONS.length];
+    private final LinearLayout[] navRows = new LinearLayout[PAGE_ICONS.length];
     private int currentPage = -1;
     private TextView playStatus;
     private View playDot;
@@ -178,8 +185,21 @@ public final class MainActivity extends AppCompatActivity {
     private TextView rendererNote;
     private Boolean shadersFound;  // what the native renderer's requirement row shows; null before it is built
 
+    private static String pageName(int page) {
+        switch (page) {
+            case GRAPHICS: return tr("Gráficos", "Graphics");
+            case DISPLAY: return tr("Tela", "Display");
+            case PERFORMANCE: return tr("Desempenho", "Performance");
+            case SOUND: return tr("Som", "Sound");
+            case LANGUAGE: return tr("Idioma", "Language");
+            case GAME: return tr("Jogo e saves", "Game and saves");
+            default: return tr("Sobre", "About");
+        }
+    }
+
     private View buildScreen(int page) {
         ui = new Menu(this);
+        currentPage = -1;
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.HORIZONTAL);
         root.setBackgroundColor(Menu.BACKGROUND);
@@ -194,11 +214,22 @@ public final class MainActivity extends AppCompatActivity {
         return root;
     }
 
+    /** The app's language changed: the whole screen again, in it, on the same page. */
+    private void rebuildScreen() {
+        AppLanguage.load(this);
+        int page = currentPage;
+        setContentView(buildScreen(page));
+        Menu.enter(content);
+        if (hasStorageAccess()) showGameFolder(null);
+        else setImportStatus(storageNotice());
+    }
+
     private View sidebar() {
         LinearLayout bar = ui.column();
         bar.setBackgroundColor(Menu.SIDEBAR);
         bar.setPadding(dp(12), dp(14), dp(12), dp(12));
 
+        // The name, and under it whether the game is ready to play.
         LinearLayout brand = new LinearLayout(this);
         brand.setOrientation(LinearLayout.HORIZONTAL);
         brand.setGravity(Gravity.CENTER_VERTICAL);
@@ -207,16 +238,24 @@ public final class MainActivity extends AppCompatActivity {
         LinearLayout names = ui.column();
         names.setPadding(dp(10), 0, 0, 0);
         names.addView(ui.text("FH2 Recompiled", 16, Menu.PRIMARY, true));
-        names.addView(ui.text("Xbox 360 · Android", 12, Menu.SECONDARY, false));
+        LinearLayout status = new LinearLayout(this);
+        status.setOrientation(LinearLayout.HORIZONTAL);
+        status.setGravity(Gravity.CENTER_VERTICAL);
+        playDot = ui.dot(Menu.TERTIARY);
+        LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(7), dp(7));
+        status.addView(playDot, dotParams);
+        playStatus = ui.text("", 12, Menu.SECONDARY, false);
+        playStatus.setPadding(dp(6), 0, 0, 0);
+        playStatus.setSingleLine(true);
+        status.addView(playStatus);
+        names.addView(status);
         brand.addView(names);
         bar.addView(brand);
 
         LinearLayout nav = ui.column();
-        for (int i = 0; i < PAGE_NAMES.length; i++) {
+        for (int i = 0; i < navRows.length; i++) {
             navRows[i] = navRow(i);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40));
-            lp.bottomMargin = dp(2);
-            nav.addView(navRows[i], lp);
+            nav.addView(navRows[i], new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40)));
         }
         ScrollView navScroll = new ScrollView(this);
         navScroll.setVerticalScrollBarEnabled(false);
@@ -224,17 +263,6 @@ public final class MainActivity extends AppCompatActivity {
         navScroll.setFadingEdgeLength(dp(24));
         navScroll.addView(nav);
         bar.addView(navScroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
-
-        LinearLayout status = new LinearLayout(this);
-        status.setOrientation(LinearLayout.HORIZONTAL);
-        status.setGravity(Gravity.CENTER_VERTICAL);
-        status.setPadding(dp(6), dp(8), dp(6), dp(8));
-        playDot = ui.dot(Menu.TERTIARY);
-        status.addView(playDot);
-        playStatus = ui.text("", 12.5f, Menu.SECONDARY, false);
-        playStatus.setPadding(dp(8), 0, 0, 0);
-        status.addView(playStatus);
-        bar.addView(status);
 
         launchGame = new MaterialButton(this);
         launchGame.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
@@ -252,7 +280,10 @@ public final class MainActivity extends AppCompatActivity {
             else showPage(GAME, true);
         });
         Menu.pressable(launchGame);
-        bar.addView(launchGame, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+        LinearLayout.LayoutParams playParams =
+                new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48));
+        playParams.topMargin = dp(8);
+        bar.addView(launchGame, playParams);
         setGameReady(false);
         return bar;
     }
@@ -274,7 +305,7 @@ public final class MainActivity extends AppCompatActivity {
         ImageView icon = new ImageView(this);
         icon.setImageResource(PAGE_ICONS[page]);
         row.addView(icon, new LinearLayout.LayoutParams(dp(20), dp(20)));
-        TextView label = ui.text(PAGE_NAMES[page], 15, Menu.PRIMARY, false);
+        TextView label = ui.text(pageName(page), 15, Menu.PRIMARY, false);
         label.setPadding(dp(12), 0, 0, 0);
         row.addView(label);
         row.setOnClickListener(v -> showPage(page, true));
@@ -306,14 +337,14 @@ public final class MainActivity extends AppCompatActivity {
         state.putInt(STATE_PAGE, currentPage);
     }
 
-    /** The Play button and the line above it: Play when the game is in place, otherwise a way to the Game page. */
+    /** The Play button and the line under the name: Play when the game is in place, otherwise a way to it. */
     private void setGameReady(boolean ready) {
         gameReady = ready;
-        launchGame.setText(ready ? "Jogar" : "Instalar o jogo");
+        launchGame.setText(ready ? tr("Jogar", "Play") : tr("Instalar o jogo", "Install the game"));
         launchGame.setBackgroundTintList(byEnabled(Menu.FILL, ready ? Menu.ACCENT : Menu.FILL));
         launchGame.setTextColor(byEnabled(Menu.TERTIARY, ready ? Color.WHITE : Menu.ACCENT_TEXT));
         launchGame.setElevation(ready ? dp(6) : 0);
-        playStatus.setText(ready ? "Pronto para jogar" : "Jogo não encontrado");
+        playStatus.setText(ready ? tr("Pronto para jogar", "Ready to play") : tr("Jogo não encontrado", "Game not found"));
         ((android.graphics.drawable.GradientDrawable) playDot.getBackground()).setColor(ready ? Menu.GREEN : Menu.AMBER);
     }
 
@@ -323,6 +354,7 @@ public final class MainActivity extends AppCompatActivity {
             case DISPLAY: return displayPage();
             case PERFORMANCE: return performancePage();
             case SOUND: return soundPage();
+            case LANGUAGE: return languagePage();
             case GAME: return gamePage();
             default: return aboutPage();
         }
@@ -367,7 +399,8 @@ public final class MainActivity extends AppCompatActivity {
 
     private ScrollView graphicsPage() {
         boolean nativeRenderer = GameOptions.nativeRenderer(this);
-        SegmentedControl renderer = new SegmentedControl(this, new String[] {"Emulado", "Nativo"});
+        SegmentedControl renderer = new SegmentedControl(this,
+                new String[] {tr("Emulado", "Emulated"), tr("Nativo", "Native")});
         renderer.choose(nativeRenderer ? 1 : 0, false);
         rendererNote = ui.footer("");
         rendererOptions = ui.column();
@@ -377,55 +410,69 @@ public final class MainActivity extends AppCompatActivity {
             fillRendererOptions(index == 1);
             Menu.enter(rendererOptions);
         });
-        return pageScroll(ui.pageTitle("Gráficos", "Escolha o renderizador: as opções abaixo são as dele."),
-                ui.header("Renderizador"),
-                ui.group(ui.stackedRow("Como o jogo é desenhado", null, renderer)),
+        return pageScroll(ui.pageTitle(pageName(GRAPHICS),
+                        tr("Escolha o renderizador: as opções abaixo são as dele.",
+                                "Pick the renderer: the options below are its own.")),
+                ui.header(tr("Renderizador", "Renderer")),
+                ui.group(ui.stackedRow(tr("Como o jogo é desenhado", "How the game is drawn"), null, renderer)),
                 rendererNote,
                 rendererOptions);
     }
 
     private void fillRendererOptions(boolean nativeRenderer) {
         rendererNote.setText(nativeRenderer
-                ? "Nativo (experimental): desenha os comandos do jogo direto em Vulkan, com os shaders traduzidos. " +
-                  "Bem mais rápido, mas ainda tem erros de imagem."
-                : "Emulado: a GPU do Xbox 360 emulada. É o modo testado e o mais fiel à imagem do console.");
+                ? tr("Nativo (experimental): desenha os comandos do jogo direto em Vulkan, com os shaders traduzidos. " +
+                     "Bem mais rápido, mas ainda tem erros de imagem.",
+                     "Native (experimental): draws the game's commands straight in Vulkan, with the translated " +
+                     "shaders. Much faster, but it still has image errors.")
+                : tr("Emulado: a GPU do Xbox 360 emulada. É o modo testado e o mais fiel à imagem do console.",
+                     "Emulated: the Xbox 360 GPU, emulated. The tested mode, and the most faithful to the console's " +
+                     "image."));
         rendererOptions.removeAllViews();
         shadersFound = null;
         if (nativeRenderer) {
             boolean library = shaderLibrary().isFile();
             shadersFound = library;
-            rendererOptions.addView(ui.header("Requisito"));
-            rendererOptions.addView(ui.group(ui.statusRow("Biblioteca de shaders",
-                    "fh2_shaders.nfsp, junto dos arquivos do jogo (" + GAME_FOLDER_NAME + "). Sem ela o nativo " +
-                            "não tem os shaders traduzidos.",
-                    library, library ? "Encontrada" : "Faltando")));
+            rendererOptions.addView(ui.header(tr("Requisito", "Requirement")));
+            rendererOptions.addView(ui.group(ui.statusRow(tr("Biblioteca de shaders", "Shader library"),
+                    tr("fh2_shaders.nfsp, junto dos arquivos do jogo (" + GAME_FOLDER_NAME + "). Sem ela o nativo " +
+                       "não tem os shaders traduzidos.",
+                       "fh2_shaders.nfsp, next to the game files (" + GAME_FOLDER_NAME + "). Without it the native " +
+                       "renderer has no translated shaders."),
+                    library, library ? tr("Encontrada", "Found") : tr("Faltando", "Missing"))));
 
-            rendererOptions.addView(ui.header("Imagem do nativo"));
-            SegmentedControl aa = new SegmentedControl(this, new String[] {"Desligada", "FXAA"});
+            rendererOptions.addView(ui.header(tr("Imagem do nativo", "Native image")));
+            SegmentedControl aa = new SegmentedControl(this, new String[] {tr("Desligada", "Off"), "FXAA"});
             aa.choose("fxaa".equals(GameOptions.get(this, GameOptions.ANTI_ALIASING)) ? 1 : 0, false);
             aa.setOnChoice(index -> GameOptions.set(this, GameOptions.ANTI_ALIASING, index == 1 ? "fxaa" : "off"));
             rendererOptions.addView(ui.group(
                     renderScaleRow(true, null),
-                    ui.stackedRow("Suavização de bordas",
-                            "O FXAA tira o serrilhado com um filtro barato sobre a imagem final.", aa),
+                    ui.stackedRow(tr("Suavização de bordas", "Anti-aliasing"),
+                            tr("O FXAA tira o serrilhado com um filtro barato sobre a imagem final.",
+                               "FXAA smooths jagged edges with a cheap filter over the final image."), aa),
                     anisotropicRow()));
-            rendererOptions.addView(ui.footer("O nativo não tem MSAA: as superfícies 4x do jogo são desenhadas " +
-                    "com uma amostra."));
+            rendererOptions.addView(ui.footer(tr("O nativo não tem MSAA: as superfícies 4x do jogo são desenhadas " +
+                    "com uma amostra.", "The native renderer has no MSAA: the game's 4x surfaces are drawn with one " +
+                    "sample.")));
 
-            rendererOptions.addView(ui.header("Desempenho do nativo"));
+            rendererOptions.addView(ui.header(tr("Desempenho do nativo", "Native performance")));
             rendererOptions.addView(ui.group(onePassRow(
-                    "Sem MSAA a cena cabe inteira e é desenhada uma vez só, em vez de em 3 faixas: menos trabalho " +
-                            "para a CPU (+25 %).")));
+                    tr("Sem MSAA a cena cabe inteira e é desenhada uma vez só, em vez de em 3 faixas: menos trabalho " +
+                       "para a CPU (+25 %).",
+                       "Without MSAA the scene fits whole and is drawn once, not in 3 tiles: less work for the CPU " +
+                       "(+25 %)."))));
         } else {
-            rendererOptions.addView(ui.header("Imagem do emulado"));
+            rendererOptions.addView(ui.header(tr("Imagem do emulado", "Emulated image")));
             LinearLayout image = ui.group();
             Runnable[] refreshScale = new Runnable[1];
-            LinearLayout msaa = ui.choiceRow(GameOptions.MSAA_SAMPLES, "Amostras do MSAA",
-                    "4x é o que o jogo usa. 2x suaviza menos e custa menos (+37 %).",
+            LinearLayout msaa = ui.choiceRow(GameOptions.MSAA_SAMPLES, tr("Amostras do MSAA", "MSAA samples"),
+                    tr("4x é o que o jogo usa. 2x suaviza menos e custa menos (+37 %).",
+                       "4x is what the game uses. 2x smooths less and costs less (+37 %)."),
                     new String[] {"2x", "4x"}, new String[] {"2", "4"}, v -> refreshScale[0].run());
-            LinearLayout fxaa = ui.choiceRow(GameOptions.FXAA_QUALITY, "Qualidade do FXAA",
-                    "Alta suaviza mais bordas, inclusive as fracas, e deixa a imagem um pouco mais suave.",
-                    new String[] {"Normal", "Alta"}, new String[] {"normal", "high"});
+            LinearLayout fxaa = ui.choiceRow(GameOptions.FXAA_QUALITY, tr("Qualidade do FXAA", "FXAA quality"),
+                    tr("Alta suaviza mais bordas, inclusive as fracas, e deixa a imagem um pouco mais suave.",
+                       "High smooths more edges, the faint ones too, and softens the image a little."),
+                    new String[] {"Normal", tr("Alta", "High")}, new String[] {"normal", "high"});
             Runnable showModes = () -> {
                 String mode = GameOptions.get(this, GameOptions.ANTI_ALIASING);
                 msaa.setVisibility("msaa".equals(mode) ? View.VISIBLE : View.GONE);
@@ -433,10 +480,12 @@ public final class MainActivity extends AppCompatActivity {
                 Menu.refreshDividers(image);
             };
             image.addView(renderScaleRow(false, refreshScale));
-            image.addView(ui.choiceRow(GameOptions.ANTI_ALIASING, "Suavização de bordas",
-                    "Tira o serrilhado. O MSAA é o do jogo e o mais caro para a GPU (desligado rende +91 %); o " +
-                            "FXAA é um filtro barato sobre a imagem final.",
-                    new String[] {"Desligada", "MSAA", "FXAA"}, new String[] {"off", "msaa", "fxaa"}, v -> {
+            image.addView(ui.choiceRow(GameOptions.ANTI_ALIASING, tr("Suavização de bordas", "Anti-aliasing"),
+                    tr("Tira o serrilhado. O MSAA é o do jogo e o mais caro para a GPU (desligado rende +91 %); o " +
+                       "FXAA é um filtro barato sobre a imagem final.",
+                       "Smooths jagged edges. MSAA is the game's own and the costliest for the GPU (off gives " +
+                       "+91 %); FXAA is a cheap filter over the final image."),
+                    new String[] {tr("Desligada", "Off"), "MSAA", "FXAA"}, new String[] {"off", "msaa", "fxaa"}, v -> {
                         showModes.run();
                         if ("msaa".equals(v)) Menu.enter(msaa);
                         if ("fxaa".equals(v)) Menu.enter(fxaa);
@@ -448,40 +497,56 @@ public final class MainActivity extends AppCompatActivity {
             showModes.run();
             rendererOptions.addView(image);
 
-            rendererOptions.addView(ui.header("Desempenho do emulado"));
+            rendererOptions.addView(ui.header(tr("Desempenho do emulado", "Emulated performance")));
             rendererOptions.addView(ui.group(
-                    onePassRow("O jogo desenha a cena em 3 faixas por causa do MSAA; sem ele a cena cabe inteira e " +
-                            "é desenhada uma vez só: menos trabalho para a CPU (+25 %). Só vale com a suavização " +
-                            "desligada ou FXAA."),
-                    ui.toggleRow("Cópias diretas para texturas",
-                            "Experimental. Quando o jogo copia uma imagem que desenhou para usá-la como textura, " +
-                                    "copia direto na GPU, sem passar pela memória do console emulado. Desligue se " +
-                                    "aparecer alguma imagem errada.",
+                    onePassRow(tr("O jogo desenha a cena em 3 faixas por causa do MSAA; sem ele a cena cabe inteira " +
+                            "e é desenhada uma vez só: menos trabalho para a CPU (+25 %). Só vale com a suavização " +
+                            "desligada ou FXAA.",
+                            "The game draws the scene in 3 tiles because of MSAA; without it the scene fits whole and " +
+                            "is drawn once: less work for the CPU (+25 %). Only with anti-aliasing off or FXAA.")),
+                    ui.toggleRow(tr("Cópias diretas para texturas", "Direct copies to textures"),
+                            tr("Experimental. Quando o jogo copia uma imagem que desenhou para usá-la como textura, " +
+                               "copia direto na GPU, sem passar pela memória do console emulado. Desligue se " +
+                               "aparecer alguma imagem errada.",
+                               "Experimental. When the game copies an image it drew to use it as a texture, the copy " +
+                               "stays on the GPU, without going through the emulated console's memory. Turn it off " +
+                               "if an image looks wrong."),
                             GameOptions.flag(this, GameOptions.RESOLVE_SHORTCUT),
                             v -> GameOptions.flag(this, GameOptions.RESOLVE_SHORTCUT, v))));
         }
-        rendererOptions.addView(ui.header("Ainda sem efeito"));
+        rendererOptions.addView(ui.header(tr("Ainda sem efeito", "Not applied yet")));
         rendererOptions.addView(ui.group(
-                ui.choiceRow(GameOptions.FPS, "Limite de FPS",
-                        "O teto do jogo. 90, 120 e Livre são experimentais e pedem uma tela com essa taxa.",
-                        new String[] {"30", "60", "90", "120", "Livre"}, new String[] {"30", "60", "90", "120", "0"}),
-                ui.choiceRow(GameOptions.SCALING, "Escala para a tela",
-                        "Como a imagem é levada ao tamanho da tela. O FSR é mais nítido quando o jogo desenha " +
-                                "abaixo da resolução da tela; o CAS só aumenta a nitidez.",
+                ui.choiceRow(GameOptions.FPS, tr("Limite de FPS", "FPS limit"),
+                        tr("O teto do jogo. 90, 120 e Livre são experimentais e pedem uma tela com essa taxa.",
+                           "The game's cap. 90, 120 and Free are experimental and need a screen with that rate."),
+                        new String[] {"30", "60", "90", "120", tr("Livre", "Free")},
+                        new String[] {"30", "60", "90", "120", "0"}),
+                ui.choiceRow(GameOptions.SCALING, tr("Escala para a tela", "Scaling to the screen"),
+                        tr("Como a imagem é levada ao tamanho da tela. O FSR é mais nítido quando o jogo desenha " +
+                           "abaixo da resolução da tela; o CAS só aumenta a nitidez.",
+                           "How the image is brought to the screen's size. FSR is sharper when the game draws below " +
+                           "the screen's resolution; CAS only sharpens."),
                         new String[] {"Bilinear", "FSR 1.0", "CAS"}, new String[] {"bilinear", "fsr", "cas"}),
-                ui.choiceRow(GameOptions.SHADOWS, "Sombras",
-                        "A cada quanto os mapas de sombras são redesenhados. A cada 2 quadros custa menos e quase " +
-                                "não se nota.",
-                        new String[] {"Todo quadro", "A cada 2"}, new String[] {"1", "2"}),
-                ui.choiceRow(GameOptions.SHADOW_DISTANCE, "Distância das sombras",
-                        "Até onde os objetos projetam sombra: é aí que está quase todo o custo delas. Longe é " +
-                                "como o jogo.",
-                        new String[] {"Longe", "Média", "Perto"}, new String[] {"far", "medium", "near"}),
-                ui.choiceRow(GameOptions.CAR_REFLECTIONS, "Reflexos do carro",
-                        "Faces do mapa de reflexos do carro redesenhadas a cada quadro.",
-                        new String[] {"Altos", "Médios", "Baixos"}, new String[] {"high", "medium", "low"})));
-        rendererOptions.addView(ui.footer("Ficam guardadas, mas o jogo ainda não as aplica. Por enquanto o limite " +
-                "de FPS só escolhe a taxa de atualização da tela."));
+                ui.choiceRow(GameOptions.SHADOWS, tr("Sombras", "Shadows"),
+                        tr("A cada quanto os mapas de sombras são redesenhados. A cada 2 quadros custa menos e quase " +
+                           "não se nota.",
+                           "How often the shadow maps are redrawn. Every 2 frames costs less and is hardly noticed."),
+                        new String[] {tr("Todo quadro", "Every frame"), tr("A cada 2", "Every 2")},
+                        new String[] {"1", "2"}),
+                ui.choiceRow(GameOptions.SHADOW_DISTANCE, tr("Distância das sombras", "Shadow distance"),
+                        tr("Até onde os objetos projetam sombra: é aí que está quase todo o custo delas. Longe é " +
+                           "como o jogo.",
+                           "How far objects cast shadows: nearly all of their cost is there. Far is the game's own."),
+                        new String[] {tr("Longe", "Far"), tr("Média", "Medium"), tr("Perto", "Near")},
+                        new String[] {"far", "medium", "near"}),
+                ui.choiceRow(GameOptions.CAR_REFLECTIONS, tr("Reflexos do carro", "Car reflections"),
+                        tr("Faces do mapa de reflexos do carro redesenhadas a cada quadro.",
+                           "Faces of the car's reflection map redrawn every frame."),
+                        new String[] {tr("Altos", "High"), tr("Médios", "Medium"), tr("Baixos", "Low")},
+                        new String[] {"high", "medium", "low"})));
+        rendererOptions.addView(ui.footer(tr("Ficam guardadas, mas o jogo ainda não as aplica. Por enquanto o limite " +
+                "de FPS só escolhe a taxa de atualização da tela.", "They are stored, but the game does not apply " +
+                "them yet. For now the FPS limit only picks the screen's refresh rate.")));
     }
 
     // The native renderer's translated shaders (nfsmw_nativo_sistema.cpp also looks next to the executable).
@@ -490,14 +555,15 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private LinearLayout anisotropicRow() {
-        return ui.choiceRow(GameOptions.ANISOTROPIC, "Filtro anisotrópico",
-                "Texturas mais nítidas vistas em ângulo, como a estrada ao longe.",
-                new String[] {"Não", "2x", "4x", "16x"}, new String[] {"0", "2", "3", "5"});
+        return ui.choiceRow(GameOptions.ANISOTROPIC, tr("Filtro anisotrópico", "Anisotropic filtering"),
+                tr("Texturas mais nítidas vistas em ângulo, como a estrada ao longe.",
+                   "Sharper textures seen at an angle, like the road in the distance."),
+                new String[] {tr("Não", "Off"), "2x", "4x", "16x"}, new String[] {"0", "2", "3", "5"});
     }
 
     private LinearLayout onePassRow(String description) {
-        return ui.toggleRow("Cena em uma passada", description, GameOptions.flag(this, GameOptions.ONE_PASS),
-                v -> GameOptions.flag(this, GameOptions.ONE_PASS, v));
+        return ui.toggleRow(tr("Cena em uma passada", "Scene in one pass"), description,
+                GameOptions.flag(this, GameOptions.ONE_PASS), v -> GameOptions.flag(this, GameOptions.ONE_PASS, v));
     }
 
     /**
@@ -527,19 +593,21 @@ public final class MainActivity extends AppCompatActivity {
         lp.topMargin = dp(2);
         box.addView(slider, lp);
 
+        String original = tr(" · a resolução original", " · the original resolution");
+        String comma = tr(",", ".");
         Runnable show = () -> {
             if (nativeRenderer) {
                 // Same rounding as Fh2Escalar (nfsmw_nativo_destinos.cpp): the width in multiples of 16.
                 int value = GameOptions.nativeRenderScalePercent(this);
                 int width = value >= 100 ? 1280 : ((1280 * value / 100) + 15) & ~15;
                 percent.setText(value + " %");
-                size.setText(width + "×" + (width * 720 / 1280) + (value >= 100 ? " · a resolução original" : ""));
+                size.setText(width + "×" + (width * 720 / 1280) + (value >= 100 ? original : ""));
                 return;
             }
             int eighths = GameOptions.renderScaleEighths(GameOptions.renderScalePercent(this), GameOptions.msaa4x(this));
-            percent.setText((eighths % 2 == 0 ? String.valueOf(eighths * 25 / 2) : (eighths * 25 / 2) + ",5") + " %");
-            size.setText((1280 * eighths / 8) + "×" + (720 * eighths / 8) +
-                    (eighths == 8 ? " · a resolução original" : ""));
+            percent.setText((eighths % 2 == 0 ? String.valueOf(eighths * 25 / 2) : (eighths * 25 / 2) + comma + "5")
+                    + " %");
+            size.setText((1280 * eighths / 8) + "×" + (720 * eighths / 8) + (eighths == 8 ? original : ""));
         };
         slider.addOnChangeListener((s, value, fromUser) -> {
             if (!fromUser) return;
@@ -551,41 +619,58 @@ public final class MainActivity extends AppCompatActivity {
         });
         show.run();
         if (refreshOut != null) refreshOut[0] = show;
-        return ui.stackedRow("Resolução de renderização", nativeRenderer
-                ? "Quanto da resolução do Xbox 360 (1280×720) o jogo desenha: a cena e o pós-processamento (o HUD " +
-                  "também fica menos nítido). Abaixo de 100 % a GPU trabalha bem menos."
-                : "Quanto da resolução do Xbox 360 (1280×720) o jogo desenha, em passos de 12,5 %. Abaixo de 100 % " +
-                  "a imagem fica menos nítida e a GPU trabalha bem menos.", box);
+        return ui.stackedRow(tr("Resolução de renderização", "Render resolution"), nativeRenderer
+                ? tr("Quanto da resolução do Xbox 360 (1280×720) o jogo desenha: a cena e o pós-processamento (o HUD " +
+                     "também fica menos nítido). Abaixo de 100 % a GPU trabalha bem menos.",
+                     "How much of the Xbox 360's resolution (1280×720) the game draws: the scene and the " +
+                     "post-processing (the HUD gets less sharp too). Below 100 % the GPU works much less.")
+                : tr("Quanto da resolução do Xbox 360 (1280×720) o jogo desenha, em passos de 12,5 %. Abaixo de " +
+                     "100 % a imagem fica menos nítida e a GPU trabalha bem menos.",
+                     "How much of the Xbox 360's resolution (1280×720) the game draws, in 12.5 % steps. Below " +
+                     "100 % the image is less sharp and the GPU works much less."), box);
     }
 
     // ---- Display, performance, sound -----------------------------------------------------------------------
 
     private ScrollView displayPage() {
-        return pageScroll(ui.pageTitle("Tela", "A imagem final e o que aparece por cima dela."),
-                ui.header("Imagem"),
+        return pageScroll(ui.pageTitle(pageName(DISPLAY),
+                        tr("A imagem final e o que aparece por cima dela.", "The final image and what shows over it.")),
+                ui.header(tr("Imagem", "Image")),
                 ui.group(resolutionRow(),
-                        ui.toggleRow("Esticar para a tela inteira",
-                                "Desligado: a imagem 16:9 do Xbox 360, com barras pretas. Ligado: preenche a tela, " +
-                                        "mas distorce a imagem.",
+                        ui.toggleRow(tr("Esticar para a tela inteira", "Stretch to the whole screen"),
+                                tr("Desligado: a imagem 16:9 do Xbox 360, com barras pretas. Ligado: preenche a " +
+                                   "tela, mas distorce a imagem.",
+                                   "Off: the Xbox 360's 16:9 image, with black bars. On: fills the screen, but " +
+                                   "distorts the image."),
                                 GameOptions.stretch(this), v -> GameOptions.stretch(this, v))),
-                ui.header("Apresentação"),
-                ui.group(ui.choiceRow(GameOptions.PRESENT_MODE, "Modo de apresentação",
-                                "FIFO espera o vsync da tela: é o mais rápido (+57 % no menu) e esquenta menos. " +
-                                        "MAILBOX repinta sem parar: um pouco menos de atraso, mas tira CPU e GPU do jogo.",
+                ui.header(tr("Apresentação", "Presentation")),
+                ui.group(ui.choiceRow(GameOptions.PRESENT_MODE, tr("Modo de apresentação", "Present mode"),
+                                tr("FIFO espera o vsync da tela: é o mais rápido (+57 % no menu) e esquenta menos. " +
+                                   "MAILBOX repinta sem parar: um pouco menos de atraso, mas tira CPU e GPU do jogo.",
+                                   "FIFO waits for the screen's vsync: the fastest (+57 % in the menu), and it runs " +
+                                   "cooler. MAILBOX repaints nonstop: a little less lag, but it takes CPU and GPU " +
+                                   "from the game."),
                                 new String[] {"FIFO · vsync", "MAILBOX"}, new String[] {"fifo", "mailbox"}),
-                        ui.toggleRow("Vblank adaptativo",
-                                "Um quadro que perde o vsync por pouco é mostrado na hora, em vez de esperar o " +
-                                        "próximo. Não muda o fps; desligue se notar trepidação.",
+                        ui.toggleRow(tr("Vblank adaptativo", "Adaptive vblank"),
+                                tr("Um quadro que perde o vsync por pouco é mostrado na hora, em vez de esperar o " +
+                                   "próximo. Não muda o fps; desligue se notar trepidação.",
+                                   "A frame that misses the vsync by a little is shown at once, instead of waiting " +
+                                   "for the next one. It does not change the fps; turn it off if you notice judder."),
                                 GameOptions.flag(this, GameOptions.ADAPTIVE_VBLANK),
                                 v -> GameOptions.flag(this, GameOptions.ADAPTIVE_VBLANK, v))),
-                ui.header("Sobreposição"),
-                ui.group(ui.toggleRow("Mostrar FPS", "Contador no canto: quadros por segundo e milissegundos por quadro.",
+                ui.header(tr("Sobreposição", "Overlay")),
+                ui.group(ui.toggleRow(tr("Mostrar FPS", "Show FPS"),
+                                tr("Contador no canto: quadros por segundo e milissegundos por quadro.",
+                                   "A counter in the corner: frames per second and milliseconds per frame."),
                                 GameOptions.flag(this, GameOptions.SHOW_FPS),
                                 v -> GameOptions.flag(this, GameOptions.SHOW_FPS, v)),
-                        ui.toggleRow("Mostrar uso de GPU, CPU e RAM",
-                                "Abaixo do FPS: ocupação da GPU; CPU do jogo (de todos os núcleos) e a thread mais " +
-                                        "ocupada (perto de 100 % é ela que limita o FPS); memória do jogo e a livre do " +
-                                        "aparelho, em GB.",
+                        ui.toggleRow(tr("Mostrar uso de GPU, CPU e RAM", "Show GPU, CPU and RAM use"),
+                                tr("Abaixo do FPS: ocupação da GPU; CPU do jogo (de todos os núcleos) e a thread " +
+                                   "mais ocupada (perto de 100 % é ela que limita o FPS); memória do jogo e a livre " +
+                                   "do aparelho, em GB.",
+                                   "Under the FPS: GPU load; the game's CPU (of all cores) and the busiest thread " +
+                                   "(near 100 % it is what limits the FPS); the game's memory and the phone's free " +
+                                   "memory, in GB."),
                                 GameOptions.flag(this, GameOptions.SHOW_USAGE),
                                 v -> GameOptions.flag(this, GameOptions.SHOW_USAGE, v))));
     }
@@ -606,30 +691,39 @@ public final class MainActivity extends AppCompatActivity {
             labels.add("720p");
             values.add(GameOptions.RES_720P);
         }
-        labels.add("Nativa");
+        labels.add(tr("Nativa", "Native"));
         values.add(GameOptions.RES_NATIVE);
-        return ui.choiceRow(GameOptions.RESOLUTION, "Resolução",
-                "Tamanho da imagem final na tela (a nativa é " + longSide + "×" + shortSide + "). O jogo é " +
-                        "renderizado do mesmo jeito.",
+        return ui.choiceRow(GameOptions.RESOLUTION, tr("Resolução", "Resolution"),
+                tr("Tamanho da imagem final na tela (a nativa é " + longSide + "×" + shortSide + "). O jogo é " +
+                   "renderizado do mesmo jeito.",
+                   "Size of the final image on the screen (the native one is " + longSide + "×" + shortSide + "). " +
+                   "The game renders the same way."),
                 labels.toArray(new String[0]), values.toArray(new String[0]));
     }
 
     private ScrollView performancePage() {
-        return pageScroll(ui.pageTitle("Desempenho", "O processador e o driver da GPU."),
-                ui.header("Processador"),
-                ui.group(ui.toggleRow("Fixar threads nos núcleos",
-                        "Deixa o jogo só nos núcleos rápidos do processador e o processador de comandos da GPU (o " +
-                                "do emulado ou o do nativo) sozinho no mais rápido (+16 %).",
+        return pageScroll(ui.pageTitle(pageName(PERFORMANCE),
+                        tr("O processador e o driver da GPU.", "The processor and the GPU driver.")),
+                ui.header(tr("Processador", "Processor")),
+                ui.group(ui.toggleRow(tr("Fixar threads nos núcleos", "Pin threads to cores"),
+                        tr("Deixa o jogo só nos núcleos rápidos do processador e o processador de comandos da GPU " +
+                           "(o do emulado ou o do nativo) sozinho no mais rápido (+16 %).",
+                           "Keeps the game on the processor's fast cores only, and the GPU command processor (the " +
+                           "emulated or the native one) alone on the fastest (+16 %)."),
                         GameOptions.flag(this, GameOptions.PIN_THREADS),
                         v -> GameOptions.flag(this, GameOptions.PIN_THREADS, v))),
-                ui.header("Driver da GPU"),
+                ui.header(tr("Driver da GPU", "GPU driver")),
                 driverGroup(),
                 ui.footer(GpuDrivers.isAdreno(this)
-                        ? "Turnip é o driver livre do Mesa para Adreno: importe o .zip de um driver Turnip (com " +
-                          "meta.json) e escolha-o aqui. Por enquanto o jogo sempre usa o driver do sistema."
-                        : "Turnip, o driver livre do Mesa, é só para GPUs Adreno: com esta GPU o jogo usa o driver " +
-                          "do sistema."),
-                ui.header("Ainda sem efeito"),
+                        ? tr("Turnip é o driver livre do Mesa para Adreno: importe o .zip de um driver Turnip (com " +
+                             "meta.json) e escolha-o aqui. Por enquanto o jogo sempre usa o driver do sistema.",
+                             "Turnip is Mesa's free driver for Adreno: import a Turnip driver's .zip (with " +
+                             "meta.json) and pick it here. For now the game always uses the system driver.")
+                        : tr("Turnip, o driver livre do Mesa, é só para GPUs Adreno: com esta GPU o jogo usa o " +
+                             "driver do sistema.",
+                             "Turnip, Mesa's free driver, is for Adreno GPUs only: with this GPU the game uses the " +
+                             "system driver.")),
+                ui.header(tr("Ainda sem efeito", "Not applied yet")),
                 turboGroup());
     }
 
@@ -639,31 +733,32 @@ public final class MainActivity extends AppCompatActivity {
         String chosen = GameOptions.get(this, GameOptions.DRIVER);
         if (GpuDrivers.find(this, chosen) == null) chosen = "";
         LinearLayout group = ui.group();
-        group.addView(ui.checkRow("Driver do sistema", gpu.isEmpty() ? null : gpu, chosen.isEmpty(),
-                v -> chooseDriver("")));
+        group.addView(ui.checkRow(tr("Driver do sistema", "System driver"), gpu.isEmpty() ? null : gpu,
+                chosen.isEmpty(), v -> chooseDriver("")));
         for (GpuDrivers.Driver driver : GpuDrivers.list(this)) {
             group.addView(ui.checkRow(driver.name, driver.isTurnip() ? "Turnip" : null, driver.name.equals(chosen),
                     v -> chooseDriver(driver.name)));
         }
-        group.addView(ui.actionRow("Importar driver (.zip)", null, false, v -> {
+        group.addView(ui.actionRow(tr("Importar driver (.zip)", "Import a driver (.zip)"), null, false, v -> {
             Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             pick.addCategory(Intent.CATEGORY_OPENABLE);
             pick.setType("application/zip");
             startActivityForResult(pick, REQUEST_DRIVER_ZIP);
         }));
         GpuDrivers.Driver selected = GpuDrivers.find(this, chosen);
-        LinearLayout delete = ui.actionRow("Apagar o selecionado", null, true, v -> {
+        LinearLayout delete = ui.actionRow(tr("Apagar o selecionado", "Delete the chosen one"), null, true, v -> {
             GpuDrivers.Driver driver = GpuDrivers.find(this, GameOptions.get(this, GameOptions.DRIVER));
             if (driver == null) return;
             new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                    .setTitle("Apagar " + driver.name + "?")
-                    .setMessage("O driver sai do aparelho e o jogo volta ao driver do sistema.")
-                    .setPositiveButton("Apagar", (d, w) -> {
+                    .setTitle(tr("Apagar " + driver.name + "?", "Delete " + driver.name + "?"))
+                    .setMessage(tr("O driver sai do aparelho e o jogo volta ao driver do sistema.",
+                            "The driver leaves the phone and the game goes back to the system driver."))
+                    .setPositiveButton(tr("Apagar", "Delete"), (d, w) -> {
                         GpuDrivers.remove(driver);
                         GameOptions.set(this, GameOptions.DRIVER, "");
                         rebuildPage(PERFORMANCE);
                     })
-                    .setNegativeButton("Cancelar", null)
+                    .setNegativeButton(tr("Cancelar", "Cancel"), null)
                     .show();
         });
         Menu.setRowEnabled(delete, selected != null);
@@ -681,21 +776,62 @@ public final class MainActivity extends AppCompatActivity {
     private LinearLayout turboGroup() {
         GpuDrivers.Driver selected = GpuDrivers.find(this, GameOptions.get(this, GameOptions.DRIVER));
         boolean turnip = selected != null && selected.isTurnip();
-        LinearLayout turbo = ui.toggleRow("Turbo da GPU",
-                "Fixa o clock da GPU em vez de deixar o sistema ajustá-lo. Só com Turnip em uma GPU Adreno. Nem " +
-                        "sempre ajuda: confira com o contador de FPS.",
+        LinearLayout turbo = ui.toggleRow(tr("Turbo da GPU", "GPU turbo"),
+                tr("Fixa o clock da GPU em vez de deixar o sistema ajustá-lo. Só com Turnip em uma GPU Adreno. Nem " +
+                   "sempre ajuda: confira com o contador de FPS.",
+                   "Locks the GPU clock instead of letting the system adjust it. Only with Turnip on an Adreno GPU. " +
+                   "It does not always help: check with the FPS counter."),
                 turnip && GameOptions.flag(this, GameOptions.TURBO), v -> GameOptions.flag(this, GameOptions.TURBO, v));
         Menu.setRowEnabled(turbo, turnip);
         return ui.group(turbo);
     }
 
     private ScrollView soundPage() {
-        return pageScroll(ui.pageTitle("Som", null),
-                ui.header("Volume"),
-                ui.group(ui.choiceRow(GameOptions.VOLUME, "Volume do jogo", null,
-                        new String[] {"Normal", "Alto", "Muito alto", "Máximo"},
+        return pageScroll(ui.pageTitle(pageName(SOUND), null),
+                ui.header(tr("Volume", "Volume")),
+                ui.group(ui.choiceRow(GameOptions.VOLUME, tr("Volume do jogo", "Game volume"), null,
+                        new String[] {"Normal", tr("Alto", "Loud"), tr("Muito alto", "Very loud"), tr("Máximo", "Max")},
                         new String[] {"100", "125", "150", "200"})),
-                ui.footer("Acima de Normal o som pode distorcer nos picos."));
+                ui.footer(tr("Acima de Normal o som pode distorcer nos picos.",
+                        "Above Normal the sound may distort at its peaks.")));
+    }
+
+    // ---- Language: the game's (every one on the disc) and the app's ----------------------------------------
+
+    private ScrollView languagePage() {
+        String chosen = GameOptions.gameLanguage(this).code;
+        LinearLayout game = ui.group();
+        for (GameOptions.GameLanguage language : GameOptions.GAME_LANGUAGES) {
+            String what = AppLanguage.english() ? language.english : language.portuguese;
+            if (language.voiceOver) what += tr(" · dublado", " · voiced");
+            game.addView(ui.checkRow(language.name, what, language.code.equals(chosen), v -> {
+                GameOptions.set(this, GameOptions.GAME_LANGUAGE, language.code);
+                rebuildPage(LANGUAGE);
+            }));
+        }
+        Menu.refreshDividers(game);
+
+        SegmentedControl app = new SegmentedControl(this, new String[] {"Português", "English"});
+        app.choose(AppLanguage.english() ? 1 : 0, false);
+        app.setOnChoice(index -> {
+            GameOptions.set(this, GameOptions.APP_LANGUAGE, index == 1 ? "en" : "pt");
+            // After the pill's slide, so the change is seen before the texts swap.
+            app.postDelayed(this::rebuildScreen, 240);
+        });
+
+        return pageScroll(ui.pageTitle(pageName(LANGUAGE),
+                        tr("O idioma do jogo e o deste app.", "The game's language and this app's.")),
+                ui.header(tr("App", "App")),
+                ui.group(ui.stackedRow(tr("Idioma do app", "App language"),
+                        tr("Este menu e o painel dos controles de toque.", "This menu and the touch controls panel."),
+                        app)),
+                ui.header(tr("Jogo", "Game")),
+                game,
+                ui.footer(tr("Todos os idiomas do disco: textos, menus e a voz do GPS. Os marcados como dublados " +
+                             "também têm as falas no idioma. Vale na próxima vez que o jogo abrir.",
+                             "Every language on the disc: texts, menus and the sat nav voice. The ones marked " +
+                             "voiced also have the dialogue in that language. Takes effect the next time the game " +
+                             "starts.")));
     }
 
     // ---- Game folder, saves, about -------------------------------------------------------------------------
@@ -709,29 +845,40 @@ public final class MainActivity extends AppCompatActivity {
         status.setPadding(dp(16), dp(14), dp(16), dp(12));
         status.addView(importStatus);
         status.addView(checksList);
-        selectFolder = ui.actionRow("Escolher pasta do jogo", null, false, view -> selectGameFolder());
+        selectFolder = ui.actionRow(tr("Escolher pasta do jogo", "Choose the game folder"), null, false,
+                view -> selectGameFolder());
 
-        LinearLayout exportSave = ui.actionRow("Exportar save", "Para jogos/" + GAME_FOLDER_NAME + "-saves-exportados",
-                false, v -> {
+        LinearLayout exportSave = ui.actionRow(tr("Exportar save", "Export the save"),
+                tr("Para jogos/", "To jogos/") + GAME_FOLDER_NAME + "-saves-exportados", false, v -> {
                     try {
                         File target = SaveTransfer.export(this);
-                        toast("Save exportado para jogos/" + target.getParentFile().getName() + "/" + target.getName());
+                        toast(tr("Save exportado para jogos/", "Save exported to jogos/") +
+                                target.getParentFile().getName() + "/" + target.getName());
                     } catch (IOException e) {
-                        toast("Não foi possível exportar: " + e.getMessage());
+                        toast(tr("Não foi possível exportar: ", "Could not export: ") + e.getMessage());
                     }
                 });
-        LinearLayout importSave = ui.actionRow("Importar save", "De uma exportação ou de um backup automático",
+        LinearLayout importSave = ui.actionRow(tr("Importar save", "Import a save"),
+                tr("De uma exportação ou de um backup automático", "From an export or an automatic backup"),
                 false, v -> chooseSaveToImport());
-        return pageScroll(ui.pageTitle("Jogo e saves", "Os arquivos do jogo e o seu progresso."),
-                ui.header("Pasta do jogo"),
+        return pageScroll(ui.pageTitle(pageName(GAME),
+                        tr("Os arquivos do jogo e o seu progresso.", "The game files and your progress.")),
+                ui.header(tr("Pasta do jogo", "Game folder")),
                 ui.group(status, selectFolder),
-                ui.footer("A pasta extraída do disco (default.xex, as duas DLLs .xex e media) é copiada para " +
-                        "Armazenamento interno/" + GAME_FOLDER_NAME + " (7,3 GB)."),
+                ui.footer(tr("A pasta extraída do disco (default.xex, as duas DLLs .xex e media) é copiada para " +
+                             "Armazenamento interno/" + GAME_FOLDER_NAME + " (7,3 GB).",
+                             "The folder extracted from the disc (default.xex, the two .xex DLLs and media) is " +
+                             "copied to Internal storage/" + GAME_FOLDER_NAME + " (7.3 GB).")),
                 ui.header("Save"),
                 ui.group(exportSave, importSave),
-                ui.footer("Exportar copia o seu progresso (perfil e saves). Importar troca o progresso atual por uma " +
-                        "exportação ou por um dos backups automáticos (jogos/" + GAME_FOLDER_NAME + "-saves). Para " +
-                        "levar o save a outro celular, copie a pasta exportada para o mesmo lugar nele e importe."));
+                ui.footer(tr("Exportar copia o seu progresso (perfil e saves). Importar troca o progresso atual por " +
+                             "uma exportação ou por um dos backups automáticos (jogos/" + GAME_FOLDER_NAME + "-saves). " +
+                             "Para levar o save a outro celular, copie a pasta exportada para o mesmo lugar nele e " +
+                             "importe.",
+                             "Export copies your progress (profile and saves). Import replaces the current progress " +
+                             "with an export or one of the automatic backups (jogos/" + GAME_FOLDER_NAME + "-saves). " +
+                             "To take the save to another phone, copy the exported folder to the same place on it " +
+                             "and import.")));
     }
 
     private ScrollView aboutPage() {
@@ -743,31 +890,38 @@ public final class MainActivity extends AppCompatActivity {
         LinearLayout names = ui.column();
         names.setPadding(dp(14), 0, 0, 0);
         names.addView(ui.text("FH2 Recompiled", 19, Menu.PRIMARY, true));
-        names.addView(ui.text("Forza Horizon 2 do Xbox 360, recompilado para Android.", 13, Menu.SECONDARY, false));
+        names.addView(ui.text(tr("Forza Horizon 2 do Xbox 360, recompilado para Android.",
+                "Forza Horizon 2 for the Xbox 360, recompiled for Android."), 13, Menu.SECONDARY, false));
         String version = "";
         try {
             version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
         } catch (PackageManager.NameNotFoundException ignored) {
         }
-        TextView versionText = ui.text("Versão " + version, 12, Menu.TERTIARY, false);
+        TextView versionText = ui.text(tr("Versão ", "Version ") + version, 12, Menu.TERTIARY, false);
         versionText.setPadding(0, dp(4), 0, 0);
         names.addView(versionText);
         hero.addView(names, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        saveReport = ui.actionRow("Salvar diagnóstico (ZIP)", null, false, view -> prepareReport());
-        return pageScroll(ui.pageTitle("Sobre", null),
+        saveReport = ui.actionRow(reportLabel(), null, false, view -> prepareReport());
+        return pageScroll(ui.pageTitle(pageName(ABOUT), null),
                 ui.group(hero),
-                ui.header("Diagnóstico"),
+                ui.header(tr("Diagnóstico", "Diagnostics")),
                 ui.group(saveReport),
-                ui.footer("Logs e informações do aparelho num .zip, para investigar um problema. Nada é enviado."),
-                ui.header("Projeto"),
-                ui.group(ui.actionRow("Gabrick75 no GitHub", PROJECT_URL.replace("https://", ""), false, view -> {
+                ui.footer(tr("Logs e informações do aparelho num .zip, para investigar um problema. Nada é enviado.",
+                        "Logs and device information in a .zip, to look into a problem. Nothing is sent.")),
+                ui.header(tr("Projeto", "Project")),
+                ui.group(ui.actionRow(tr("Gabrick75 no GitHub", "Gabrick75 on GitHub"),
+                        PROJECT_URL.replace("https://", ""), false, view -> {
                     try {
                         startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(PROJECT_URL)));
                     } catch (ActivityNotFoundException e) {
                         Toast.makeText(this, PROJECT_URL, Toast.LENGTH_LONG).show();
                     }
                 })));
+    }
+
+    private static String reportLabel() {
+        return tr("Salvar diagnóstico (ZIP)", "Save diagnostics (ZIP)");
     }
 
     private void importDriver(Uri zip) {
@@ -777,10 +931,11 @@ public final class MainActivity extends AppCompatActivity {
                 mainHandler.post(() -> {
                     GameOptions.set(this, GameOptions.DRIVER, driver.name);
                     rebuildPage(PERFORMANCE);
-                    toast("Driver importado: " + driver.name);
+                    toast(tr("Driver importado: ", "Driver imported: ") + driver.name);
                 });
             } catch (IOException error) {
-                mainHandler.post(() -> toast("Não foi possível importar o driver: " + error.getMessage()));
+                mainHandler.post(() -> toast(tr("Não foi possível importar o driver: ",
+                        "Could not import the driver: ") + error.getMessage()));
             }
         });
     }
@@ -797,14 +952,20 @@ public final class MainActivity extends AppCompatActivity {
                 launchGame.setEnabled(true);
                 if (edition != null && !edition.supported()) {
                     new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                            .setTitle("Edição do jogo incompatível")
-                            .setMessage("Este app foi recompilado a partir da edição " + GameEdition.SUPPORTED_NAME
+                            .setTitle(tr("Edição do jogo incompatível", "Unsupported game edition"))
+                            .setMessage(tr("Este app foi recompilado a partir da edição " + GameEdition.SUPPORTED_NAME
                                     + " e o seu default.xex é de outra (SHA-256 " + edition.sha256.substring(0, 12)
                                     + "…). Com outra edição o jogo não roda.\n\nUse uma cópia da edição "
                                     + GameEdition.SUPPORTED_NAME + " (o SHA-256 do default.xex começa com "
-                                    + GameEdition.SUPPORTED_SHA256.substring(0, 12) + ").")
-                            .setPositiveButton("Voltar", null)
-                            .setNeutralButton("Jogar mesmo assim",
+                                    + GameEdition.SUPPORTED_SHA256.substring(0, 12) + ").",
+                                    "This app was recompiled from the " + GameEdition.SUPPORTED_NAME
+                                    + " edition and your default.xex is from another one (SHA-256 "
+                                    + edition.sha256.substring(0, 12) + "…). The game does not run with another "
+                                    + "edition.\n\nUse a copy of the " + GameEdition.SUPPORTED_NAME
+                                    + " edition (the SHA-256 of its default.xex starts with "
+                                    + GameEdition.SUPPORTED_SHA256.substring(0, 12) + ")."))
+                            .setPositiveButton(tr("Voltar", "Back"), null)
+                            .setNeutralButton(tr("Jogar mesmo assim", "Play anyway"),
                                     (dialog, which) -> startActivity(new Intent(this, GameActivity.class)))
                             .show();
                     return;
@@ -831,7 +992,7 @@ public final class MainActivity extends AppCompatActivity {
         addCheck("default.xex", new File(folder, "default.xex").isFile());
         addCheck("XMediaFacade_default.xex", new File(folder, "XMediaFacade_default.xex").isFile());
         addCheck("SpeechFacade_default.xex", new File(folder, "SpeechFacade_default.xex").isFile());
-        addCheck("Pasta media", new File(folder, "media").isDirectory());
+        addCheck(tr("Pasta media", "media folder"), new File(folder, "media").isDirectory());
     }
 
     private void addCheck(String name, boolean ok) {
@@ -861,8 +1022,7 @@ public final class MainActivity extends AppCompatActivity {
         }
         Menu.setRowEnabled(selectFolder, false);
         setGameReady(false);
-        setImportStatus("Para usar Armazenamento interno/" + GAME_FOLDER_NAME +
-                ", ative o acesso a arquivos que o Android pede.");
+        setImportStatus(storageNotice());
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             startActivityForResult(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
                     Uri.parse("package:" + getPackageName())), REQUEST_STORAGE_ACCESS);
@@ -880,14 +1040,17 @@ public final class MainActivity extends AppCompatActivity {
         // The native renderer's requirement row follows the shader library copied in (or removed) meanwhile.
         if (shadersFound != null && shadersFound != shaderLibrary().isFile()) rebuildPage(GRAPHICS);
         if (isValidGameFolder(root)) {
-            setImportStatus((notice == null ? "" : notice + "\n") + "Armazenamento interno/" + GAME_FOLDER_NAME);
+            setImportStatus((notice == null ? "" : notice + "\n") + tr("Armazenamento interno/", "Internal storage/") +
+                    GAME_FOLDER_NAME);
             setGameReady(true);
-            Menu.titleOf(selectFolder).setText("Trocar pasta do jogo");
+            Menu.titleOf(selectFolder).setText(tr("Trocar pasta do jogo", "Change the game folder"));
         } else {
-            setImportStatus("Escolha a pasta extraída do jogo (com default.xex, as duas DLLs .xex e media). " +
-                    "Ela será copiada para Armazenamento interno/" + GAME_FOLDER_NAME + " (7,3 GB).");
+            setImportStatus(tr("Escolha a pasta extraída do jogo (com default.xex, as duas DLLs .xex e media). " +
+                            "Ela será copiada para Armazenamento interno/" + GAME_FOLDER_NAME + " (7,3 GB).",
+                    "Choose the game's extracted folder (with default.xex, the two .xex DLLs and media). It will " +
+                            "be copied to Internal storage/" + GAME_FOLDER_NAME + " (7.3 GB)."));
             setGameReady(false);
-            Menu.titleOf(selectFolder).setText("Escolher pasta do jogo");
+            Menu.titleOf(selectFolder).setText(tr("Escolher pasta do jogo", "Choose the game folder"));
         }
     }
 
@@ -919,8 +1082,7 @@ public final class MainActivity extends AppCompatActivity {
         }
         if (requestCode == REQUEST_STORAGE_ACCESS || requestCode == REQUEST_LEGACY_STORAGE) {
             if (hasStorageAccess()) prepareGameFolder();
-            else setImportStatus("Ative a permissão de armazenamento para usar Armazenamento interno/" +
-                    GAME_FOLDER_NAME + ".");
+            else setImportStatus(storageNotice());
             return;
         }
         if (requestCode != REQUEST_GAME_FOLDER || resultCode != RESULT_OK || data == null || data.getData() == null) {
@@ -930,7 +1092,8 @@ public final class MainActivity extends AppCompatActivity {
         try {
             getContentResolver().takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION);
         } catch (SecurityException error) {
-            setImportStatus("Não foi possível guardar a permissão da pasta: " + error.getMessage());
+            setImportStatus(tr("Não foi possível guardar a permissão da pasta: ", "Could not keep the folder's permission: ") +
+                    error.getMessage());
             return;
         }
         getPreferences(MODE_PRIVATE).edit().putString(TREE_URI, tree.toString()).apply();
@@ -949,8 +1112,9 @@ public final class MainActivity extends AppCompatActivity {
         Menu.setRowEnabled(selectFolder, false);
         setGameReady(false);
         launchGame.setEnabled(false);
-        playStatus.setText("Copiando o jogo…");
-        setImportStatus("Copiando o jogo para Armazenamento interno/" + GAME_FOLDER_NAME + "...");
+        playStatus.setText(tr("Copiando o jogo…", "Copying the game…"));
+        setImportStatus(tr("Copiando o jogo para Armazenamento interno/", "Copying the game to Internal storage/") +
+                GAME_FOLDER_NAME + "…");
         getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         worker.execute(() -> {
             File root = gameRoot();
@@ -961,20 +1125,21 @@ public final class MainActivity extends AppCompatActivity {
                 deleteRecursively(staging);
                 deleteRecursively(previous);
                 DocumentFile source = DocumentFile.fromTreeUri(this, tree);
-                if (source == null || !source.isDirectory()) throw new IOException("Não foi possível abrir a pasta.");
+                if (source == null || !source.isDirectory()) throw new IOException(tr("Não foi possível abrir a pasta.", "Could not open the folder."));
                 copyDirectory(source, staging, staging.getCanonicalFile(), new long[] {0});
                 if (!isValidGameFolder(staging)) {
-                    throw new IOException("A pasta deve conter default.xex, XMediaFacade_default.xex, " +
-                            "SpeechFacade_default.xex e media.");
+                    throw new IOException(tr("A pasta deve conter default.xex, XMediaFacade_default.xex, " +
+                            "SpeechFacade_default.xex e media.", "The folder must have default.xex, " +
+                            "XMediaFacade_default.xex, SpeechFacade_default.xex and media."));
                 }
                 if (root.exists()) Files.move(root.toPath(), previous.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 Files.move(staging.toPath(), root.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 deleteRecursively(previous);
-                mainHandler.post(() -> showGameFolder("Jogo copiado."));
+                mainHandler.post(() -> showGameFolder(tr("Jogo copiado.", "Game copied.")));
             } catch (Exception error) {
                 try { deleteRecursively(staging); } catch (IOException ignored) { }
                 mainHandler.post(() -> {
-                    setImportStatus("Erro ao importar: " + error.getMessage());
+                    setImportStatus(tr("Erro ao importar: ", "Import failed: ") + error.getMessage());
                     Menu.setRowEnabled(selectFolder, true);
                     launchGame.setEnabled(true);
                     setGameReady(false);
@@ -989,14 +1154,14 @@ public final class MainActivity extends AppCompatActivity {
     private void copyDirectory(DocumentFile source, File destination, File safeRoot, long[] copiedBytes)
             throws IOException {
         if (!destination.getCanonicalFile().toPath().startsWith(safeRoot.toPath())) {
-            throw new IOException("A pasta do jogo contém um caminho inválido.");
+            throw new IOException(tr("A pasta do jogo contém um caminho inválido.", "The game folder has an invalid path."));
         }
-        if (!destination.mkdirs() && !destination.isDirectory()) throw new IOException("Não foi possível criar " + destination);
+        if (!destination.mkdirs() && !destination.isDirectory()) throw new IOException(tr("Não foi possível criar ", "Could not create ") + destination);
         for (DocumentFile child : source.listFiles()) {
             String name = child.getName();
             if (name == null || name.isEmpty() || name.equals(".") || name.equals("..") ||
                     name.contains("/") || name.contains("\\")) {
-                throw new IOException("A pasta do jogo contém um nome inválido.");
+                throw new IOException(tr("A pasta do jogo contém um nome inválido.", "The game folder has an invalid name."));
             }
             File target = new File(destination, name);
             if (child.isDirectory()) {
@@ -1004,15 +1169,15 @@ public final class MainActivity extends AppCompatActivity {
             } else if (child.isFile()) {
                 try (InputStream input = getContentResolver().openInputStream(child.getUri());
                      FileOutputStream output = new FileOutputStream(target)) {
-                    if (input == null) throw new IOException("Não foi possível ler " + name);
+                    if (input == null) throw new IOException(tr("Não foi possível ler ", "Could not read ") + name);
                     byte[] buffer = new byte[1024 * 1024];
                     for (int count; (count = input.read(buffer)) != -1; ) {
                         output.write(buffer, 0, count);
                         copiedBytes[0] += count;
                         if ((copiedBytes[0] & ((64L * 1024 * 1024) - 1)) < count) {
                             long total = copiedBytes[0];
-                            mainHandler.post(() -> setImportStatus("Copiados " + (total / (1024 * 1024)) +
-                                    " MiB de ~7500..."));
+                            mainHandler.post(() -> setImportStatus(tr("Copiados ", "Copied ") +
+                                    (total / (1024 * 1024)) + tr(" MiB de ~7500…", " MiB of ~7500…")));
                         }
                     }
                     output.getFD().sync();
@@ -1025,21 +1190,21 @@ public final class MainActivity extends AppCompatActivity {
         if (!file.exists()) return;
         File[] children = file.listFiles();
         if (children != null) for (File child : children) deleteRecursively(child);
-        if (!file.delete()) throw new IOException("Não foi possível apagar " + file.getName());
+        if (!file.delete()) throw new IOException(tr("Não foi possível apagar ", "Could not delete ") + file.getName());
     }
 
     // ---- Diagnostic report (saved by the player; never sent anywhere) --------------------------------------
 
     private void prepareReport() {
         Menu.setRowEnabled(saveReport, false);
-        Menu.titleOf(saveReport).setText("Preparando diagnóstico…");
+        Menu.titleOf(saveReport).setText(tr("Preparando diagnóstico…", "Preparing diagnostics…"));
         worker.execute(() -> {
             try {
                 File report = Diagnostics.createReport(this);
                 mainHandler.post(() -> {
                     if (isFinishing() || isDestroyed()) return;
                     Menu.setRowEnabled(saveReport, true);
-                    Menu.titleOf(saveReport).setText("Salvar diagnóstico (ZIP)");
+                    Menu.titleOf(saveReport).setText(reportLabel());
                     pendingReport = report;
                     Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT);
                     save.addCategory(Intent.CATEGORY_OPENABLE);
@@ -1049,15 +1214,16 @@ public final class MainActivity extends AppCompatActivity {
                         startActivityForResult(save, REQUEST_SAVE_REPORT);
                     } catch (ActivityNotFoundException error) {
                         pendingReport = null;
-                        message("Não há um app para salvar arquivos.");
+                        message(tr("Não há um app para salvar arquivos.", "There is no app to save files."));
                     }
                 });
             } catch (Exception error) {
                 mainHandler.post(() -> {
                     if (isFinishing() || isDestroyed()) return;
                     Menu.setRowEnabled(saveReport, true);
-                    Menu.titleOf(saveReport).setText("Salvar diagnóstico (ZIP)");
-                    message("Não foi possível preparar o relatório: " + error.getMessage());
+                    Menu.titleOf(saveReport).setText(reportLabel());
+                    message(tr("Não foi possível preparar o relatório: ", "Could not prepare the report: ") +
+                            error.getMessage());
                 });
             }
         });
@@ -1067,28 +1233,35 @@ public final class MainActivity extends AppCompatActivity {
         File report = pendingReport;
         pendingReport = null;
         if (report == null || !report.isFile()) {
-            message("O relatório não está mais disponível. Gere outro.");
+            message(tr("O relatório não está mais disponível. Gere outro.", "The report is no longer there. Make another."));
             return;
         }
         worker.execute(() -> {
             try (InputStream input = new FileInputStream(report);
                  OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
-                if (output == null) throw new IOException("Não foi possível abrir o arquivo de destino.");
+                if (output == null) throw new IOException(tr("Não foi possível abrir o arquivo de destino.",
+                        "Could not open the target file."));
                 byte[] buffer = new byte[16384];
                 for (int count; (count = input.read(buffer)) != -1; ) output.write(buffer, 0, count);
-                mainHandler.post(() -> message("Diagnóstico salvo."));
+                mainHandler.post(() -> message(tr("Diagnóstico salvo.", "Diagnostics saved.")));
             } catch (Exception error) {
-                mainHandler.post(() -> message("Não foi possível salvar o ZIP: " + error.getMessage()));
+                mainHandler.post(() -> message(tr("Não foi possível salvar o ZIP: ", "Could not save the ZIP: ") + error.getMessage()));
             }
         });
     }
 
     private void message(String text) {
         new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle("Diagnóstico").setMessage(text).setPositiveButton("OK", null).show();
+                .setTitle(tr("Diagnóstico", "Diagnostics")).setMessage(text).setPositiveButton("OK", null).show();
     }
 
     // ---- Small helpers -------------------------------------------------------------------------------------
+
+    private static String storageNotice() {
+        return tr("Para usar Armazenamento interno/" + GAME_FOLDER_NAME + ", ative o acesso a arquivos que o " +
+                "Android pede.", "To use Internal storage/" + GAME_FOLDER_NAME + ", allow the file access Android " +
+                "asks for.");
+    }
 
     private void setImportStatus(String text) {
         if (importStatus != null) importStatus.setText(text);

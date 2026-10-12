@@ -13,6 +13,8 @@ import android.view.View;
 
 import org.json.JSONException;
 import org.json.JSONObject;
+import static com.forzahorizon2.android.AppLanguage.tr;
+
 
 import java.util.ArrayList;
 import java.util.List;
@@ -590,7 +592,7 @@ public final class TouchControlsView extends View {
                 if (!c.visible) {
                     text.setColor(0xFFFFFFFF);
                     text.setTextSize(Math.max(22f, radius(c) * .28f));
-                    canvas.drawText("OCULTO", cx, cy + radius(c) + text.getTextSize() + 6f, text);
+                    canvas.drawText(tr("OCULTO", "HIDDEN"), cx, cy + radius(c) + text.getTextSize() + 6f, text);
                 }
             }
         }

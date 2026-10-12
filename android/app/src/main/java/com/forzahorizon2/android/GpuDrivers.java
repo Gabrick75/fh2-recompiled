@@ -28,6 +28,8 @@ import java.util.Locale;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
+import static com.forzahorizon2.android.AppLanguage.tr;
+
 /**
  * The phone's GPU name and the Vulkan drivers (Turnip) the player imports. Adapted from NFSMW-Recompiled-Mobile
  * (Gpu.java, Drivers.java).
@@ -185,7 +187,7 @@ final class GpuDrivers {
         File staging = new File(root(context), ".importing");
         delete(staging);
         if (!staging.mkdirs()) {
-            throw new IOException("não foi possível criar " + staging);
+            throw new IOException(tr("não foi possível criar ", "could not create ") + staging);
         }
         String metaName = null;
         String metaLibrary = null;
@@ -220,7 +222,7 @@ final class GpuDrivers {
             }
         } catch (JSONException e) {
             delete(staging);
-            throw new IOException("o meta.json não é um JSON válido");
+            throw new IOException(tr("o meta.json não é um JSON válido", "meta.json is not valid JSON"));
         } catch (IOException e) {
             delete(staging);
             throw e;
@@ -228,7 +230,7 @@ final class GpuDrivers {
         String library = metaLibrary != null ? metaLibrary : firstSo;
         if (library == null || !new File(staging, library).isFile()) {
             delete(staging);
-            throw new IOException("o zip não tem nenhuma .so de driver");
+            throw new IOException(tr("o zip não tem nenhuma .so de driver", "the zip has no driver .so"));
         }
         String name = (metaName != null ? metaName : library.replace(".so", ""))
                 .replaceAll("[^A-Za-z0-9._-]+", "_");
@@ -239,7 +241,7 @@ final class GpuDrivers {
         delete(destination);
         if (!staging.renameTo(destination)) {
             delete(staging);
-            throw new IOException("não foi possível mover o driver para " + destination);
+            throw new IOException(tr("não foi possível mover o driver para ", "could not move the driver to ") + destination);
         }
         try (FileOutputStream out = new FileOutputStream(new File(destination, ".library"))) {
             out.write(library.getBytes(StandardCharsets.UTF_8));

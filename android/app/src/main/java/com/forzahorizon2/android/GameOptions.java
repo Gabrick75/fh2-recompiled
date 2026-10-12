@@ -46,6 +46,9 @@ final class GameOptions {
     static final String TURBO = "turbo";                      // not applied yet
     // Sound
     static final String VOLUME = "volume";
+    // Language
+    static final String GAME_LANGUAGE = "game_language";  // a GameLanguage code: "en-US", "pt-BR"...
+    static final String APP_LANGUAGE = "app_language";    // "pt" or "en" (AppLanguage)
 
     static final String RES_480P = "480p";
     static final String RES_720P = "720p";
@@ -78,6 +81,9 @@ final class GameOptions {
             case CAR_REFLECTIONS: return "high";
             case DRIVER: return "";
             case VOLUME: return "100";
+            // English (US), what the console settings said before this option existed.
+            case GAME_LANGUAGE: return "en-US";
+            case APP_LANGUAGE: return "pt".equals(java.util.Locale.getDefault().getLanguage()) ? "pt" : "en";
             default: throw new IllegalArgumentException(key);
         }
     }
@@ -159,9 +165,61 @@ final class GameOptions {
         return "msaa".equals(get(context, ANTI_ALIASING)) && "4".equals(get(context, MSAA_SAMPLES));
     }
 
+    /**
+     * The game's languages: the string tables on the disc (media/stringtables: EN, GB, FR, DE, ES, MX, IT, JP, br, PL,
+     * RU, CHT). The game reads the language from the console settings (XGetLanguage, ExGetXConfigSetting ->
+     * user_language) and the region from the locale (XGetLocale, XamGetLocaleEx -> user_country), and the pair picks
+     * the variant: English of the US or the UK, Spanish of Spain or Mexico, the sat nav voice (sub_82E52468). Only
+     * en-US, fr-FR, es-MX and pt-BR have their own voice-over (media/audio/vo).
+     */
+    static final class GameLanguage {
+        final String code;
+        final String name;          // in its own language, as a console lists them
+        final String portuguese;    // what it is, in the app's two languages
+        final String english;
+        final int language;         // XLanguage (sdk/include/rex/system/xcontent.h)
+        final int country;          // XOnlineCountry; xeXamGetLocaleFromCountry turns it into the locale
+        final boolean voiceOver;
+
+        GameLanguage(String code, String name, String portuguese, String english, int language, int country,
+                     boolean voiceOver) {
+            this.code = code;
+            this.name = name;
+            this.portuguese = portuguese;
+            this.english = english;
+            this.language = language;
+            this.country = country;
+            this.voiceOver = voiceOver;
+        }
+    }
+
+    static final GameLanguage[] GAME_LANGUAGES = {
+            new GameLanguage("en-US", "English (US)", "Inglês · Estados Unidos", "English · United States", 1, 103, true),
+            new GameLanguage("en-GB", "English (UK)", "Inglês · Reino Unido", "English · United Kingdom", 1, 35, false),
+            new GameLanguage("pt-BR", "Português (Brasil)", "Português · Brasil", "Portuguese · Brazil", 9, 13, true),
+            new GameLanguage("es-ES", "Español (España)", "Espanhol · Espanha", "Spanish · Spain", 5, 31, false),
+            new GameLanguage("es-MX", "Español (México)", "Espanhol · México", "Spanish · Mexico", 5, 71, true),
+            new GameLanguage("fr-FR", "Français", "Francês", "French", 4, 34, true),
+            new GameLanguage("de-DE", "Deutsch", "Alemão", "German", 3, 24, false),
+            new GameLanguage("it-IT", "Italiano", "Italiano", "Italian", 6, 50, false),
+            new GameLanguage("pl-PL", "Polski", "Polonês", "Polish", 11, 82, false),
+            new GameLanguage("ru-RU", "Русский", "Russo", "Russian", 12, 88, false),
+            new GameLanguage("ja-JP", "日本語", "Japonês", "Japanese", 2, 53, false),
+            new GameLanguage("zh-TW", "繁體中文", "Chinês tradicional", "Traditional Chinese", 8, 101, false),
+    };
+
+    static GameLanguage gameLanguage(Context context) {
+        String code = get(context, GAME_LANGUAGE);
+        for (GameLanguage language : GAME_LANGUAGES) if (language.code.equals(code)) return language;
+        return GAME_LANGUAGES[0];
+    }
+
     static List<String> arguments(Context context) {
         List<String> args = new ArrayList<>();
         args.add("--audio_ganancia_pct=" + get(context, VOLUME));
+        GameLanguage language = gameLanguage(context);
+        args.add("--user_language=" + language.language);
+        args.add("--user_country=" + language.country);
         if ("native".equals(get(context, RENDERER))) {
             // NFSMW Android Evolved's renderer built for FH2 (app/src/nativo): the ring is drawn with translated
             // shaders, no EDRAM emulation. The emulated GPU's arguments below are then ignored; these are its own.
