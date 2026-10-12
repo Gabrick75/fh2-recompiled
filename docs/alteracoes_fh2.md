@@ -273,6 +273,45 @@ Aparelhos: S23U `RQCXB01R9LM` (Adreno 740) e moto g(9) play `0074545453` (Adreno
 - **Resultado no PC**: copas das árvores um pouco mais cheias; diferença pequena. Exige regerar a biblioteca.
 - **Não foi para os celulares.**
 
+### [feito no PC] Grama corrigida; poeira/fumaça das rodas passam a aparecer (pretas); k_DXT3A
+- **Grama**: com o swizzle reescrito (item abaixo), os tufos ficam em pé, com lâminas e amarelados como no emulado
+  (capturas aos 60 s, PC). **Exige a biblioteca nova** (ver o problema da noite clara antes de enviá-la aos celulares).
+- **Partículas do carro** (poeira, fumaça): VS n0, 506, 620, 1887, 3044, 3600 (`v_003718`–`v_003723`, constantes
+  `CarPosition`, `CarRightVector`, `BeginColor`...). Também usam elementos diretos: antes saíam invisíveis; com o
+  swizzle certo aparecem, mas como borrões **pretos opacos** (mistura `07010701` = ONE / ONE_MINUS_SRC_ALPHA, cor 0).
+  Confirmado pulando esses VS (`--fh2_nativo_diag_omitir_vs=0,506,620,1887,3044,3600`): os borrões somem.
+  A cor delas vem de iluminação (`LightColorAmb`, `LightInfluences`); suspeita: o mesmo problema dos faróis (abaixo).
+- **k_DXT3A** (formato 58; máscaras de alfa): agora suportado, cada bloco vira um bloco BC2 (alfa do jogo + cor
+  branca) com o alfa em todos os canais. Não era a causa da poeira preta.
+- Textura vazia do nativo para formato não suportado = (0,0,0,0) (com alfa 0, partícula seria descartada, não preta).
+
+### [medido, aberto] Noite clara / faróis sem cone: booleana 228 e o mapa de sombra dos faróis
+- `--fh2_nativo_diag_booleanos_apagar=16-127,144-255` (zera as booleanas que a biblioteca antiga não recebia) deixa a
+  noite escura de novo. O jogo só liga uma booleana alta: **228** = booleana 100 dos PS,
+  `bEnableDeferredLightContribution` (106 PS a usam). `--fh2_nativo_diag_luces=true` registra as ligadas.
+- As constantes dos faróis chegam **iguais** às do emulado (`HeadLightParams1` c168 ≈ (8900, 40, −8000, 1),
+  `HeadLightParams2` c169 = (0,2; 0,8; 60; 0); traço do emulado e `--fh2_nativo_diag_luces`).
+- **Pista falsa (descartada)**: `clamp(log2(x), FLT_MIN, FLT_MAX)` parecia zerar logs negativos, mas neste projeto
+  `FLT_MIN` é `asfloat(0xff7fffff)` = −FLT_MAX: o clamp está certo.
+- **Causa provável**: o bloco dos faróis (ex. `p_002953`) faz `log2` dos canais de `ShadowMaskSamp` (`r9`, a máscara de
+  sombra da tela). Canal 0 → −∞ → luz gigante em todo pixel. A máscara é feita por PS que leem no **registro 8** a
+  profundidade 1024x1024 `k_24_8` em **`1D6C5000`** (PS n847, n1402, n3238; draws em `sup 04010140`), que o nativo
+  **nunca escreve** (só resolve 1024x1024 em `1CA95000`, `1CE95000`, `1D295000`) e lê como textura vazia.
+  Provavelmente é o mapa de sombra dos faróis. **Próximo passo**: descobrir quem escreve `1D6C5000` no emulado
+  (traço de vários quadros, ou procurar resolves/memexport com destino nessa faixa) e fazer o nativo produzi-lo.
+- Até lá, uma biblioteca nova nos celulares traria a noite clara (a antiga, de 05:46, não liga a booleana 228).
+
+### [feito] Causa da grama achatada/marrom: swizzle dos elementos por instância
+- **Achado** (diagnóstico `[fh2 nativo] elemento VS n.. #..`, uma linha por elemento e VS): nos fetches lidos direto
+  (`fh2BuscaElemento`: grama, e provavelmente partículas e billboards), o shader traduzido aplicava o swizzle do
+  **contêiner**, mas o D3D reescreve o `dst_swiz` (dword 1, bits 0–11) conforme a declaração do vértice.
+- Grama = VS n3526 = `v_003789` (`python3 tools/xenos/indice_biblioteca.py 3526`). Elementos 0–4 iguais; diferentes:
+  #5 (4 × half: largura/altura do tufo e fade) contêiner `.zwxy` × D3D `wzyx`; #6 (cor 8888) `.xywz` × `zywx`;
+  #7 (cor 8888) `.xyz` × `zyx_` (vermelho↔azul). Explica tufo achatado e cor marrom.
+- **Correção**: o app grava o swizzle reescrito em `FH2_COMPARTIDA_SWIZZLES` (bytes 1280–1407; `FH2_COMPARTIDA_BYTES`
+  1408, `kPalabrasCompartidas` 352) e o tradutor emite `fh2SwizzleElemento(fh2BuscaElemento(...), ordinal)`.
+  Exige biblioteca nova.
+
 ### [medido, aberto] Grama: tufos achatados no nativo
 - Capturas aos 60 s (PC): no emulado os tufos ficam em pé com lâminas; no nativo parecem manchas marrons deitadas.
 - No VS da grama (`v_003789`) o quad sai do índice do vértice (instância = índice/4, canto = `frac(índice/4)·4`,

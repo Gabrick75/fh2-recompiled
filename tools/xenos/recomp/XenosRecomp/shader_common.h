@@ -103,7 +103,10 @@
 // 16 + 16 bits of g_Booleans could not hold FH2's high ones (the headlights' bEnableDeferredLightContribution is
 // pixel boolean 100).
 #define FH2_COMPARTIDA_BOOLEANOS  1248
-#define FH2_COMPARTIDA_BYTES      1280
+// FH2: per declared vertex element (ordinal 0-31), the destination swizzle of its fetch as the D3D patched it (vfetch
+// dword 1 bits 0-11: per destination component a source 0-3, 4 = 0, 5 = 1, 7 = kept). See fh2SwizzleElemento.
+#define FH2_COMPARTIDA_SWIZZLES   1280
+#define FH2_COMPARTIDA_BYTES      1408
 #define SPEC_CONSTANT_ALPHA_FUNC_SHIFT  16
 #define SPEC_CONSTANT_ALPHA_FUNC_MASK   (7 << 16)
 
@@ -241,6 +244,21 @@ float4 fh2BuscaElemento(uint base, uint mio, int indice)
         return 0.0;
     return fh2BuscaVertices(constante - 88, indice * int(w1b & 0xFFu) + (int(w1m) >> 8), (w0m >> 8) & 0x3Fu,
                             (w0m >> 16) & 0xFFu, int(w0m << 2) >> 26);
+}
+
+// A direct element fetch put in the order the D3D patched into its instruction for the declaration: the destination
+// components as they come out of the fetch (D3DCOLOR has red and blue swapped, halves can be reordered), 0 or 1 for
+// the constant ones. The translated shader then writes the components its instruction writes.
+float4 fh2SwizzleElemento(float4 v, uint mio)
+{
+    const uint s = NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_SWIZZLES + mio * 4);
+    float4 r = 0.0;
+    [unroll] for (uint c = 0; c < 4; ++c)
+    {
+        const uint k = (s >> (c * 3)) & 7u;
+        r[c] = k < 4u ? v[k] : (k == 5u ? 1.0 : 0.0);
+    }
+    return r;
 }
 
 // One vertex fetch read directly, decoded like the SDK's translator (spirv_translator_fetch.cpp): packed components

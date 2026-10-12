@@ -245,17 +245,22 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
             println("fh2BuscaIndice = int(floor(r{}.{}{}));", instr.srcRegister, SWIZZLES[instr.srcSwizzle & 3],
                 instr.isIndexRounded ? " + 0.5" : "");
         }
-        out += destino;
-        println("fh2BuscaElemento({}, {}, fh2BuscaIndice).{};", fh2UltimoElementoCompleto < 0 ? ordinal :
-            uint32_t(fh2UltimoElementoCompleto), ordinal, [&]
-            {
-                std::string swizzle;
-                std::swap(swizzle, out);
-                printDstSwizzle(instr.dstSwizzle, true);
-                std::swap(swizzle, out);
-                return swizzle;
-            }());
-        printDstSwizzle01(instr.dstRegister, instr.dstSwizzle);
+        // The components the container's fetch writes, filled through the swizzle the D3D patched in for this
+        // element (fh2SwizzleElemento): the container's own swizzle does not know the declaration, and for D3DCOLOR
+        // elements (red and blue swapped) or reordered halves it gave the wrong components (grass tufts flat and
+        // brown, their sizes swapped).
+        std::string mascara;
+        for (size_t i = 0; i < 4; i++)
+            if (getDestSwizzle(instr.dstSwizzle, i) != FetchDestinationSwizzle::Keep)
+                mascara += SWIZZLES[i];
+        if (!mascara.empty())
+        {
+            indent();
+            println("r{}.{} = fh2SwizzleElemento(fh2BuscaElemento({}, {}, fh2BuscaIndice), {}).{};", instr.dstRegister,
+                mascara, fh2UltimoElementoCompleto < 0 ? ordinal : uint32_t(fh2UltimoElementoCompleto), ordinal,
+                ordinal, mascara);
+        }
+        (void)destino;
         cerrarSiEscribePredicado(marcaPredicado);
         return;
     }

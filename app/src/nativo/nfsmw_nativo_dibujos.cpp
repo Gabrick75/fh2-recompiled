@@ -1009,6 +1009,15 @@ REXCVAR_DEFINE_INT32(fh2_nativo_diag_sin_stencil_vs, -1, "FH2",
 REXCVAR_DEFINE_INT32(fh2_nativo_diag_sin_z_vs, -1, "FH2",
                      "Native renderer (debug): the draws of this vertex shader (library number) without the depth test")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_BOOL(fh2_nativo_diag_luces, false, "FH2",
+                    "Native renderer (debug): log the boolean constants the game sets (every 10 s) and the headlights' "
+                    "parameters (pixel shader c168, c169) of a draw with the deferred light contribution on");
+REXCVAR_DEFINE_BOOL(fh2_nativo_diag_elementos, false, "FH2",
+                    "Native renderer (debug): log each declared vertex element's fetch as the D3D patched it (format, "
+                    "stride, offset, swizzle), once per vertex shader");
+REXCVAR_DEFINE_STRING(fh2_nativo_diag_booleanos_apagar, "", "FH2",
+                      "Native renderer (debug): boolean constants (0-255; pixel shaders' from 128) forced to 0 for every "
+                      "draw, comma-separated, ranges as 128-255; the set ones are logged every 10 s");
 REXCVAR_DEFINE_STRING(fh2_nativo_diag_omitir_vs, "", "FH2",
                       "Native renderer (debug): library numbers of vertex shaders whose draws are not recorded, "
                       "comma-separated (to find a draw)");
@@ -1215,7 +1224,10 @@ constexpr size_t kMaxRegistrosLista = 4096;
 // FH2: NFS Carbon's 128 words, then FH2's own area up to byte 1152 (FH2_COMPARTIDA_BYTES in tools/xenos/recomp's
 // shader_common.h): vertex shader samplers at 512, direct vertex fetches at 640, loop constants at 768, the patched
 // parameters of each declared vertex element at 896.
-constexpr uint32_t kPalabrasCompartidas = 320;  // up to FH2_COMPARTIDA_BYTES (1280): element parameters, exp_adjust, booleans
+constexpr uint32_t kPalabrasCompartidas = 352;  // up to FH2_COMPARTIDA_BYTES (1408): element parameters, exp_adjust, booleans,
+                                                // element swizzles
+// FH2_COMPARTIDA_SWIZZLES: the patched destination swizzle of each declared vertex element (fh2SwizzleElemento).
+constexpr uint32_t kPalabraFh2Swizzles = 1280 / 4;
 // FH2_COMPARTIDA_BOOLEANOS: the 8 words of boolean constants (all 256; g_Booleans only carries 16 + 16).
 constexpr uint32_t kPalabraFh2Booleanos = 1248 / 4;
 constexpr uint32_t kPalabraFh2ExpAjuste = 1152 / 4;  // FH2_COMPARTIDA_EXP: a texture slot's exp_adjust (0-19)
@@ -1859,6 +1871,7 @@ constexpr uint16_t kSwizzleRRRR = 0;
 constexpr uint16_t kSwizzleRGGG = (1 << 3) | (1 << 6) | (1 << 9);
 constexpr uint16_t kSwizzleRGBA = (1 << 3) | (2 << 6) | (3 << 9);
 constexpr uint16_t kSwizzleBGRA = 2 | (1 << 3) | (0 << 6) | (3 << 9);
+constexpr uint16_t kSwizzleAAAA = 3 | (3 << 3) | (3 << 6) | (3 << 9);
 
 uint32_t IndiceBc(VkFormat formato) {
   switch (formato) {
@@ -1914,6 +1927,13 @@ bool FormatoTexturaDe(uint32_t formato, FormatoTextura& f) {
       return true;
     case 59:  // k_DXT5A
       f = {VK_FORMAT_BC4_UNORM_BLOCK, 4, 8, 2, kSwizzleRRRR};
+      return true;
+    // k_DXT3A: one channel, 8-byte blocks of 16 4-bit values, laid out like the alpha half of a BC2 block. FH2's
+    // smoke and dust puffs (PS n3220) are this; replaced by an empty texture they drew black. Each block is
+    // expanded to a BC2 block with a white colour half (ExpandirDxt3a) and the alpha read into every channel, as
+    // the emulation's one-channel texture.
+    case 58:
+      f = {VK_FORMAT_BC2_UNORM_BLOCK, 4, 8, 2, kSwizzleAAAA};
       return true;
     case 24:  // k_16
       f = {VK_FORMAT_R16_UNORM, 1, 2, 2, kSwizzleRRRR};
@@ -3787,6 +3807,18 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         const uint32_t banderas = ((d1 >> 12) & 0x1) | (((d1 >> 13) & 0x1) << 1) | (((d1 >> 14) & 0x1) << 2);
         w[0] = constante | (((d1 >> 16) & 0x3F) << 8) | (banderas << 16) | (((d1 >> 24) & 0x3F) << 24);
         w[1] = (d2 & 0xFF) | (uint32_t(int32_t(d2 << 1) >> 9) << 8);
+        compartidas[kPalabraFh2Swizzles + e] = d1 & 0xFFF;  // the swizzle the D3D patched (fh2SwizzleElemento)
+        // Diagnostic (once per VS): the element's fetch as the D3D patched it, swizzle included; the translated
+        // shader applies the container's own swizzle to these direct fetches (fh2BuscaElemento).
+        static std::set<uint64_t> vistos_elementos;
+        if (REXCVAR_GET(fh2_nativo_diag_elementos) && vistos_elementos.size() < 600 &&
+            vistos_elementos.insert((uint64_t(uint32_t(p.vs->numero)) << 8) | e).second) {
+          char swz[5] = {};
+          for (int c = 0; c < 4; ++c) swz[c] = "xyzw01?_"[(d1 >> (c * 3)) & 7];
+          REXLOG_INFO("[fh2 nativo] elemento VS n{} #{}: constante {} formato {} banderas {} exp {} stride {} offset {} "
+                      "swizzle {} (instruccion {})", p.vs->numero, e, constante, (d1 >> 16) & 0x3F, banderas,
+                      int32_t(d1 << 2) >> 26, d2 & 0xFF, int32_t(d2 << 1) >> 9, swz, p.vs->elementos[e].instruccion);
+        }
       }
     }
 #endif
@@ -3927,6 +3959,52 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     compartidas[64] = (r[kRegBooleanos] & 0xFFFF) | ((r[kRegBooleanos + 4] & 0xFFFF) << 16);
 #if defined(FH2_RECOMP)
     std::copy(r + kRegBooleanos, r + kRegBooleanos + 8, compartidas + kPalabraFh2Booleanos);
+    {
+      // Diagnostic: fh2_nativo_diag_booleanos_apagar (parsed once) and which booleans the game sets.
+      static std::array<uint32_t, 8> apagar{};
+      static bool leido = false;
+      if (!leido) {
+        leido = true;
+        const std::string lista = REXCVAR_GET(fh2_nativo_diag_booleanos_apagar);
+        for (size_t i = 0; i < lista.size();) {
+          size_t fin = lista.find(',', i);
+          if (fin == std::string::npos) fin = lista.size();
+          const std::string pieza = lista.substr(i, fin - i);
+          const size_t guion = pieza.find('-');
+          const int desde = std::atoi(pieza.c_str());
+          const int hasta = guion == std::string::npos ? desde : std::atoi(pieza.c_str() + guion + 1);
+          for (int b = std::max(desde, 0); b <= std::min(hasta, 255); ++b) apagar[b >> 5] |= 1u << (b & 31);
+          i = fin + 1;
+        }
+      }
+      static std::array<uint32_t, 8> vistos{};
+      static auto ultimo = std::chrono::steady_clock::now();
+      for (uint32_t w = 0; w < 8; ++w) {
+        vistos[w] |= compartidas[kPalabraFh2Booleanos + w];
+        compartidas[kPalabraFh2Booleanos + w] &= ~apagar[w];
+      }
+      // The headlights' parameters (HeadLightParams1/2: pixel shader c168, c169) of a draw with the deferred light
+      // contribution on (boolean 228), to compare with the emulation's trace.
+      static auto ultimo_farol = std::chrono::steady_clock::now();
+      const bool diag_luces = REXCVAR_GET(fh2_nativo_diag_luces);
+      if (diag_luces && ((r[kRegBooleanos + 7] >> 4) & 1) && ps && ps->constantes_bytes >= 170 * 16 &&
+          std::chrono::steady_clock::now() - ultimo_farol > std::chrono::seconds(5)) {
+        ultimo_farol = std::chrono::steady_clock::now();
+        float c[8];
+        std::memcpy(c, r + kRegConstantesPs + 168 * 4, sizeof(c));
+        REXLOG_INFO("[fh2 nativo] faroles PS n{}: c168({} {} {} {}) c169({} {} {} {}) bytes_ps {}", ps->numero, c[0],
+                    c[1], c[2], c[3], c[4], c[5], c[6], c[7], ps->constantes_bytes);
+      }
+      if (diag_luces && std::chrono::steady_clock::now() - ultimo > std::chrono::seconds(10)) {
+        ultimo = std::chrono::steady_clock::now();
+        std::string ligados;
+        for (uint32_t b = 0; b < 256; ++b) {
+          if ((vistos[b >> 5] >> (b & 31)) & 1) ligados += std::to_string(b) + ",";
+        }
+        REXLOG_INFO("[fh2 nativo] booleanos ligados nos ultimos 10 s: {}", ligados);
+        vistos = {};
+      }
+    }
 #endif
     compartidas[65] = 0;  // g_SwappedTexcoords
     if (!(r[gr::XE_GPU_REG_PA_SU_VTX_CNTL] & 0x1)) {  // PixelCenter::kD3DZero
@@ -10101,7 +10179,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
          */
         // The hash worker copies guest blocks directly into the GPU upload buffer.
         // Converted textures use the normal path so decoding happens before upload.
-        if (!bc_cpu && !textura.imagen.preparada && huellas_fase_ != kHuellasApagado && !diag_mips_ && mosaico_rapido_ >= 0) {
+        if (!bc_cpu && formato != 58 && !textura.imagen.preparada && huellas_fase_ != kHuellasApagado && !diag_mips_ &&
+            mosaico_rapido_ >= 0) {
           std::array<size_t, 16> desplazamientos{};
           std::array<size_t, 16> capa_nivel{};
           size_t bytes_plan = 0;
@@ -10310,6 +10389,18 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     }
     textura.intervalo = 1;
     textura.siguiente = fotograma_ + 1;
+    if (formato == 58) {
+      // k_DXT3A: each 8-byte block of 4-bit values becomes a BC2 block (those values as its alpha, white colour),
+      // so the level offsets double (FormatoTexturaDe).
+      temporal_bc_.resize(datos.size() * 2);
+      static constexpr uint8_t kBlanco[8] = {0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0};  // BC1: colour 0 = white, index 0
+      for (size_t b = 0; b + 8 <= datos.size(); b += 8) {
+        std::memcpy(temporal_bc_.data() + b * 2, datos.data() + b, 8);
+        std::memcpy(temporal_bc_.data() + b * 2 + 8, kBlanco, 8);
+      }
+      datos.swap(temporal_bc_);
+      for (uint32_t n = 0; n < textura.niveles; ++n) textura.desplazamiento_nivel[n] *= 2;
+    }
     if (bc_cpu) {
       if (!nfsmw::bc::Convertir(formato_bc, datos, textura.imagen.ancho, textura.imagen.alto,
                                 capas, textura.niveles, temporal_bc_, textura.desplazamiento_nivel)) {
