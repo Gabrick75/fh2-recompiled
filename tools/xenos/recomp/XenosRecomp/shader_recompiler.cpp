@@ -1608,7 +1608,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
         if (constantInfo->registerSet == RegisterSet::Bool)
         {
             const char* constantName = reinterpret_cast<const char*>(constantTableData + constantInfo->name);
+#ifdef FH2_RECOMP
+            // The control flow's boolean address (pixel shaders' from 128), read with FH2_BOOLEANO: all 256 reach
+            // the shaders (shader_common.h, FH2_COMPARTIDA_BOOLEANOS).
+            println("\t#define {} {}", constantName, constantInfo->registerIndex + (isPixelShader ? 128 : 0));
+#else
             println("\t#define {} (1 << {})", constantName, constantInfo->registerIndex + (isPixelShader ? 16 : 0));
+#endif
             // In NFSMW CTAB numbers b0.. and CF uses 128.. for pixels.
             // The g_Booleans packing keeps its 16 bits per stage.
 #ifdef NFSMW_RECOMP
@@ -2064,7 +2070,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     if (booleano == boolConstants.end())
                         throw std::runtime_error("EXEC condicional sin constante booleana declarada");
                     indent();
+#ifdef FH2_RECOMP
+                    println("if (FH2_BOOLEANO({}) {}= 0)", booleano->second, cfInstr.condExec.condition ? "!" : "=");
+#else
                     println("if ((g_Booleans & {}) {}= 0)", booleano->second, cfInstr.condExec.condition ? "!" : "=");
+#endif
                     indent();
                     out += "{\n";
                     ++indentation;
@@ -2154,7 +2164,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     {
                         auto findResult = boolConstants.find(cfInstr.condJmp.boolAddress);
                         if (findResult != boolConstants.end())
+#ifdef FH2_RECOMP
+                            println("if (FH2_BOOLEANO({}) {}= 0)", findResult->second, cfInstr.condJmp.condition ^ simpleControlFlow ? "!" : "=");
+#else
                             println("if ((g_Booleans & {}) {}= 0)", findResult->second, cfInstr.condJmp.condition ^ simpleControlFlow ? "!" : "=");
+#endif
                         else
                             println("if (b{} {}= 0)", uint32_t(cfInstr.condJmp.boolAddress), cfInstr.condJmp.condition ^ simpleControlFlow ? "!" : "=");
                     }

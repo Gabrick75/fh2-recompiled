@@ -998,6 +998,9 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_sin_ps_sin_color, true, "NFSMW",
 REXCVAR_DEFINE_INT32(fh2_nativo_diag_sin_stencil_vs, -1, "FH2",
                      "Native renderer (debug): the draws of this vertex shader (library number) without the stencil test")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_INT32(fh2_nativo_diag_sin_z_vs, -1, "FH2",
+                     "Native renderer (debug): the draws of this vertex shader (library number) without the depth test")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_STRING(fh2_nativo_diag_omitir_vs, "", "FH2",
                       "Native renderer (debug): library numbers of vertex shaders whose draws are not recorded, "
                       "comma-separated (to find a draw)");
@@ -1204,7 +1207,9 @@ constexpr size_t kMaxRegistrosLista = 4096;
 // FH2: NFS Carbon's 128 words, then FH2's own area up to byte 1152 (FH2_COMPARTIDA_BYTES in tools/xenos/recomp's
 // shader_common.h): vertex shader samplers at 512, direct vertex fetches at 640, loop constants at 768, the patched
 // parameters of each declared vertex element at 896.
-constexpr uint32_t kPalabrasCompartidas = 312;  // up to FH2_COMPARTIDA_BYTES (1248): element parameters, exp_adjust
+constexpr uint32_t kPalabrasCompartidas = 320;  // up to FH2_COMPARTIDA_BYTES (1280): element parameters, exp_adjust, booleans
+// FH2_COMPARTIDA_BOOLEANOS: the 8 words of boolean constants (all 256; g_Booleans only carries 16 + 16).
+constexpr uint32_t kPalabraFh2Booleanos = 1248 / 4;
 constexpr uint32_t kPalabraFh2ExpAjuste = 1152 / 4;  // FH2_COMPARTIDA_EXP: a texture slot's exp_adjust (0-19)
 // FH2_COMPARTIDA_INV_ESCALA: 1 / the pass's render scale (fh2_nativo_escala), for the pixel position register.
 constexpr uint32_t kPalabraFh2InvEscala = 1232 / 4;
@@ -1346,7 +1351,7 @@ constexpr VkDeviceSize kUboBytesPs = 256 * 16;
 constexpr VkDeviceSize kUboBytesPs = 224 * 16;
 #endif
 #if defined(FH2_RECOMP)
-constexpr VkDeviceSize kUboBytesCompartidas = kPalabrasCompartidas * 4;  // 312 words
+constexpr VkDeviceSize kUboBytesCompartidas = kPalabrasCompartidas * 4;  // 320 words
 #elif defined(NFSC_RECOMP)
 constexpr VkDeviceSize kUboBytesCompartidas = 32 * 16;  // 128 words
 #else
@@ -2732,6 +2737,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (diag_sin_stencil_vs_ >= 0 && int32_t(p.vs->numero) == diag_sin_stencil_vs_) {
       control_profundidad &= ~1u;  // debug: this VS's draws without the stencil test
     }
+    if (diag_sin_z_vs_ >= 0 && int32_t(p.vs->numero) == diag_sin_z_vs_) {
+      control_profundidad &= ~0x6u;  // debug: this VS's draws without the depth test and write
+    }
     if (control_profundidad & 0x3) {  // stencil o z
       const uint32_t info = r[gr::XE_GPU_REG_RB_DEPTH_INFO];
       claves[4] = (uint64_t(1) << 62) | (uint64_t(info & 0xFFF) << 24) |
@@ -3896,6 +3904,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     }
 #endif
     compartidas[64] = (r[kRegBooleanos] & 0xFFFF) | ((r[kRegBooleanos + 4] & 0xFFFF) << 16);
+#if defined(FH2_RECOMP)
+    std::copy(r + kRegBooleanos, r + kRegBooleanos + 8, compartidas + kPalabraFh2Booleanos);
+#endif
     compartidas[65] = 0;  // g_SwappedTexcoords
     if (!(r[gr::XE_GPU_REG_PA_SU_VTX_CNTL] & 0x1)) {  // PixelCenter::kD3DZero
       const float medio[2] = {1.0f / viewport.width, -1.0f / std::abs(viewport.height)};
@@ -9440,7 +9451,19 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     const uint32_t dimension = (f[5] >> 9) & 0x3;
     const bool cubo = dimension == uint32_t(xenos::DataDimension::kCube);
     const bool volumen = dimension == uint32_t(xenos::DataDimension::k3D);
+#if defined(FH2_RECOMP)
+    // 1D textures (the headlights' falloff, a k_16 ramp) are linear, without packed mips, with a 24-bit width
+    // (texture util.cpp, GetGuestTextureLayout): a 2D texture one texel high, as the shaders sample them (tfetch1D
+    // is tfetch2D at (u, 0.5)). Without them the headlight shader sampled an empty texture and lit everything.
+    const bool unidimensional = dimension == uint32_t(xenos::DataDimension::k1D);
+    if (unidimensional && ((f[2] & 0xFFFFFF) + 1 > 8192 || ((f[0] >> 31) & 0x1))) {
+      Avisar(30, "textura 1D de mas de 8192 o en mosaico: se usa una vacia");
+      return;
+    }
+    if (dimension != uint32_t(xenos::DataDimension::k2DOrStacked) && !cubo && !volumen && !unidimensional) {
+#else
     if (dimension != uint32_t(xenos::DataDimension::k2DOrStacked) && !cubo && !volumen) {
+#endif
       Avisar(30, "texturas 1D todavia no soportadas: se usa una vacia");
       return;
     }
@@ -9474,8 +9497,13 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (!cubo && !volumen) {
 #if defined(FH2_RECOMP)
       // fh2_nativo_diag_textura: what a fetch of that address gets (first 30).
-      if (fh2_diag_textura_ && (base & 0x1FFFFFFF) == fh2_diag_textura_ && fh2_diag_textura_avisos_ < 30 &&
-          (REXCVAR_GET(fh2_nativo_diag_ps) < 0 || ps_encuadre_diag_ == REXCVAR_GET(fh2_nativo_diag_ps))) {
+      if (fh2_diag_textura_ && (base & 0x1FFFFFFF) == fh2_diag_textura_ &&
+          (REXCVAR_GET(fh2_nativo_diag_ps) < 0 || ps_encuadre_diag_ == REXCVAR_GET(fh2_nativo_diag_ps)) &&
+          fh2_diag_textura_vistos_.size() < 64 &&
+          fh2_diag_textura_vistos_
+              .insert((uint64_t(uint32_t(ps_encuadre_diag_)) << 1) |
+                      (contexto_->TexturaResuelta(base & 0x1FFFFFFF) ? 1u : 0u))
+              .second) {
         ++fh2_diag_textura_avisos_;
         const ImagenNativa* r = contexto_->TexturaResuelta(base & 0x1FFFFFFF);
         REXLOG_INFO("[fh2 nativo] textura {:08X} formato {} {}x{} pedida por PS n{}: resuelta {} {}x{} formato vk {} "
@@ -9578,8 +9606,13 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         : indice_bc == 5 ? VK_FORMAT_R8G8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
 #endif
     // size_2d: 13 + 13 bits; size_3d: 11 + 11 + 10 bits (xenos.h:1222-1233).
+#if defined(FH2_RECOMP)
+    const uint32_t ancho = unidimensional ? (f[2] & 0xFFFFFF) + 1 : volumen ? (f[2] & 0x7FF) + 1 : (f[2] & 0x1FFF) + 1;
+    const uint32_t alto = unidimensional ? 1 : volumen ? ((f[2] >> 11) & 0x7FF) + 1 : ((f[2] >> 13) & 0x1FFF) + 1;
+#else
     const uint32_t ancho = volumen ? (f[2] & 0x7FF) + 1 : (f[2] & 0x1FFF) + 1;
     const uint32_t alto = volumen ? ((f[2] >> 11) & 0x7FF) + 1 : ((f[2] >> 13) & 0x1FFF) + 1;
+#endif
     const uint32_t fondo = volumen ? ((f[2] >> 22) & 0x3FF) + 1 : 0;
     if (volumen && tf.bloque > 1) {
       Avisar(38, "textura 3D comprimida: se usa una vacia");
@@ -13787,6 +13820,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   // Per-frame copies of the diagnostic cvars (see the comment at the Swap).
   std::string diag_omitir_ps_texto_;
   int32_t diag_sin_stencil_vs_ = REXCVAR_GET(fh2_nativo_diag_sin_stencil_vs);
+  int32_t diag_sin_z_vs_ = REXCVAR_GET(fh2_nativo_diag_sin_z_vs);
+  std::set<uint64_t> fh2_diag_textura_vistos_;  // fh2_nativo_diag_textura: (PS, resolved) pairs logged
   std::string diag_omitir_vs_texto_;  // fh2_nativo_diag_omitir_vs, read once per frame
   std::string omitir_vs_texto_;
   std::unordered_set<uint32_t> omitir_vs_;

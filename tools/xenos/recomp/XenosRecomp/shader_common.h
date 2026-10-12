@@ -88,7 +88,12 @@
 #define FH2_COMPARTIDA_BASE_VERTICE 1236
 // Point list draws (stars): the point diameter in host pixels, a float the vertex shaders write to PointSize.
 #define FH2_COMPARTIDA_TAM_PUNTO  1240
-#define FH2_COMPARTIDA_BYTES      1248
+// The 256 boolean constants as the game set them (SHADER_CONSTANT_BOOL_000_031..224_255: 8 words, bit b of word w is
+// boolean 32 * w + b; vertex shaders use 0-127 and pixel shaders 128-255, as the control flow addresses them). The
+// 16 + 16 bits of g_Booleans could not hold FH2's high ones (the headlights' bEnableDeferredLightContribution is
+// pixel boolean 100).
+#define FH2_COMPARTIDA_BOOLEANOS  1248
+#define FH2_COMPARTIDA_BYTES      1280
 #define SPEC_CONSTANT_ALPHA_FUNC_SHIFT  16
 #define SPEC_CONSTANT_ALPHA_FUNC_MASK   (7 << 16)
 
@@ -140,6 +145,7 @@ struct Fh2Punto
     float tam : PSIZE;
 };
 #define FH2_TAM_PUNTO (NFSMW_UBO ? asfloat(NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_TAM_PUNTO)) : asfloat(vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + FH2_COMPARTIDA_TAM_PUNTO)))
+#define FH2_BOOLEANO(ID) (((NFSMW_UBO ? NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_BOOLEANOS + ((ID) >> 5) * 4) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + FH2_COMPARTIDA_BOOLEANOS + ((ID) >> 5) * 4)) >> ((ID) & 31)) & 1)
 #define FH2_BUCLE(ID) (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_BUCLES + (ID) * 4) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + FH2_COMPARTIDA_BUCLES + (ID) * 4))
 
 #define g_Booleans                 (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT(256) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256))
