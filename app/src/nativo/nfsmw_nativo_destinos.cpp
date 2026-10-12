@@ -3315,6 +3315,19 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     return ultimo;
   }
 
+  uint64_t Fh2EnvioEnCurso() const override { return envios_ + 1; }
+
+  bool Fh2EnvioHecho(uint64_t envio, bool esperar) override {
+    if (envio > envios_) {  // still being recorded
+      if (!esperar) {
+        return false;
+      }
+      EnviarTrabajo(false);
+      Grabar();
+    }
+    return Fh2EnvioTerminado(envio, esperar);
+  }
+
   bool Fh2EnvioTerminado(uint64_t envio, bool esperar) override {
     bool terminado = true;
     // In submission order: each finished one writes its read-backs to guest memory (CompletarUna).

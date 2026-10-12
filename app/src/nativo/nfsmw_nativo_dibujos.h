@@ -181,6 +181,10 @@ class ContextoDestinos {
   virtual bool EnviarYEsperar() = 0;
   // FH2 (fh2_nativo_envio_parcial): submits what is recorded without a fence and goes on in the same slot.
   virtual bool EnviarParcial() { return false; }
+  // FH2 (fh2_nativo_cache_vertices): the number of the submission being recorded, and whether a submission is done
+  // (with esperar: submitting what is recorded if it is that one, and waiting for it).
+  virtual uint64_t Fh2EnvioEnCurso() const { return 0; }
+  virtual bool Fh2EnvioHecho(uint64_t envio, bool esperar) { return true; }
   // Waits for the GPU to finish everything pending and starts recording again. It is expensive (a
   // one-frame stutter), so it is only used as a last resort when memory runs out: with the GPU idle,
   // textures can be released regardless of when they were last used, because none is in use.

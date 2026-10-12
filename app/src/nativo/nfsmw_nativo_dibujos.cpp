@@ -197,6 +197,10 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_sin_desenfoque, true, "NFSMW",
                     "el difuminado de los bordes al acelerar y con el NOS: la imagen queda mas nitida");
 
 #if defined(FH2_RECOMP)
+REXCVAR_DEFINE_BOOL(fh2_nativo_cache_vertices, true, "FH2",
+                    "Native renderer: vertex ranges copied once into a persistent buffer and reused while the guest "
+                    "does not write them (DibujosVulkanImpl::Fh2CacheVertices)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 // The ring used to submit about twice per frame, each time after recording half a frame, so the GPU sat idle while the
 // ring recorded the next half (S23 Ultra: 59 % busy, which kept its clock at 220 of 719 MHz). Every N draws, between
 // passes, what is recorded now goes to the GPU without a fence; the slot, its upload buffer, fence and read-backs stay
@@ -3561,12 +3565,26 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     }
     const auto antes_vertices =
         cronometrar_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+#if defined(FH2_RECOMP)
+    bool fh2_con_cache = false;  // some binding reads the vertex cache, not the upload buffer
+#endif
     for (size_t b = 0; b < entrada->enlaces.size(); ++b) {
       const Origen& origen = origenes[b];
       if (diag_vertices_repetidos_) {
         AnotarVerticesRepetidos(origen.direccion, origen.bytes, uint32_t(origen.orden), origen.datos);
       }
       VkDeviceSize offset;
+#if defined(FH2_RECOMP)
+      fh2_bufers_enlace_[b] = subida_;
+      if (fh2_cache_v_activa_ && origen.direccion != 0 && !rectangulos &&
+          Fh2CacheVertices(origen.datos, uint32_t(origen.direccion), origen.bytes, uint32_t(origen.orden),
+                           entrada->enlaces[b].zancada, offset)) {
+        offsets_vertices[b] = offset;
+        fh2_bufers_enlace_[b] = fh2_cache_v_bufer_;
+        fh2_con_cache = true;
+        continue;
+      }
+#endif
       // If this same range was already copied in this frame, its place in the upload buffer is reused and
       // nothing is copied. See nfsmw_nativo_vertices_dedupe.h.
       if (dedupe_activo_ && origen.direccion != 0 &&
@@ -3675,6 +3693,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
             for (size_t m = 0; m < 6; ++m) {
               motivos[m] = double(fh2_bytes_busca_motivo_[m]) / 1048576.0;
               fh2_bytes_busca_motivo_[m] = 0;
+            }
+            if (fh2_cache_v_activa_) {
+              REXLOG_INFO("[fh2 nativo] cache de vertices: {} aciertos ({:.0f} MB sin copiar), {} copias ({:.0f} MB), "
+                          "{} sucias, {} dinamicas, {} cambios de mitad, {} sin sitio; {} entradas, mitad {} al {:.0f} %",
+                          fh2_cache_v_aciertos_, double(fh2_cache_v_bytes_ahorrados_) / 1048576.0, fh2_cache_v_fallos_,
+                          double(fh2_cache_v_bytes_) / 1048576.0, fh2_cache_v_sucias_, fh2_cache_v_dinamicas_,
+                          fh2_cache_v_cambios_, fh2_cache_v_sin_sitio_, fh2_cache_v_.size(), fh2_cache_v_mitad_,
+                          100.0 * double(fh2_cache_v_usado_) / double(kCacheVMitad));
             }
             REXLOG_INFO("[fh2 nativo] buscas copiadas en 10 s (MB): menos de 4 KB {:.0f}, tabla llena {:.0f}, primera vez "
                         "en el fotograma {:.0f}, otro bufer de subida {:.0f}, escritas por el juego {:.0f}, otro orden "
@@ -4218,6 +4244,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       c.stencil[1] = stencil_dorso;
       c.n_enlaces = uint32_t(entrada->enlaces.size());
       c.offsets_vertices = offsets_vertices;
+#if defined(FH2_RECOMP)
+      c.bufers_vertices = fh2_bufers_enlace_;
+#endif
       c.con_indices = con_indices;
       c.indices_de_16 = indices_de_16;
       c.indices = uint32_t(indices_de_16 ? indices16_.size() : indices_.size());
@@ -4366,7 +4395,12 @@ class DibujosVulkanImpl final : public DibujosVulkan {
      */
     bool base_cero = false;
     uint32_t primer_vertice = 0;  // offset / stride: where the copy starts, in vertices
-    if (vertices_base_cero_ && entrada->enlaces.size() == 1) {
+#if defined(FH2_RECOMP)
+    const bool fh2_base_cero_posible = !fh2_con_cache;
+#else
+    const bool fh2_base_cero_posible = true;
+#endif
+    if (vertices_base_cero_ && fh2_base_cero_posible && entrada->enlaces.size() == 1) {
       const VkDeviceSize zancada = entrada->enlaces[0].zancada;
       if (offsets_vertices[0] % zancada == 0) {
         base_cero = ComprobarBaseCero(offsets_vertices[0], zancada, origenes[0].bytes, vmin, primer_vertice);
@@ -4395,7 +4429,16 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       static constexpr VkDeviceSize kEnlaceEnCero = 0;
       const VkDeviceSize* a_enlazar = base_cero ? &kEnlaceEnCero : offsets_vertices.data();
       const uint32_t n_enlaces = uint32_t(entrada->enlaces.size());
+#if defined(FH2_RECOMP)
+      // fh2_nativo_cache_vertices: one buffer per binding; the next draw binds again (enlaces_grabados_ = 0).
+      if (fh2_con_cache) {
+        NFSMW_SUB(8, dfn_.vkCmdBindVertexBuffers(cmd, 0, n_enlaces, fh2_bufers_enlace_.data(), a_enlazar));
+        enlaces_grabados_ = 0;
+      }
+      bool igual = fh2_con_cache || n_enlaces == enlaces_grabados_;
+#else
       bool igual = n_enlaces == enlaces_grabados_;
+#endif
       for (uint32_t i = 0; igual && i < n_enlaces; ++i) {
         igual = a_enlazar[i] == offsets_grabados_[i];
       }
@@ -4608,6 +4651,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (c.n_enlaces) {
       std::array<VkBuffer, 16> bufers{};
       bufers.fill(c.bufer);
+#if defined(FH2_RECOMP)
+      for (uint32_t i = 0; i < c.n_enlaces; ++i) {
+        if (c.bufers_vertices[i] != VK_NULL_HANDLE) bufers[i] = c.bufers_vertices[i];
+      }
+#endif
       dfn_.vkCmdBindVertexBuffers(cmd, 0, c.n_enlaces, bufers.data(), c.offsets_vertices.data());
     }
     const uint32_t consulta = !diag_estadisticas_dibujo_
@@ -5553,6 +5601,17 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       rex::ui::vulkan::util::FlushMappedMemoryRange(dispositivo_, subida_memoria_, subida_tipo_, 0,
                                                     subida_tamano_real_, subida_usado_);
     }
+#if defined(FH2_RECOMP)
+    if (fh2_cache_v_sucio_max_ > fh2_cache_v_sucio_min_) {
+      if (!fh2_cache_v_coherente_) {
+        rex::ui::vulkan::util::FlushMappedMemoryRange(dispositivo_, fh2_cache_v_memoria_, fh2_cache_v_tipo_,
+                                                      fh2_cache_v_sucio_min_, fh2_cache_v_tamano_real_,
+                                                      fh2_cache_v_sucio_max_ - fh2_cache_v_sucio_min_);
+      }
+      fh2_cache_v_sucio_min_ = ~VkDeviceSize(0);
+      fh2_cache_v_sucio_max_ = 0;
+    }
+#endif
     if (compartidas_aparte_ && compartidas_usado_ && !compartidas_coherente_) {
       rex::ui::vulkan::util::FlushMappedMemoryRange(dispositivo_, compartidas_memoria_, compartidas_tipo_, 0,
                                                     compartidas_tamano_real_, compartidas_usado_);
@@ -8579,6 +8638,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                 REXCVAR_GET(nfsmw_nativo_subida_memoria));
     MedirMemoriaSubida();
     CrearCompartidasAparte();
+#if defined(FH2_RECOMP)
+    Fh2CrearCacheVertices();
+#endif
     UsarRanura(0);
     return true;
   }
@@ -13637,9 +13699,182 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
     }
     self->fh2_avisos_escritura_.fetch_add(1, std::memory_order_relaxed);
+    if (self->fh2_paginas_escritas_) {
+      // fh2_nativo_cache_vertices: every 4 KB page written since it was watched.
+      const uint64_t primera = uint64_t(inicio) >> 12;
+      const uint64_t ultima = std::min<uint64_t>((fin + 4095) >> 12, kMemoriaFisica >> 12);
+      for (uint64_t pagina = primera; pagina < ultima; ++pagina) {
+        self->fh2_paginas_escritas_[pagina].fetch_add(1, std::memory_order_release);
+      }
+    }
     return std::make_pair(uint32_t(0), UINT32_MAX);
   }
   uint32_t fh2_diag_textura_avisos_ = 0;  // the draw's pixel shader number, for the framing diagnostics
+
+  // --- fh2_nativo_cache_vertices ------------------------------------------------------------------------------
+  // The world's vertex ranges (terrain, trees, buildings, track) are the same every frame: they were copied (and
+  // byte-swapped) into the upload buffer on every draw, about 2 GB per 10 s on the S23 Ultra, which cost the ring
+  // thread CPU and the GPU bandwidth. Here a range is copied once into a persistent buffer and reused while the guest
+  // has not written its pages (the physical write watch, as for the direct fetches: a counter per 4 KB page, and each
+  // entry keeps their sum at copy time). A range rewritten twice is dynamic and goes through the upload buffer as
+  // before. The buffer has two halves: when the one in use fills up, the other is cleared and used, once the GPU has
+  // finished every submission that read it (never a wait: until then, new ranges go through the upload buffer).
+  struct Fh2EntradaCacheV {
+    uint32_t direccion = 0, bytes = 0, orden = 0, zancada = 0;
+    VkDeviceSize offset = 0;
+    uint32_t mitad = 0;
+    uint64_t firma = 0;  // sum of the page counters when copied
+    uint32_t reescrituras = 0;
+    bool dinamica = false;
+  };
+  static constexpr VkDeviceSize kCacheVMitad = VkDeviceSize(64) << 20;
+  std::unordered_map<uint64_t, Fh2EntradaCacheV> fh2_cache_v_;
+  std::unique_ptr<std::atomic<uint32_t>[]> fh2_paginas_escritas_;
+  VkBuffer fh2_cache_v_bufer_ = VK_NULL_HANDLE;
+  VkDeviceMemory fh2_cache_v_memoria_ = VK_NULL_HANDLE;
+  uint8_t* fh2_cache_v_datos_ = nullptr;
+  uint32_t fh2_cache_v_tipo_ = 0;
+  VkDeviceSize fh2_cache_v_tamano_real_ = 0;
+  bool fh2_cache_v_coherente_ = true;
+  bool fh2_cache_v_activa_ = false;
+  uint32_t fh2_cache_v_mitad_ = 0;
+  VkDeviceSize fh2_cache_v_usado_ = 0;  // in the current half
+  std::array<uint64_t, 2> fh2_cache_v_libre_tras_{};  // the half may be reused once this submission is done
+  VkDeviceSize fh2_cache_v_sucio_min_ = ~VkDeviceSize(0), fh2_cache_v_sucio_max_ = 0;  // to flush before submitting
+  uint64_t fh2_cache_v_aciertos_ = 0, fh2_cache_v_fallos_ = 0, fh2_cache_v_bytes_ = 0, fh2_cache_v_bytes_ahorrados_ = 0;
+  uint64_t fh2_cache_v_sucias_ = 0, fh2_cache_v_dinamicas_ = 0, fh2_cache_v_cambios_ = 0, fh2_cache_v_sin_sitio_ = 0;
+  std::array<VkBuffer, 16> fh2_bufers_enlace_{};
+
+  uint64_t Fh2FirmaPaginas(uint32_t direccion, uint32_t bytes) const {
+    uint64_t suma = 0;
+    const uint32_t ultima = (direccion + bytes - 1) >> 12;
+    for (uint32_t pagina = direccion >> 12; pagina <= ultima; ++pagina) {
+      suma += fh2_paginas_escritas_[pagina].load(std::memory_order_acquire);
+    }
+    return suma;
+  }
+
+  void Fh2CrearCacheVertices() {
+    if (!REXCVAR_GET(fh2_nativo_cache_vertices) || !memoria_ || !fh2_vigilancia_) {
+      return;
+    }
+    VkBufferCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    info.size = kCacheVMitad * 2;
+    info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (dfn_.vkCreateBuffer(device_, &info, nullptr, &fh2_cache_v_bufer_) != VK_SUCCESS) {
+      return;
+    }
+    VkMemoryRequirements requisitos;
+    dfn_.vkGetBufferMemoryRequirements(device_, fh2_cache_v_bufer_, &requisitos);
+    const auto& tipos = dispositivo_->memory_types();
+    fh2_cache_v_tipo_ = rex::ui::vulkan::util::ChooseMemoryType(tipos, requisitos.memoryTypeBits,
+                                                                rex::ui::vulkan::util::MemoryPurpose::kUpload);
+    VkMemoryAllocateInfo reserva{};
+    reserva.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    reserva.allocationSize = requisitos.size;
+    reserva.memoryTypeIndex = fh2_cache_v_tipo_;
+    void* mapeado = nullptr;
+    if (fh2_cache_v_tipo_ == UINT32_MAX ||
+        dfn_.vkAllocateMemory(device_, &reserva, nullptr, &fh2_cache_v_memoria_) != VK_SUCCESS ||
+        dfn_.vkBindBufferMemory(device_, fh2_cache_v_bufer_, fh2_cache_v_memoria_, 0) != VK_SUCCESS ||
+        dfn_.vkMapMemory(device_, fh2_cache_v_memoria_, 0, VK_WHOLE_SIZE, 0, &mapeado) != VK_SUCCESS) {
+      REXLOG_WARN("[fh2 nativo] cache de vertices: no se pudo reservar; los vertices van en el bufer de subida");
+      return;
+    }
+    fh2_cache_v_datos_ = static_cast<uint8_t*>(mapeado);
+    fh2_cache_v_tamano_real_ = requisitos.size;
+    fh2_cache_v_coherente_ = (tipos.host_coherent >> fh2_cache_v_tipo_) & 0x1;
+    fh2_paginas_escritas_ = std::make_unique<std::atomic<uint32_t>[]>(kMemoriaFisica >> 12);
+    fh2_cache_v_activa_ = true;
+    REXLOG_INFO("[fh2 nativo] cache de vertices: 2 x {} MB en el tipo de memoria {} ({})", kCacheVMitad >> 20,
+                fh2_cache_v_tipo_, fh2_cache_v_coherente_ ? "coherente" : "se publica antes de enviar");
+  }
+
+  // The other half, if the GPU is done with it: its entries go and it becomes the current one.
+  bool Fh2CambiarMitadCacheV() {
+    const uint32_t otra = 1 - fh2_cache_v_mitad_;
+    if (!contexto_->Fh2EnvioHecho(fh2_cache_v_libre_tras_[otra], false)) {
+      return false;
+    }
+    // The half being left: it is no longer read from the next submission on, so it is free once the one being
+    // recorded now is done. Its entries go now, so nobody reads it again.
+    fh2_cache_v_libre_tras_[fh2_cache_v_mitad_] = contexto_->Fh2EnvioEnCurso();
+    for (auto it = fh2_cache_v_.begin(); it != fh2_cache_v_.end();) {
+      it = (it->second.mitad == fh2_cache_v_mitad_ && !it->second.dinamica) ? fh2_cache_v_.erase(it) : std::next(it);
+    }
+    fh2_cache_v_mitad_ = otra;
+    fh2_cache_v_usado_ = 0;
+    ++fh2_cache_v_cambios_;
+    return true;
+  }
+
+  // The vertex cache for one binding's range: true with the offset in fh2_cache_v_bufer_, false to use the upload
+  // buffer as before (dynamic, too big, or no room yet).
+  bool Fh2CacheVertices(const uint8_t* datos, uint32_t direccion, uint32_t bytes, uint32_t orden, uint32_t zancada,
+                        VkDeviceSize& offset) {
+    if (bytes < 1024 || bytes > kCacheVMitad / 8 || !zancada) {
+      return false;
+    }
+    const uint64_t clave = (uint64_t(direccion) << 32) ^ (uint64_t(bytes) << 6) ^ (uint64_t(zancada) << 1) ^ orden;
+    auto it = fh2_cache_v_.find(clave);
+    if (it != fh2_cache_v_.end()) {
+      Fh2EntradaCacheV& e = it->second;
+      if (e.direccion != direccion || e.bytes != bytes || e.zancada != zancada || e.orden != orden) {
+        return false;  // a key collision: the upload buffer
+      }
+      if (e.dinamica) {
+        return false;
+      }
+      if (Fh2FirmaPaginas(direccion, bytes) == e.firma) {
+        offset = e.offset;
+        ++fh2_cache_v_aciertos_;
+        fh2_cache_v_bytes_ahorrados_ += bytes;
+        return true;
+      }
+      ++fh2_cache_v_sucias_;
+      if (++e.reescrituras >= 2) {
+        e.dinamica = true;
+        ++fh2_cache_v_dinamicas_;
+        return false;
+      }
+    }
+    // A new place in the current half, at a multiple of the stride (and of 4).
+    const VkDeviceSize alineacion = zancada % 4 == 0 ? zancada : VkDeviceSize(zancada) * 4;
+    VkDeviceSize inicio = (fh2_cache_v_usado_ + alineacion - 1) / alineacion * alineacion;
+    if (inicio + bytes > kCacheVMitad) {
+      if (!Fh2CambiarMitadCacheV()) {
+        ++fh2_cache_v_sin_sitio_;
+        return false;
+      }
+      inicio = 0;
+      it = fh2_cache_v_.find(clave);  // the switch may have dropped it
+    }
+    offset = VkDeviceSize(fh2_cache_v_mitad_) * kCacheVMitad + inicio;
+    fh2_cache_v_usado_ = inicio + bytes;
+    // Watched first, then the signature, then the copy: a write in between changes the signature.
+    memoria_->EnablePhysicalMemoryAccessCallbacks(direccion, bytes, true, false);
+    Fh2EntradaCacheV e;
+    if (it != fh2_cache_v_.end()) {
+      e = it->second;
+    }
+    e.direccion = direccion;
+    e.bytes = bytes;
+    e.orden = orden;
+    e.zancada = zancada;
+    e.offset = offset;
+    e.mitad = fh2_cache_v_mitad_;
+    e.firma = Fh2FirmaPaginas(direccion, bytes);
+    const TrabajoCopia trabajo{datos, fh2_cache_v_datos_ + offset, bytes / 4, static_cast<xenos::Endian>(orden)};
+    CopiarVertices(trabajo);
+    fh2_cache_v_[clave] = e;
+    fh2_cache_v_sucio_min_ = std::min(fh2_cache_v_sucio_min_, offset);
+    fh2_cache_v_sucio_max_ = std::max(fh2_cache_v_sucio_max_, offset + bytes);
+    ++fh2_cache_v_fallos_;
+    fh2_cache_v_bytes_ += bytes;
+    return true;
+  }
 #endif
   // IndicesDe16 (nfsmw_nativo_indices_neon). Ring only.
   int32_t indices_neon_ = -1;  // -1 cvar not read, 0 plain loop, 1 NEON
@@ -13776,6 +14011,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     uint32_t stencil[2] = {};          // RB_STENCILREFMASK for front and back
     uint32_t n_enlaces = 0;
     std::array<VkDeviceSize, 16> offsets_vertices{};
+    std::array<VkBuffer, 16> bufers_vertices{};  // FH2: per binding (the vertex cache); null = bufer
     bool con_indices = false;
     bool indices_de_16 = false;
     uint32_t indices = 0;
