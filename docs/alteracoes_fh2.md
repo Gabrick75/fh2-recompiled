@@ -320,8 +320,20 @@ Aparelhos: S23U `RQCXB01R9LM` (Adreno 740) e moto g(9) play `0074545453` (Adreno
   - **Medição que NÃO funciona (não repetir)**: estatística dos bytes no `EscribirLecturas` com
     `nfsmw_nativo_leer_resueltas_texels=2000000` deu 100 % zeros até para a cena final `1DAC5000`: a leitura de volta
     não traz os dados dessas texturas. A conclusão "máscara toda zerada" ficou **sem prova**; o diagnóstico foi removido.
-  - **Próximo passo**: comparar a máscara visualmente (`nfsmw_nativo_diag_resueltas=true` no nativo, PNG do emulado) e
-    entender por que o nativo tem um só quad multiplicativo de luz e o que o PS n2916 lê em `t1`.
+  - Comparação visual: a máscara do emulado (PNG do despejo) é branca com sombras azuladas do carro e das árvores; no
+    mosaico do nativo (`nfsmw_nativo_diag_resueltas=true`, captura aos 70 s) quase todas as texturas copiadas saem pretas
+    (coerente com máscara preta, mas não prova).
+  - Sequência do nativo antes da cópia da máscara, igual à do emulado: 24 pontos (VS n1744), limpeza (retângulo
+    VS n2310 PS n1137, modo 5), quad VS n2289 PS n2916 (`mascara 0000000F`, lê `t1=1CE2D000`), retângulo, volume de
+    stencil (VS n1502, prim 4 n 36), quad de luz VS n218 PS n3005 (`mascara 0000000E`, mistura `00080008`, lê
+    `t0=1DAC5000 t1=138FF000 t2=134D9000`).
+  - **Testes negativos (não repetir)**: (1) o tradutor já trata as constantes 0/1 das exportações como o Xenia
+    (`zeroMask`/`oneMask`); (2) o emulado também inicia as saídas de cor em 0 (`spirv_translator.cpp`, "Initialize the
+    colors for safety"); (3) restringir a escrita do PS n2916 a R e G (`--fh2_nativo_diag_mascara_ps=2916:3`, cvar novo)
+    não muda a noite.
+  - **Próximas pistas**: o que o quad de luz PS n3005 lê (`t0=1DAC5000` é a cena 1280x720 em cor; um quad de luz
+    diferida costuma precisar da **profundidade** da cena: conferir se no emulado esse endereço tem outra coisa no
+    momento do draw); comparar as constantes desse PS nos dois; ver se a limpeza (PS n1137, modo 5) escreve 1 no nativo.
 
 ### [feito] Causa da grama achatada/marrom: swizzle dos elementos por instância
 - **Achado** (diagnóstico `[fh2 nativo] elemento VS n.. #..`, uma linha por elemento e VS): nos fetches lidos direto

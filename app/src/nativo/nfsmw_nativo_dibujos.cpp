@@ -1009,6 +1009,9 @@ REXCVAR_DEFINE_INT32(fh2_nativo_diag_sin_stencil_vs, -1, "FH2",
 REXCVAR_DEFINE_INT32(fh2_nativo_diag_sin_z_vs, -1, "FH2",
                      "Native renderer (debug): the draws of this vertex shader (library number) without the depth test")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_STRING(fh2_nativo_diag_mascara_ps, "", "FH2",
+                      "Native renderer (debug): 'PS:mask' replaces render target 0's color write mask (4 bits, RGBA "
+                      "from bit 0) in the draws of that pixel shader (library number)");
 REXCVAR_DEFINE_STRING(fh2_nativo_diag_vaciar, "", "FH2",
                       "Native renderer (debug): texture address (hex) sampled as the empty texture instead (gray with "
                       "nfsmw_nativo_diag_vacias_grises), to test what a texture changes");
@@ -2619,8 +2622,23 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 #else
     const uint32_t pitch = r[gr::XE_GPU_REG_RB_SURFACE_INFO] & 0x3FFF;
 #endif
-    const uint32_t mascara_registro =
+    uint32_t mascara_registro =
         modo_edram == uint32_t(xenos::EdramMode::kColorDepth) ? r[gr::XE_GPU_REG_RB_COLOR_MASK] : 0;
+#if defined(FH2_RECOMP)
+    {
+      static int ps_mascara = -2;
+      static uint32_t mascara_diag = 0;
+      if (ps_mascara == -2) {
+        const std::string v = REXCVAR_GET(fh2_nativo_diag_mascara_ps);
+        const size_t dos = v.find(':');
+        ps_mascara = dos == std::string::npos ? -1 : std::atoi(v.c_str());
+        mascara_diag = dos == std::string::npos ? 0 : uint32_t(std::strtoul(v.c_str() + dos + 1, nullptr, 16)) & 0xF;
+      }
+      if (ps_mascara >= 0 && ps && int(ps->numero) == ps_mascara) {
+        mascara_registro = (mascara_registro & ~0xFu) | mascara_diag;
+      }
+    }
+#endif
     static constexpr uint32_t kInfoColor[4] = {
         gr::XE_GPU_REG_RB_COLOR_INFO, gr::XE_GPU_REG_RB_COLOR1_INFO,
         gr::XE_GPU_REG_RB_COLOR2_INFO, gr::XE_GPU_REG_RB_COLOR3_INFO};
