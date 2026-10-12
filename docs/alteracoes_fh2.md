@@ -300,6 +300,28 @@ Aparelhos: S23U `RQCXB01R9LM` (Adreno 740) e moto g(9) play `0074545453` (Adreno
   Provavelmente é o mapa de sombra dos faróis. **Próximo passo**: descobrir quem escreve `1D6C5000` no emulado
   (traço de vários quadros, ou procurar resolves/memexport com destino nessa faixa) e fazer o nativo produzi-lo.
 - Até lá, uma biblioteca nova nos celulares traria a noite clara (a antiga, de 05:46, não liga a booleana 228).
+- **Atualização (mesmo dia, depois):**
+  - `1D6C5000` **não é dos faróis**: é `CSMShadowMapLevel0Samp` (1º nível do mapa de sombras em cascata do sol;
+    registro 8 de `p_003381`/PS n3238) e também a textura do registro 0 de partículas. O emulado não o reescreve:
+    10 quadros traçados durante a direção (`--gpu_traco_quadro_s=70 --gpu_traco_quadros=10`) não têm nenhum RESOLVE
+    para ele nem nenhum 1024x1024. A memória tem profundidades de 0 a 1.
+  - **Feito**: `k_24_8` lido da memória vira `R32_SFLOAT` em R (24 bits de cima / 2^24−1), como o emulado
+    (`kLoadShaderIndexDepthUnorm`). Efeito: **os borrões pretos da poeira sumiram** (viram partículas pequenas
+    escuras); a noite continuou clara.
+  - A máscara de sombra da tela é `1CE2D000` (registro 13, `ShadowMaskSamp`, 1280x720 8888), copiada 1×/quadro nos
+    dois renderizadores. No emulado (`--readback_resolve=fast` + `tools/despejo_png.py`) os 4 bytes têm média
+    0,94–0,99, nenhum zero. Trocá-la por cinza no nativo (`--fh2_nativo_diag_vaciar=1CE2D000
+    --nfsmw_nativo_diag_vacias_grises=true`) muda toda a luz da cena: **é a peça central da noite clara**.
+  - Sequência no emulado antes da cópia da máscara: 558 retângulo sem PS (limpeza da base 720), 559 quad
+    `PS 58CE51…` na base 720 (ONE/ZERO), 560–561 volumes de stencil (prim 8 e prim 4 n 36), 562+ quads
+    `PS 232440…` com mistura `00080008` (multiplicativa, DST_COLOR × ZERO), um por luz. No nativo o 559 é
+    VS n2289 + PS n2916 (`p_004017`: média 2x2 de s1.x em R, G = 1, B/A não escritos) lendo `t1=1CE2D000`, e só
+    **um** draw `00080008` no quadro traçado (VS n218 + PS n3005).
+  - **Medição que NÃO funciona (não repetir)**: estatística dos bytes no `EscribirLecturas` com
+    `nfsmw_nativo_leer_resueltas_texels=2000000` deu 100 % zeros até para a cena final `1DAC5000`: a leitura de volta
+    não traz os dados dessas texturas. A conclusão "máscara toda zerada" ficou **sem prova**; o diagnóstico foi removido.
+  - **Próximo passo**: comparar a máscara visualmente (`nfsmw_nativo_diag_resueltas=true` no nativo, PNG do emulado) e
+    entender por que o nativo tem um só quad multiplicativo de luz e o que o PS n2916 lê em `t1`.
 
 ### [feito] Causa da grama achatada/marrom: swizzle dos elementos por instância
 - **Achado** (diagnóstico `[fh2 nativo] elemento VS n.. #..`, uma linha por elemento e VS): nos fetches lidos direto

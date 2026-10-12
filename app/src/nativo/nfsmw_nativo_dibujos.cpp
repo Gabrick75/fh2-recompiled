@@ -1009,6 +1009,9 @@ REXCVAR_DEFINE_INT32(fh2_nativo_diag_sin_stencil_vs, -1, "FH2",
 REXCVAR_DEFINE_INT32(fh2_nativo_diag_sin_z_vs, -1, "FH2",
                      "Native renderer (debug): the draws of this vertex shader (library number) without the depth test")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_STRING(fh2_nativo_diag_vaciar, "", "FH2",
+                      "Native renderer (debug): texture address (hex) sampled as the empty texture instead (gray with "
+                      "nfsmw_nativo_diag_vacias_grises), to test what a texture changes");
 REXCVAR_DEFINE_BOOL(fh2_nativo_diag_luces, false, "FH2",
                     "Native renderer (debug): log the boolean constants the game sets (every 10 s) and the headlights' "
                     "parameters (pixel shader c168, c169) of a draw with the deferred light contribution on");
@@ -1935,6 +1938,15 @@ bool FormatoTexturaDe(uint32_t formato, FormatoTextura& f) {
     case 58:
       f = {VK_FORMAT_BC2_UNORM_BLOCK, 4, 8, 2, kSwizzleAAAA};
       return true;
+#if defined(FH2_RECOMP)
+    // k_24_8 read from memory (not a depth this renderer resolved): 24-bit depth over 8-bit stencil, as R32 float in R
+    // like the emulation (texture_cache.cpp: kLoadShaderIndexDepthUnorm, VK_FORMAT_R32_SFLOAT, RRRR). FH2's headlight
+    // shadow map at 1D6C5000 is one; read as an empty texture, the screen shadow mask the headlights' cone uses came
+    // out 0 and the headlights lit the whole night scene. Converted after untiling (ConvertirProfundidad24).
+    case 22:
+      f = {VK_FORMAT_R32_SFLOAT, 1, 4, 4, kSwizzleRRRR};
+      return true;
+#endif
     case 24:  // k_16
       f = {VK_FORMAT_R16_UNORM, 1, 2, 2, kSwizzleRRRR};
       return true;
@@ -9590,6 +9602,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     const uint32_t swizzle = (f[3] >> 1) & 0xFFF;
     const uint32_t base = (f[1] >> 12) << 12;
 #if defined(FH2_RECOMP)
+    {
+      static const uint32_t vaciar = uint32_t(std::strtoul(REXCVAR_GET(fh2_nativo_diag_vaciar).c_str(), nullptr, 16));
+      if (vaciar && (base & 0x1FFFFFFF) == vaciar) {
+        return;  // ranura 0: the empty texture
+      }
+    }
+#endif
+#if defined(FH2_RECOMP)
     if (const int32_t exp_adjust = int32_t(f[3] << 13) >> 26; exp_adjust != 0) {
       static std::set<uint64_t> vistos_exp;
       if (vistos_exp.size() < 40 && vistos_exp.insert((uint64_t(base) << 8) | uint32_t(exp_adjust & 0xFF)).second) {
@@ -10179,7 +10199,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
          */
         // The hash worker copies guest blocks directly into the GPU upload buffer.
         // Converted textures use the normal path so decoding happens before upload.
-        if (!bc_cpu && formato != 58 && !textura.imagen.preparada && huellas_fase_ != kHuellasApagado && !diag_mips_ &&
+        if (!bc_cpu && formato != 58 && formato != 22 && !textura.imagen.preparada && huellas_fase_ != kHuellasApagado && !diag_mips_ &&
             mosaico_rapido_ >= 0) {
           std::array<size_t, 16> desplazamientos{};
           std::array<size_t, 16> capa_nivel{};
@@ -10389,6 +10409,23 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     }
     textura.intervalo = 1;
     textura.siguiente = fotograma_ + 1;
+    if (formato == 22) {
+      // k_24_8: each word, already in host byte order, to a float depth (the top 24 bits over 2^24 - 1).
+      float minimo = 1.0f, maximo = 0.0f;
+      for (size_t i = 0; i + 4 <= datos.size(); i += 4) {
+        uint32_t w;
+        std::memcpy(&w, datos.data() + i, 4);
+        const float z = float(w >> 8) * (1.0f / 16777215.0f);
+        std::memcpy(datos.data() + i, &z, 4);
+        minimo = std::min(minimo, z);
+        maximo = std::max(maximo, z);
+      }
+      static std::set<uint32_t> vistas_k24;
+      if (vistas_k24.size() < 16 && vistas_k24.insert(base).second) {
+        REXLOG_INFO("[fh2 nativo] k_24_8 de memoria {:08X} {}x{}: profundidad {:.6f} a {:.6f}", base, ancho, alto,
+                    minimo, maximo);
+      }
+    }
     if (formato == 58) {
       // k_DXT3A: each 8-byte block of 4-bit values becomes a BC2 block (those values as its alpha, white colour),
       // so the level offsets double (FormatoTexturaDe).
