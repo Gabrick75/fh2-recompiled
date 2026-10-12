@@ -995,6 +995,9 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_sin_ps_sin_color, true, "NFSMW",
                     "Renderizador nativo (17/09, build 157): en los dibujos que no escriben ningun color, "
                     "monta el pipeline sin etapa de fragmentos si el pixel shader no puede descartar pixeles "
                     "ni escribe profundidad. La imagen no cambia y la GPU no sombrea (mapa de sombras)");
+REXCVAR_DEFINE_STRING(fh2_nativo_diag_omitir_vs, "", "FH2",
+                      "Native renderer (debug): library numbers of vertex shaders whose draws are not recorded, "
+                      "comma-separated (to find a draw)");
 REXCVAR_DEFINE_STRING(nfsmw_nativo_diag_omitir_ps, "", "NFSMW",
                       "Renderizador nativo: numeros de PS separados por comas cuyos dibujos no "
                       "se graban (solo pruebas, para localizar un dibujo)");
@@ -2451,6 +2454,28 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (ps && !omitir_ps_.empty() && omitir_ps_.count(ps->numero)) {
       return Fh2DiagSalida(p, __LINE__, true);
     }
+    {
+      // Diagnostic: VS whose draws are skipped (fh2_nativo_diag_omitir_vs), read once per frame.
+      if (diag_omitir_vs_texto_ != omitir_vs_texto_) {
+        omitir_vs_texto_ = diag_omitir_vs_texto_;
+        omitir_vs_.clear();
+        uint32_t numero = 0;
+        bool hay = false;
+        for (char c : omitir_vs_texto_ + ",") {
+          if (c >= '0' && c <= '9') {
+            numero = numero * 10 + uint32_t(c - '0');
+            hay = true;
+          } else if (hay) {
+            omitir_vs_.insert(numero);
+            numero = 0;
+            hay = false;
+          }
+        }
+      }
+      if (!omitir_vs_.empty() && omitir_vs_.count(p.vs->numero)) {
+        return Fh2DiagSalida(p, __LINE__, true);
+      }
+    }
     const uint32_t iniciador = r[gr::XE_GPU_REG_VGT_DRAW_INITIATOR];
     const uint32_t tipo = iniciador & 0x3F;
     const uint32_t fuente = (iniciador >> 6) & 0x3;
@@ -2693,7 +2718,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       ++dibujos_vegetacion_pronto_;
       return Fh2DiagSalida(p, __LINE__, true);
     }
-    const uint32_t control_profundidad = r[gr::XE_GPU_REG_RB_DEPTHCONTROL];
+    // Rectangle lists, points and lines are not polygons: they have no back face, and the front face's stencil state
+    // applies to them (the emulation: IsPrimitivePolygonal and pipeline_cache.cpp, backface_enable only for
+    // polygons). As two triangles, a rectangle can face away from Vulkan's front face, and it took the separate back
+    // face's stencil: FH2's cockpit view draws a rectangle list that pushes the depth near where the stencil is not
+    // 0 (the car's interior), with an ALWAYS back function, so it covered the windows too and the world behind them
+    // failed the depth test (a grey windscreen).
+    const bool poligono = tipo >= 4 && tipo != 8;
+    const uint32_t control_profundidad = r[gr::XE_GPU_REG_RB_DEPTHCONTROL] & (poligono ? ~0u : ~0x80u);
     if (control_profundidad & 0x3) {  // stencil o z
       const uint32_t info = r[gr::XE_GPU_REG_RB_DEPTH_INFO];
       claves[4] = (uint64_t(1) << 62) | (uint64_t(info & 0xFFF) << 24) |
@@ -5643,6 +5675,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
      * serves no purpose: none of them changes within a frame.
      */
     diag_omitir_ps_texto_ = REXCVAR_GET(nfsmw_nativo_diag_omitir_ps);
+    diag_omitir_vs_texto_ = REXCVAR_GET(fh2_nativo_diag_omitir_vs);
     diag_vertices_repetidos_ = REXCVAR_GET(nfsmw_nativo_diag_vertices_repetidos);
     dedupe_activo_ = REXCVAR_GET(nfsmw_nativo_dedupe_vertices);
     vertices_base_cero_ = REXCVAR_GET(nfsmw_nativo_vertices_base_cero) && !vertices_base_cero_apagado_;
@@ -13747,6 +13780,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   bool enviado_tras_sombras_ = false;        // once per frame
   // Per-frame copies of the diagnostic cvars (see the comment at the Swap).
   std::string diag_omitir_ps_texto_;
+  std::string diag_omitir_vs_texto_;  // fh2_nativo_diag_omitir_vs, read once per frame
+  std::string omitir_vs_texto_;
+  std::unordered_set<uint32_t> omitir_vs_;
   bool diag_vertices_repetidos_ = false;
   bool diag_estadisticas_dibujo_ = false;
   uint32_t tijera_prueba_ = 0;
