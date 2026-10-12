@@ -28,7 +28,7 @@ final class GameOptions {
     // Graphics
     static final String RENDERER = "renderer";                // "emulated" (Xenos) or "native" (nfsmw_renderizador)
     static final String RENDER_SCALE = "render_scale";        // gpu_escala_render: percent of 1280x720
-    static final String FPS = "fps";                          // only picks the display refresh rate for now
+    static final String FPS = "fps";                          // the game's FPS limit, "0" = unlimited (fpsLimit)
     static final String ANTI_ALIASING = "anti_aliasing";      // "off", "msaa", "fxaa"
     static final String MSAA_SAMPLES = "msaa_samples";        // "2", "4"
     static final String FXAA_QUALITY = "fxaa_quality";        // "normal", "high"
@@ -67,7 +67,7 @@ final class GameOptions {
             case RENDERER: return "emulated";
             case PRESENT_MODE: return "fifo";
             case RENDER_SCALE: return "100";
-            case FPS: return "60";
+            case FPS: return "30";  // the Xbox 360's
             // Off: the GPU cost of the game's MSAA 4x nearly halves the frame rate on a phone (event menu on the
             // S23 Ultra: 6.8 fps 4x, 13.0 off), and the image is right without it (the MSAA cap leaves the game's
             // half-pitch 4x EDRAM clears alone, src/graphics/command_processor.cpp).
@@ -208,6 +208,25 @@ final class GameOptions {
             new GameLanguage("zh-TW", "繁體中文", "Chinês tradicional", "Traditional Chinese", 8, 101, false),
     };
 
+    /**
+     * The game's frame rate is paced by the emulated vblank, not by a timer of its own: in game it flips every 2nd
+     * vblank (30 fps at the console's 60 Hz), in the start screens and loadings every one. So the limit is set by
+     * the vblank rate, twice the chosen FPS: on the PC, 120 Hz took the loading screens from 55 to 104 fps and let
+     * game frames under 30 ms through, and the game's clock is the real one (KeQueryPerformanceFrequency), so after
+     * the same 20 s of throttle the car was at the same speed. Both renderers read the rate (VdQueryVideoMode in
+     * graphics_system.cpp and in BucleVblank). Unlimited is 480 Hz, the SDK's top: 240 fps in game. The start
+     * screens and loadings may go up to twice the limit.
+     */
+    static int vblankRate(Context context) {
+        int fps;
+        try {
+            fps = Integer.parseInt(get(context, FPS));
+        } catch (NumberFormatException e) {
+            fps = 30;
+        }
+        return fps <= 0 ? 480 : Math.max(30, Math.min(240, fps)) * 2;
+    }
+
     static GameLanguage gameLanguage(Context context) {
         String code = get(context, GAME_LANGUAGE);
         for (GameLanguage language : GAME_LANGUAGES) if (language.code.equals(code)) return language;
@@ -217,6 +236,8 @@ final class GameOptions {
     static List<String> arguments(Context context) {
         List<String> args = new ArrayList<>();
         args.add("--audio_ganancia_pct=" + get(context, VOLUME));
+        // The FPS limit is the guest vblank rate (fpsLimit).
+        args.add("--video_mode_refresh_rate=" + vblankRate(context));
         GameLanguage language = gameLanguage(context);
         args.add("--user_language=" + language.language);
         args.add("--user_country=" + language.country);

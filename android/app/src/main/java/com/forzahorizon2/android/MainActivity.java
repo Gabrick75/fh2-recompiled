@@ -456,7 +456,7 @@ public final class MainActivity extends AppCompatActivity {
                     "sample.")));
 
             rendererOptions.addView(ui.header(tr("Desempenho do nativo", "Native performance")));
-            rendererOptions.addView(ui.group(onePassRow(
+            rendererOptions.addView(ui.group(fpsLimitRow(), onePassRow(
                     tr("Sem MSAA a cena cabe inteira e é desenhada uma vez só, em vez de em 3 faixas: menos trabalho " +
                        "para a CPU (+25 %).",
                        "Without MSAA the scene fits whole and is drawn once, not in 3 tiles: less work for the CPU " +
@@ -499,6 +499,7 @@ public final class MainActivity extends AppCompatActivity {
 
             rendererOptions.addView(ui.header(tr("Desempenho do emulado", "Emulated performance")));
             rendererOptions.addView(ui.group(
+                    fpsLimitRow(),
                     onePassRow(tr("O jogo desenha a cena em 3 faixas por causa do MSAA; sem ele a cena cabe inteira " +
                             "e é desenhada uma vez só: menos trabalho para a CPU (+25 %). Só vale com a suavização " +
                             "desligada ou FXAA.",
@@ -516,11 +517,6 @@ public final class MainActivity extends AppCompatActivity {
         }
         rendererOptions.addView(ui.header(tr("Ainda sem efeito", "Not applied yet")));
         rendererOptions.addView(ui.group(
-                ui.choiceRow(GameOptions.FPS, tr("Limite de FPS", "FPS limit"),
-                        tr("O teto do jogo. 90, 120 e Livre são experimentais e pedem uma tela com essa taxa.",
-                           "The game's cap. 90, 120 and Free are experimental and need a screen with that rate."),
-                        new String[] {"30", "60", "90", "120", tr("Livre", "Free")},
-                        new String[] {"30", "60", "90", "120", "0"}),
                 ui.choiceRow(GameOptions.SCALING, tr("Escala para a tela", "Scaling to the screen"),
                         tr("Como a imagem é levada ao tamanho da tela. O FSR é mais nítido quando o jogo desenha " +
                            "abaixo da resolução da tela; o CAS só aumenta a nitidez.",
@@ -544,14 +540,26 @@ public final class MainActivity extends AppCompatActivity {
                            "Faces of the car's reflection map redrawn every frame."),
                         new String[] {tr("Altos", "High"), tr("Médios", "Medium"), tr("Baixos", "Low")},
                         new String[] {"high", "medium", "low"})));
-        rendererOptions.addView(ui.footer(tr("Ficam guardadas, mas o jogo ainda não as aplica. Por enquanto o limite " +
-                "de FPS só escolhe a taxa de atualização da tela.", "They are stored, but the game does not apply " +
-                "them yet. For now the FPS limit only picks the screen's refresh rate.")));
+        rendererOptions.addView(ui.footer(tr("Ficam guardadas, mas o jogo ainda não as aplica.",
+                "They are stored, but the game does not apply them yet.")));
     }
 
     // The native renderer's translated shaders (nfsmw_nativo_sistema.cpp also looks next to the executable).
     private static File shaderLibrary() {
         return new File(gameRoot(), "fh2_shaders.nfsp");
+    }
+
+    // The game's FPS limit, through the emulated vblank rate (GameOptions.vblankRate). Both renderers.
+    private LinearLayout fpsLimitRow() {
+        return ui.choiceRow(GameOptions.FPS, tr("Limite de FPS", "FPS limit"),
+                tr("O teto do jogo; 30 é o do Xbox 360. Acima dele o jogo mostra mais quadros se o aparelho der " +
+                   "conta, e a tela troca para a taxa mais alta que tiver. Telas de início e carregamentos podem ir " +
+                   "ao dobro. Mais quadros esquentam mais.",
+                   "The game's cap; 30 is the Xbox 360's. Above it the game shows more frames if the phone keeps " +
+                   "up, and the screen switches to its highest rate. Start screens and loadings may reach twice " +
+                   "the cap. More frames mean more heat."),
+                new String[] {"30", "60", "90", "120", tr("Livre", "Free")},
+                new String[] {"30", "60", "90", "120", "0"});
     }
 
     private LinearLayout anisotropicRow() {
