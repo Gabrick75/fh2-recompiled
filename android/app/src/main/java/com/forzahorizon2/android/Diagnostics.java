@@ -30,13 +30,25 @@ import java.util.zip.ZipOutputStream;
 final class Diagnostics {
     private static final int LIMIT = 256 * 1024;
     private static JSONObject cachedGpu;
-    private static native String nativeGpuReport();
+    // hooks, temp: the adrenotools hook folder and a temporary folder; directory, library: the driver ("" = system).
+    private static native String nativeGpuReport(String hooks, String temp, String directory, String library);
+
+    /**
+     * The Vulkan test with a driver (null = the system's): opens it through the game's loader, creates an instance
+     * and a logical device and lists what the renderers need and the driver lacks. An imported driver only in
+     * GpuProbeActivity's throwaway process: adrenotools' hooks stay in the process that opened it.
+     */
+    static String probe(Context context, GpuDrivers.Driver driver) {
+        System.loadLibrary("fh2_diagnostics");
+        return nativeGpuReport(GpuDrivers.hookFolder(context).getAbsolutePath(), context.getCacheDir().getAbsolutePath(),
+                driver == null ? "" : driver.folder.getAbsolutePath(), driver == null ? "" : driver.library);
+    }
 
     static synchronized JSONObject gpu() {
         if (cachedGpu == null) {
             try {
                 System.loadLibrary("fh2_diagnostics");
-                cachedGpu = new JSONObject(nativeGpuReport());
+                cachedGpu = new JSONObject(nativeGpuReport("", "", "", ""));
             } catch (Exception | LinkageError error) {
                 // A failed probe is not proof of incompatibility. Record it and
                 // let the native runtime perform its normal capability checks.

@@ -38,8 +38,9 @@ import static com.forzahorizon2.android.AppLanguage.tr;
  * .so to load: { "name": "Turnip v25.x", "libraryName": "libvulkan_freedreno.so", ... }. It is unpacked to
  * files/gpu_drivers/NAME/ - internal storage: adrenotools loads nothing from /sdcard, and neither should dlopen.
  *
- * The game does not load an imported driver yet (that needs libadrenotools in the native side); the launcher only
- * keeps them and remembers the chosen one.
+ * The game opens the chosen one through libadrenotools (sdk/src/ui/vulkan/android_gpu_driver.cpp, from
+ * nfsmw-android), with the cvars of arguments(); with none chosen, the system driver. Before a driver is chosen the
+ * launcher tests it (GpuProbeActivity) and keeps the result (lastProbe).
  */
 final class GpuDrivers {
     private static final String TAG = "FH2";
@@ -191,6 +192,7 @@ final class GpuDrivers {
         }
         String metaName = null;
         String metaLibrary = null;
+        int minApi = 0;
         String firstSo = null;
         try (InputStream in = context.getContentResolver().openInputStream(zip);
              ZipInputStream entries = new ZipInputStream(in)) {
@@ -209,6 +211,7 @@ final class GpuDrivers {
                     JSONObject meta = new JSONObject(readText(entries));
                     metaName = meta.optString("name", null);
                     metaLibrary = meta.optString("libraryName", null);
+                    minApi = meta.optInt("minApi", 0);
                     continue;
                 }
                 if (name.endsWith(".so") && firstSo == null) {
@@ -228,9 +231,21 @@ final class GpuDrivers {
             throw e;
         }
         String library = metaLibrary != null ? metaLibrary : firstSo;
-        if (library == null || !new File(staging, library).isFile()) {
+        if (library == null || !library.matches("[A-Za-z0-9_.+-]+\\.so") || !new File(staging, library).isFile()) {
             delete(staging);
             throw new IOException(tr("o zip não tem nenhuma .so de driver", "the zip has no driver .so"));
+        }
+        if (minApi > Build.VERSION.SDK_INT) {
+            delete(staging);
+            throw new IOException(tr("este driver pede o Android de API " + minApi + " ou mais novo (este é " +
+                    Build.VERSION.SDK_INT + ")", "this driver needs Android API " + minApi + " or newer (this is " +
+                    Build.VERSION.SDK_INT + ")"));
+        }
+        try {
+            checkArm64(new File(staging, library));
+        } catch (IOException e) {
+            delete(staging);
+            throw e;
         }
         String name = (metaName != null ? metaName : library.replace(".so", ""))
                 .replaceAll("[^A-Za-z0-9._-]+", "_");
@@ -257,8 +272,103 @@ final class GpuDrivers {
         return new Driver(name, destination, library);
     }
 
-    static void remove(Driver driver) {
+    static void remove(Context context, Driver driver) {
         delete(driver.folder);
+        probes(context).edit().remove(driver.name).apply();
+    }
+
+    /** A Vulkan driver for Android on ARM64: a 64-bit little-endian ELF shared object for AArch64. */
+    private static void checkArm64(File library) throws IOException {
+        byte[] h = new byte[20];
+        try (InputStream in = new FileInputStream(library)) {
+            if (in.read(h) != h.length) throw new IOException("short");
+        } catch (IOException e) {
+            throw new IOException(tr("a .so do driver está vazia ou ilegível", "the driver .so is empty or unreadable"));
+        }
+        boolean elf = h[0] == 0x7F && h[1] == 'E' && h[2] == 'L' && h[3] == 'F';
+        if (!elf || h[4] != 2 || h[5] != 1 || h[16] != 3 || h[17] != 0 || (h[18] & 0xFF) != 183 || h[19] != 0) {
+            throw new IOException(tr("o driver tem de ser uma biblioteca Android ARM64 (.so), não de PC nem de 32 bits",
+                    "the driver must be an Android ARM64 library (.so), not a PC or 32-bit one"));
+        }
+    }
+
+    // ---- The game and the driver test ----------------------------------------------------------------------
+
+    /** The cvars that make the game open the chosen driver (vulkan_instance.cpp); with none, the system's. */
+    static void arguments(Context context, List<String> args) {
+        Driver driver = find(context, GameOptions.get(context, GameOptions.DRIVER));
+        args.add("--android_native_lib_dir=" + hookFolder(context).getAbsolutePath());
+        args.add("--android_tmp_dir=" + context.getCacheDir().getAbsolutePath());
+        args.add("--android_gpu_driver_dir=" + (driver == null ? "" : driver.folder.getAbsolutePath() + "/"));
+        args.add("--android_gpu_driver_name=" + (driver == null ? "" : driver.library));
+    }
+
+    // adrenotools loads its hooks by path from a folder (hookLibDir). The APK keeps its libraries uncompressed
+    // inside it (nativeLibraryDir is empty), and extracting them all would put the game's ~300 MB on the phone a
+    // second time: only the hooks and their libc++ are copied out, once per installed build.
+    private static final String[] HOOKS = {"libmain_hook.so", "libhook_impl.so", "libfile_redirect_hook.so",
+            "libgsl_alloc_hook.so", "libc++_shared.so"};
+
+    static synchronized File hookFolder(Context context) {
+        File folder = new File(context.getFilesDir(), "gpu_hooks");
+        String stamp;
+        try {
+            stamp = String.valueOf(context.getPackageManager().getPackageInfo(context.getPackageName(), 0).lastUpdateTime);
+        } catch (Exception e) {
+            stamp = "?";
+        }
+        File stampFile = new File(folder, ".build");
+        try (InputStream in = new FileInputStream(stampFile)) {
+            if (readText(in).equals(stamp)) return folder;
+        } catch (IOException ignored) {
+            // not copied yet for this build
+        }
+        File staging = new File(context.getFilesDir(), ".gpu_hooks-" + android.os.Process.myPid());
+        delete(staging);
+        try (java.util.zip.ZipFile apk = new java.util.zip.ZipFile(context.getApplicationInfo().sourceDir)) {
+            if (!staging.mkdirs()) throw new IOException("mkdir " + staging);
+            byte[] buffer = new byte[1 << 16];
+            for (String hook : HOOKS) {
+                ZipEntry entry = apk.getEntry("lib/arm64-v8a/" + hook);
+                if (entry == null) throw new IOException("missing " + hook);
+                try (InputStream in = apk.getInputStream(entry);
+                     FileOutputStream out = new FileOutputStream(new File(staging, hook))) {
+                    for (int count; (count = in.read(buffer)) > 0; ) out.write(buffer, 0, count);
+                }
+            }
+            try (FileOutputStream out = new FileOutputStream(new File(staging, ".build"))) {
+                out.write(stamp.getBytes(StandardCharsets.UTF_8));
+            }
+            delete(folder);
+            if (!staging.renameTo(folder)) throw new IOException("rename " + staging);
+            File[] files = folder.listFiles();
+            if (files != null) for (File file : files) file.setWritable(false, false);
+            return folder;
+        } catch (IOException e) {
+            Log.w(TAG, "adrenotools hooks", e);
+            delete(staging);
+            // Better than nothing: a build with extracted libraries has them here.
+            return new File(context.getApplicationInfo().nativeLibraryDir);
+        }
+    }
+
+    private static SharedPreferences probes(Context context) {
+        return context.getSharedPreferences("gpu_probes", Context.MODE_PRIVATE);
+    }
+
+    /** The last Vulkan test of a driver ("" = the system's), or null. */
+    static JSONObject lastProbe(Context context, String name) {
+        String json = probes(context).getString(name, null);
+        if (json == null) return null;
+        try {
+            return new JSONObject(json);
+        } catch (JSONException e) {
+            return null;
+        }
+    }
+
+    static void saveProbe(Context context, String name, String report) {
+        probes(context).edit().putString(name, report).apply();
     }
 
     private static String readText(InputStream in) throws IOException {

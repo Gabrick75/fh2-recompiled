@@ -47,6 +47,7 @@ ReXGlue SDK v0.10.0.
 | AES-128 by LuoPeng | MIT |
 | [AndroidX](https://developer.android.com/jetpack/androidx) (core, documentfile, appcompat) | Apache-2.0 |
 | [Material Components for Android](https://github.com/material-components/material-components-android) | Apache-2.0 |
+| [libadrenotools](https://github.com/bylaws/libadrenotools) by Billy Laws, with linkernsbypass (custom Vulkan drivers on Android), stored whole in `sdk/thirdparty/libadrenotools` as in nfsmw-android: it is not part of ReXGlue SDK | BSD-2-Clause |
 
 ### FFmpeg and libmspack (LGPL)
 

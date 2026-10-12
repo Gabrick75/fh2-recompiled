@@ -8,12 +8,15 @@ set_property(GLOBAL APPEND PROPERTY JOB_POOLS fh2_compile=${FH2_ANDROID_COMPILE_
 set(CMAKE_JOB_POOL_COMPILE fh2_compile)
 set(CMAKE_JOB_POOL_LINK fh2_link)
 
-# GPU probe for the launcher's diagnostic report (Vulkan version, features), without the game.
+# GPU probe for the launcher (diagnostic report and the driver test, GpuProbeActivity): Vulkan version, features
+# and a logical device, without the game, through the same loader as the game (the system driver or an imported
+# one, rex_android_gpu_driver).
 add_library(fh2_diagnostics SHARED android_diagnostico.cpp)
 target_include_directories(fh2_diagnostics PRIVATE
-    "${CMAKE_CURRENT_LIST_DIR}/../../../../../sdk/thirdparty/vulkan-headers/include")
+    "${CMAKE_CURRENT_LIST_DIR}/../../../../../sdk/thirdparty/vulkan-headers/include"
+    "${CMAKE_CURRENT_LIST_DIR}/../../../../../sdk/include")
 target_compile_options(fh2_diagnostics PRIVATE -march=armv8-a)
-target_link_libraries(fh2_diagnostics PRIVATE vulkan)
+target_link_libraries(fh2_diagnostics PRIVATE rex_android_gpu_driver dl)
 target_link_options(fh2_diagnostics PRIVATE "-Wl,-z,max-page-size=16384")
 
 # CPU target of all the native code (the game, the SDK, the GPU plugin). armv8-a runs on every 64-bit phone;
@@ -52,6 +55,9 @@ if(TARGET SDL3-shared)
         MINSIZEREL_POSTFIX ""
     )
 endif()
+
+# The namespace hooks adrenotools opens from nativeLibraryDir to load an imported driver: built and packaged.
+add_dependencies(fh2 main_hook file_redirect_hook gsl_alloc_hook hook_impl)
 
 # 16 KB pages (Android 15+ devices).
 foreach(target fh2 fh2_XMediaFacade_default fh2_SpeechFacade_default)

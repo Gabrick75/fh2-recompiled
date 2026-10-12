@@ -315,6 +315,13 @@ final class Menu {
         return (TextView) labels.getChildAt(0);
     }
 
+    /** The description TextView of a row made here with one (under the title). */
+    static TextView descriptionOf(LinearLayout row) {
+        ViewGroup content = (ViewGroup) row.getChildAt(1);
+        ViewGroup labels = (ViewGroup) content.getChildAt(0);
+        return (TextView) labels.getChildAt(1);
+    }
+
     /** Enables or disables a row made here: it stops taking taps and its texts dim. */
     static void setRowEnabled(LinearLayout row, boolean enabled) {
         View content = row.getChildAt(1);
@@ -346,11 +353,16 @@ final class Menu {
 
     /** A line with a state mark at the right: a check in green, a cross in red. */
     LinearLayout statusRow(String title, String description, boolean ok, String state) {
+        return statusRow(title, description, ok ? GREEN : RED, state);
+    }
+
+    /** As above, in any color (amber for "in progress"). */
+    LinearLayout statusRow(String title, String description, int color, String state) {
         LinearLayout mark = new LinearLayout(context);
         mark.setOrientation(LinearLayout.HORIZONTAL);
         mark.setGravity(Gravity.CENTER_VERTICAL);
-        TextView label = text(state, 13, ok ? GREEN : RED, true);
-        mark.addView(dot(ok ? GREEN : RED));
+        TextView label = text(state, 13, color, true);
+        mark.addView(dot(color));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.leftMargin = dp(6);

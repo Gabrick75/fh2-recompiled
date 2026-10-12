@@ -32,6 +32,8 @@ class DynamicLibrary {
 
   bool Load(const std::filesystem::path& path, SymbolResolution mode = SymbolResolution::kLazy);
   void Close();
+  // Takes over a handle opened elsewhere (the Android custom driver loader, android_gpu_driver.cpp).
+  void Adopt(void* handle) { Close(); handle_ = handle; }
   explicit operator bool() const { return handle_ != nullptr; }
 
   void* GetRawSymbol(const char* name) const;

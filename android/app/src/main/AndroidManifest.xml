@@ -36,6 +36,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- The driver test: a throwaway process, transparent (no screenOrientation: Android 8.0 refuses it on a
+             translucent activity). GpuProbeActivity. -->
+        <activity
+            android:name=".GpuProbeActivity"
+            android:process=":gpu_probe"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false" />
         <activity
             android:name=".GameActivity"
             android:configChanges="orientation|screenSize|keyboardHidden|uiMode"

@@ -34,6 +34,9 @@ import static com.forzahorizon2.android.AppLanguage.tr;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.slider.Slider;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -60,6 +63,7 @@ public final class MainActivity extends AppCompatActivity {
     private static final int REQUEST_LEGACY_STORAGE = 43;
     private static final int REQUEST_SAVE_REPORT = 44;
     private static final int REQUEST_DRIVER_ZIP = 45;
+    private static final int REQUEST_GPU_PROBE = 46;
     private static final String TREE_URI = "tree_uri";
     // Relative to the internal storage root (the "jogos" folder holds the user's games).
     static final String GAME_FOLDER_NAME = "jogos/ForzaHorizon2";
@@ -142,6 +146,20 @@ public final class MainActivity extends AppCompatActivity {
         if (save != null) {
             intent.removeExtra("fh2.importar_save");
             importSave(SaveTransfer.resolve(save));
+        }
+        // From adb, to test drivers without the screen: --es fh2.importar_driver <zip> imports one and tests it
+        // (chosen if it passes); --es fh2.escolher_driver <name> chooses one ("" = system) without a test. The
+        // tests' results go to logcat (tag FH2).
+        String driverZip = intent.getStringExtra("fh2.importar_driver");
+        if (driverZip != null) {
+            intent.removeExtra("fh2.importar_driver");
+            importDriver(Uri.fromFile(new File(driverZip)));
+        }
+        String driverName = intent.getStringExtra("fh2.escolher_driver");
+        if (driverName != null) {
+            intent.removeExtra("fh2.escolher_driver");
+            GameOptions.set(this, GameOptions.DRIVER, driverName);
+            if (ui != null) rebuildPage(PERFORMANCE);
         }
         if (!intent.getBooleanExtra("fh2.banco", false)) return;
         Intent game = new Intent(this, GameActivity.class);
@@ -710,6 +728,7 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private ScrollView performancePage() {
+        boolean adreno = GpuDrivers.isAdreno(this);
         return pageScroll(ui.pageTitle(pageName(PERFORMANCE),
                         tr("O processador e o driver da GPU.", "The processor and the GPU driver.")),
                 ui.header(tr("Processador", "Processor")),
@@ -722,30 +741,48 @@ public final class MainActivity extends AppCompatActivity {
                         v -> GameOptions.flag(this, GameOptions.PIN_THREADS, v))),
                 ui.header(tr("Driver da GPU", "GPU driver")),
                 driverGroup(),
-                ui.footer(GpuDrivers.isAdreno(this)
-                        ? tr("Turnip é o driver livre do Mesa para Adreno: importe o .zip de um driver Turnip (com " +
-                             "meta.json) e escolha-o aqui. Por enquanto o jogo sempre usa o driver do sistema.",
-                             "Turnip is Mesa's free driver for Adreno: import a Turnip driver's .zip (with " +
-                             "meta.json) and pick it here. For now the game always uses the system driver.")
-                        : tr("Turnip, o driver livre do Mesa, é só para GPUs Adreno: com esta GPU o jogo usa o " +
-                             "driver do sistema.",
-                             "Turnip, Mesa's free driver, is for Adreno GPUs only: with this GPU the game uses the " +
-                             "system driver.")),
+                ui.footer(adreno
+                        ? tr("Importe o .zip de um driver para Android (Turnip, o driver livre do Mesa para Adreno, " +
+                             "ou um da Qualcomm, com meta.json). Antes de escolher um driver o app testa se ele abre " +
+                             "o Vulkan desta GPU. Vale na próxima vez que o jogo abrir.",
+                             "Import an Android driver's .zip (Turnip, Mesa's free driver for Adreno, or a Qualcomm " +
+                             "one, with meta.json). Before a driver is chosen the app tests whether it opens Vulkan " +
+                             "on this GPU. Takes effect the next time the game starts.")
+                        : tr("Os drivers Turnip e da Qualcomm são só para GPUs Adreno: com esta GPU, use o driver do " +
+                             "sistema.",
+                             "Turnip and Qualcomm drivers are for Adreno GPUs only: with this GPU, use the system " +
+                             "driver.")),
+                ui.header(tr("Teste do Vulkan", "Vulkan test")),
+                probeGroup(),
+                ui.footer(tr("Abre o driver como o jogo abre, cria um dispositivo Vulkan e confere o que os " +
+                             "renderizadores precisam. Roda num processo à parte: um driver que trave não leva o app " +
+                             "junto.",
+                             "Opens the driver the way the game does, creates a Vulkan device and checks what the " +
+                             "renderers need. It runs in a separate process: a driver that crashes does not take the " +
+                             "app with it.")),
                 ui.header(tr("Ainda sem efeito", "Not applied yet")),
                 turboGroup());
     }
 
-    // System driver or an imported one (Turnip), import / delete.
+    private String chosenDriver() {
+        String chosen = GameOptions.get(this, GameOptions.DRIVER);
+        return GpuDrivers.find(this, chosen) == null ? "" : chosen;
+    }
+
+    private static String driverTitle(String name) {
+        return name.isEmpty() ? tr("Driver do sistema", "System driver") : name;
+    }
+
+    // The system driver or an imported one; tapping one tests it first (testDriver). Import, test, delete.
     private LinearLayout driverGroup() {
         String gpu = GpuDrivers.gpuName(this);
-        String chosen = GameOptions.get(this, GameOptions.DRIVER);
-        if (GpuDrivers.find(this, chosen) == null) chosen = "";
+        String chosen = chosenDriver();
         LinearLayout group = ui.group();
-        group.addView(ui.checkRow(tr("Driver do sistema", "System driver"), gpu.isEmpty() ? null : gpu,
-                chosen.isEmpty(), v -> chooseDriver("")));
+        group.addView(ui.checkRow(driverTitle(""), probeLine("", gpu.isEmpty() ? null : gpu),
+                chosen.isEmpty(), v -> testDriver("", true)));
         for (GpuDrivers.Driver driver : GpuDrivers.list(this)) {
-            group.addView(ui.checkRow(driver.name, driver.isTurnip() ? "Turnip" : null, driver.name.equals(chosen),
-                    v -> chooseDriver(driver.name)));
+            group.addView(ui.checkRow(driver.name, probeLine(driver.name, driver.library),
+                    driver.name.equals(chosen), v -> testDriver(driver.name, true)));
         }
         group.addView(ui.actionRow(tr("Importar driver (.zip)", "Import a driver (.zip)"), null, false, v -> {
             Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -753,7 +790,6 @@ public final class MainActivity extends AppCompatActivity {
             pick.setType("application/zip");
             startActivityForResult(pick, REQUEST_DRIVER_ZIP);
         }));
-        GpuDrivers.Driver selected = GpuDrivers.find(this, chosen);
         LinearLayout delete = ui.actionRow(tr("Apagar o selecionado", "Delete the chosen one"), null, true, v -> {
             GpuDrivers.Driver driver = GpuDrivers.find(this, GameOptions.get(this, GameOptions.DRIVER));
             if (driver == null) return;
@@ -762,21 +798,161 @@ public final class MainActivity extends AppCompatActivity {
                     .setMessage(tr("O driver sai do aparelho e o jogo volta ao driver do sistema.",
                             "The driver leaves the phone and the game goes back to the system driver."))
                     .setPositiveButton(tr("Apagar", "Delete"), (d, w) -> {
-                        GpuDrivers.remove(driver);
+                        GpuDrivers.remove(this, driver);
                         GameOptions.set(this, GameOptions.DRIVER, "");
                         rebuildPage(PERFORMANCE);
                     })
                     .setNegativeButton(tr("Cancelar", "Cancel"), null)
                     .show();
         });
-        Menu.setRowEnabled(delete, selected != null);
+        Menu.setRowEnabled(delete, !chosen.isEmpty());
         group.addView(delete);
         Menu.refreshDividers(group);
         return group;
     }
 
-    private void chooseDriver(String name) {
-        GameOptions.set(this, GameOptions.DRIVER, name);
+    /** Under a driver's name: what its last test found, after the given detail. */
+    private String probeLine(String name, String detail) {
+        JSONObject probe = GpuDrivers.lastProbe(this, name);
+        String state;
+        if (name.equals(probingDriver)) state = tr("testando…", "testing…");
+        else if (probe == null) state = tr("não testado", "not tested");
+        else if (probePassed(probe)) state = "Vulkan " + probe.optString("vulkan", "?") + " · " + tr("ok", "ok");
+        else state = tr("falhou no teste", "failed the test");
+        return detail == null ? state : detail + " · " + state;
+    }
+
+    private static boolean probePassed(JSONObject probe) {
+        return probe.optBoolean("compatible", false) && !probe.optBoolean("driverLoadFailed", true);
+    }
+
+    // The Vulkan test of the chosen driver (or of the one being tested): its state, then what it found.
+    private LinearLayout probeGroup() {
+        String name = probingDriver != null ? probingDriver : chosenDriver();
+        JSONObject probe = probingDriver != null ? null : GpuDrivers.lastProbe(this, name);
+        LinearLayout group = ui.group();
+        LinearLayout status;
+        if (probingDriver != null) {
+            status = ui.statusRow(driverTitle(name), tr("Abrindo o driver e criando um dispositivo Vulkan…",
+                    "Opening the driver and creating a Vulkan device…"), Menu.AMBER, tr("Testando", "Testing"));
+        } else if (probe == null) {
+            status = ui.row(driverTitle(name), tr("Ainda não testado.", "Not tested yet."), null);
+        } else {
+            boolean passed = probePassed(probe);
+            status = ui.statusRow(driverTitle(name), passed
+                            ? tr("O jogo consegue usar este driver.", "The game can use this driver.")
+                            : tr("O jogo pode não abrir com este driver.", "The game may not start with this driver."),
+                    passed, passed ? tr("Compatível", "Compatible") : tr("Falhou", "Failed"));
+        }
+        group.addView(status);
+        if (probe != null) {
+            String driverName = probe.optString("driverName", "");
+            String driverInfo = probe.optString("driverInfo", "");
+            if (probe.has("gpu")) group.addView(detailRow("GPU", probe.optString("gpu")));
+            if (!driverName.isEmpty() || !driverInfo.isEmpty()) {
+                group.addView(detailRow(tr("Driver", "Driver"),
+                        (driverName + (driverInfo.isEmpty() ? "" : " · " + driverInfo)).trim()));
+            }
+            if (probe.has("vulkan")) group.addView(detailRow("Vulkan", probe.optString("vulkan")));
+            if (probe.has("logicalDeviceResult")) {
+                int result = probe.optInt("logicalDeviceResult");
+                group.addView(detailRow(tr("Dispositivo lógico", "Logical device"), result == 0
+                        ? tr("criado", "created") : tr("falhou", "failed") + " (VkResult " + result + ")"));
+            }
+            JSONArray missing = probe.optJSONArray("missing");
+            if (missing != null && missing.length() > 0) {
+                StringBuilder list = new StringBuilder();
+                for (int i = 0; i < missing.length(); i++) {
+                    if (i > 0) list.append('\n');
+                    list.append("• ").append(missing.optString(i));
+                }
+                group.addView(detailRow(tr("Falta", "Missing"), list.toString()));
+            }
+            if (probe.optBoolean("driverNotLoaded")) group.addView(detailRow(tr("Erro", "Error"), notLoaded()));
+            if (probe.has("probeError")) group.addView(detailRow(tr("Erro", "Error"), probe.optString("probeError")));
+        }
+        LinearLayout again = ui.actionRow(probe == null && probingDriver == null
+                ? tr("Testar o driver", "Test the driver") : tr("Testar de novo", "Test again"), null, false,
+                v -> testDriver(chosenDriver(), false));
+        Menu.setRowEnabled(again, probingDriver == null);
+        group.addView(again);
+        Menu.refreshDividers(group);
+        return group;
+    }
+
+    private static String notLoaded() {
+        return tr("O driver importado não carregou (falta alguma biblioteca dele, ou não é para esta GPU) e o " +
+                  "sistema usou o driver de fábrica no lugar.",
+                  "The imported driver did not load (one of its libraries is missing, or it is not for this GPU) " +
+                  "and the system used the stock driver instead.");
+    }
+
+    private LinearLayout detailRow(String title, String value) {
+        LinearLayout row = ui.row(title, value, null);
+        Menu.titleOf(row).setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        Menu.titleOf(row).setTextColor(Menu.SECONDARY);
+        TextView text = Menu.descriptionOf(row);
+        text.setTextColor(Menu.PRIMARY);
+        text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        text.setTextIsSelectable(true);
+        return row;
+    }
+
+    private String probingDriver;   // the driver under test ("" = system), null when none
+    private boolean probeChooses;   // whether the driver under test becomes the chosen one if it passes
+
+    /** Tests a driver in GpuProbeActivity's throwaway process; with choose, picks it if it passes (or if asked to). */
+    private void testDriver(String name, boolean choose) {
+        if (probingDriver != null) return;
+        if (choose && name.equals(chosenDriver())) choose = false;  // already the chosen one: just test it
+        probingDriver = name;
+        probeChooses = choose;
+        rebuildPage(PERFORMANCE);
+        try {
+            startActivityForResult(new Intent(this, GpuProbeActivity.class)
+                    .putExtra(GpuProbeActivity.EXTRA_DRIVER, name), REQUEST_GPU_PROBE);
+        } catch (ActivityNotFoundException e) {
+            probingDriver = null;
+            rebuildPage(PERFORMANCE);
+        }
+    }
+
+    private void finishDriverTest(int resultCode, Intent data) {
+        String name = probingDriver;
+        boolean choose = probeChooses;
+        probingDriver = null;
+        if (name == null) return;
+        String report = data == null ? null : data.getStringExtra(GpuProbeActivity.EXTRA_REPORT);
+        if (report == null) {
+            // The test process died without answering: the driver crashed while loading.
+            report = "{\"compatible\":false,\"driverLoadFailed\":true,\"probeError\":" +
+                    JSONObject.quote(tr("O driver derrubou o processo de teste ao abrir.",
+                            "The driver crashed the test process while opening.")) + "}";
+        }
+        GpuDrivers.saveProbe(this, name, report);
+        android.util.Log.i("FH2", "Vulkan test of " + driverTitle(name) + ": " + report);
+        JSONObject probe = GpuDrivers.lastProbe(this, name);
+        boolean passed = probe != null && probePassed(probe);
+        if (choose && passed) {
+            GameOptions.set(this, GameOptions.DRIVER, name);
+            toast(tr("Driver escolhido: ", "Driver chosen: ") + driverTitle(name));
+        } else if (choose) {
+            String reason = probe == null ? "" : probe.optBoolean("driverNotLoaded") ? notLoaded()
+                    : probe.optString("probeError", "");
+            JSONArray missing = probe == null ? null : probe.optJSONArray("missing");
+            if (reason.isEmpty() && missing != null && missing.length() > 0) reason = missing.optString(0);
+            new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                    .setTitle(tr("O driver não passou no teste", "The driver failed the test"))
+                    .setMessage(driverTitle(name) + (reason.isEmpty() ? "" : "\n\n" + reason) + "\n\n" +
+                            tr("Com ele o jogo pode não abrir. Usar mesmo assim?",
+                               "The game may not start with it. Use it anyway?"))
+                    .setPositiveButton(tr("Usar mesmo assim", "Use it anyway"), (d, w) -> {
+                        GameOptions.set(this, GameOptions.DRIVER, name);
+                        rebuildPage(PERFORMANCE);
+                    })
+                    .setNegativeButton(tr("Cancelar", "Cancel"), null)
+                    .show();
+        }
         rebuildPage(PERFORMANCE);
     }
 
@@ -937,9 +1113,10 @@ public final class MainActivity extends AppCompatActivity {
             try {
                 GpuDrivers.Driver driver = GpuDrivers.importZip(this, zip);
                 mainHandler.post(() -> {
-                    GameOptions.set(this, GameOptions.DRIVER, driver.name);
-                    rebuildPage(PERFORMANCE);
+                    // Tested at once, and chosen if it passes.
+                    GpuDrivers.saveProbe(this, driver.name, null);
                     toast(tr("Driver importado: ", "Driver imported: ") + driver.name);
+                    testDriver(driver.name, true);
                 });
             } catch (IOException error) {
                 mainHandler.post(() -> toast(tr("Não foi possível importar o driver: ",
@@ -1079,6 +1256,10 @@ public final class MainActivity extends AppCompatActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_GPU_PROBE) {
+            finishDriverTest(resultCode, data);
+            return;
+        }
         if (requestCode == REQUEST_DRIVER_ZIP) {
             if (resultCode == RESULT_OK && data != null && data.getData() != null) importDriver(data.getData());
             return;
