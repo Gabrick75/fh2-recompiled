@@ -416,6 +416,10 @@ REXCVAR_DEFINE_INT32(nfsmw_nativo_oclusion_escala, 0, "NFSMW",
 // left the GPU idle 40 % of the time and its clock at the minimum), the work is submitted and the fence and every
 // guest write behind it are held until that submission is done. The ring keeps recording meanwhile; before it waits
 // for the CPU (WAIT_REG_MEM) or for work, it lets them all out.
+REXCVAR_DEFINE_STRING(fh2_nativo_biblioteca_dir, "", "FH2",
+                      "Native renderer: another folder to look for fh2_shaders.nfsp in when the game is read from a "
+                      "disc image (the launcher passes the game folder)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_BOOL(fh2_nativo_lecturas_diferidas, true, "FH2",
                     "Native renderer: hold fences behind pending read-backs instead of waiting for the GPU")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
@@ -794,6 +798,20 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
       if (!juego.empty() && std::filesystem::is_regular_file(std::filesystem::path(juego) / kNombreBiblioteca, ec)) {
         biblioteca = std::filesystem::path(juego) / kNombreBiblioteca;
       }
+#if defined(FH2_RECOMP)
+      // The game read from a disc image (.iso): the library next to it, or in fh2_nativo_biblioteca_dir (the
+      // launcher passes the old game folder, where the library already is on the phones).
+      else if (!juego.empty() && std::filesystem::is_regular_file(juego, ec)) {
+        const std::filesystem::path junto = std::filesystem::path(juego).parent_path() / kNombreBiblioteca;
+        const std::string pasta = REXCVAR_GET(fh2_nativo_biblioteca_dir);
+        if (std::filesystem::is_regular_file(junto, ec)) {
+          biblioteca = junto;
+        } else if (!pasta.empty() &&
+                   std::filesystem::is_regular_file(std::filesystem::path(pasta) / kNombreBiblioteca, ec)) {
+          biblioteca = std::filesystem::path(pasta) / kNombreBiblioteca;
+        }
+      }
+#endif
     }
     if (shaders_.Cargar(biblioteca)) {
       ActivarGanchos(&shaders_);  // step C5b: shader objects and Draw* records

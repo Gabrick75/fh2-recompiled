@@ -229,7 +229,9 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
     rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
     return false;
   }
-  if (!std::filesystem::is_directory(paths.game_data_root)) {
+  // A folder with the extracted disc, or the disc image itself (.iso, mounted by DiscImageDevice in SetupVfs).
+  if (!std::filesystem::is_directory(paths.game_data_root) &&
+      !std::filesystem::is_regular_file(paths.game_data_root)) {
     auto msg = fmt::format("--game_data_root does not exist: {}", paths.game_data_root.string());
     REXLOG_ERROR("{}", msg);
     rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, msg);
@@ -290,8 +292,9 @@ bool ReXApp::ConstructRuntime(const PathConfig& paths) {
   std::string xex_image = "game:\\default.xex";
   OnLoadXexImage(xex_image);
 
-  // Mirrors the game:\ / d:\ -> game_data_root mapping in Runtime::SetupVfs.
-  {
+  // Mirrors the game:\ / d:\ -> game_data_root mapping in Runtime::SetupVfs. Only for an extracted folder: from a
+  // disc image (.iso) the XEX is inside it, and LoadXexImage finds it through the VFS.
+  if (std::filesystem::is_directory(paths.game_data_root)) {
     constexpr std::string_view kGameDevice = "game:\\";
     constexpr std::string_view kDDevice = "d:\\";
     std::string_view tail = xex_image;

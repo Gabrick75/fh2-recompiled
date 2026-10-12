@@ -64,6 +64,7 @@ public final class MainActivity extends AppCompatActivity {
     private static final int REQUEST_SAVE_REPORT = 44;
     private static final int REQUEST_DRIVER_ZIP = 45;
     private static final int REQUEST_GPU_PROBE = 46;
+    private static final int REQUEST_ISO = 47;
     private static final String TREE_URI = "tree_uri";
     // Relative to the internal storage root (the "jogos" folder holds the user's games).
     static final String GAME_FOLDER_NAME = "jogos/ForzaHorizon2";
@@ -72,6 +73,8 @@ public final class MainActivity extends AppCompatActivity {
     private TextView importStatus;
     private LinearLayout checksList;
     private LinearLayout selectFolder;
+    private LinearLayout selectIso;
+    private LinearLayout stopIso;
     private MaterialButton launchGame;
     private LinearLayout saveReport;
     private File pendingReport;
@@ -563,7 +566,13 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     // The native renderer's translated shaders (nfsmw_nativo_sistema.cpp also looks next to the executable).
-    private static File shaderLibrary() {
+    // With the game read from an ISO: next to the ISO, else in the game folder (fh2_nativo_biblioteca_dir).
+    private File shaderLibrary() {
+        File iso = GameIso.chosen(this);
+        if (iso != null) {
+            File junto = new File(iso.getParentFile(), "fh2_shaders.nfsp");
+            if (junto.isFile()) return junto;
+        }
         return new File(gameRoot(), "fh2_shaders.nfsp");
     }
 
@@ -1032,6 +1041,15 @@ public final class MainActivity extends AppCompatActivity {
         selectFolder = ui.actionRow(tr("Escolher pasta do jogo", "Choose the game folder"), null, false,
                 view -> selectGameFolder());
 
+        selectIso = ui.actionRow(tr("Usar a ISO do jogo", "Use the game ISO"),
+                tr("Lida direto do arquivo: sem extrair nem copiar", "Read straight from the file: no extracting or copying"),
+                false, view -> selectIsoFile());
+        stopIso = ui.actionRow(tr("Parar de usar a ISO", "Stop using the ISO"),
+                tr("Volta para a pasta extraída", "Back to the extracted folder"), true, view -> {
+                    GameOptions.set(this, GameOptions.GAME_ISO, "");
+                    showGameFolder(null);
+                });
+
         LinearLayout exportSave = ui.actionRow(tr("Exportar save", "Export the save"),
                 tr("Para jogos/", "To jogos/") + GAME_FOLDER_NAME + "-saves-exportados", false, v -> {
                     try {
@@ -1048,11 +1066,15 @@ public final class MainActivity extends AppCompatActivity {
         return pageScroll(ui.pageTitle(pageName(GAME),
                         tr("Os arquivos do jogo e o seu progresso.", "The game files and your progress.")),
                 ui.header(tr("Pasta do jogo", "Game folder")),
-                ui.group(status, selectFolder),
-                ui.footer(tr("A pasta extraída do disco (default.xex, as duas DLLs .xex e media) é copiada para " +
-                             "Armazenamento interno/" + GAME_FOLDER_NAME + " (7,3 GB).",
-                             "The folder extracted from the disc (default.xex, the two .xex DLLs and media) is " +
-                             "copied to Internal storage/" + GAME_FOLDER_NAME + " (7.3 GB).")),
+                ui.group(status, selectIso, stopIso, selectFolder),
+ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar espaço a mais. Ou uma pasta " +
+                             "extraída (default.xex, as duas DLLs .xex e media), copiada para Armazenamento interno/" +
+                             GAME_FOLDER_NAME + " (7,3 GB). Com a ISO, o fh2_shaders.nfsp do renderizador nativo fica " +
+                             "ao lado dela ou em " + GAME_FOLDER_NAME + ".",
+                             "A disc image (the Xbox 360 ISO) is read in place, taking no extra space. Or an extracted " +
+                             "folder (default.xex, the two .xex DLLs and media), copied to Internal storage/" +
+                             GAME_FOLDER_NAME + " (7.3 GB). With the ISO, the native renderer's fh2_shaders.nfsp goes " +
+                             "next to it or in " + GAME_FOLDER_NAME + ".")),
                 ui.header("Save"),
                 ui.group(exportSave, importSave),
                 ui.footer(tr("Exportar copia o seu progresso (perfil e saves). Importar troca o progresso atual por " +
@@ -1131,7 +1153,8 @@ public final class MainActivity extends AppCompatActivity {
         launchGame.setEnabled(false);
         Diagnostics.recordLaunch(this);
         worker.execute(() -> {
-            GameEdition edition = GameEdition.of(this, gameRoot());
+            // The edition check reads default.xex from the folder; an ISO is mounted as it is (not checked).
+            GameEdition edition = GameIso.chosen(this) != null ? null : GameEdition.of(this, gameRoot());
             mainHandler.post(() -> {
                 if (isFinishing() || isDestroyed()) return;
                 launchGame.setEnabled(true);
@@ -1221,9 +1244,25 @@ public final class MainActivity extends AppCompatActivity {
         File root = gameRoot();
         Menu.setRowEnabled(selectFolder, true);
         launchGame.setEnabled(true);
-        showChecks(root);
         // The native renderer's requirement row follows the shader library copied in (or removed) meanwhile.
         if (shadersFound != null && shadersFound != shaderLibrary().isFile()) rebuildPage(GRAPHICS);
+        File iso = GameIso.chosen(this);
+        selectIso.setVisibility(View.VISIBLE);
+        stopIso.setVisibility(iso != null ? View.VISIBLE : View.GONE);
+        Menu.titleOf(selectIso).setText(iso != null ? tr("Trocar a ISO", "Change the ISO")
+                : tr("Usar a ISO do jogo", "Use the game ISO"));
+        Menu.refreshDividers((android.view.ViewGroup) selectIso.getParent());
+        if (iso != null) {
+            // The game reads the disc image in place: no folder to check.
+            checksList.removeAllViews();
+            addCheck(iso.getName(), true);
+            setImportStatus((notice == null ? "" : notice + "\n") + tr("Lendo direto da ISO: ", "Reading straight from the ISO: ") +
+                    iso.getAbsolutePath());
+            setGameReady(true);
+            Menu.titleOf(selectFolder).setText(tr("Usar uma pasta extraída", "Use an extracted folder"));
+            return;
+        }
+        showChecks(root);
         if (isValidGameFolder(root)) {
             setImportStatus((notice == null ? "" : notice + "\n") + tr("Armazenamento interno/", "Internal storage/") +
                     GAME_FOLDER_NAME);
@@ -1253,6 +1292,17 @@ public final class MainActivity extends AppCompatActivity {
         startActivityForResult(intent, REQUEST_GAME_FOLDER);
     }
 
+    private void selectIsoFile() {
+        if (!hasStorageAccess()) {
+            prepareGameFolder();
+            return;
+        }
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");  // .iso has no MIME type every file manager knows
+        startActivityForResult(intent, REQUEST_ISO);
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -1272,6 +1322,10 @@ public final class MainActivity extends AppCompatActivity {
         if (requestCode == REQUEST_STORAGE_ACCESS || requestCode == REQUEST_LEGACY_STORAGE) {
             if (hasStorageAccess()) prepareGameFolder();
             else setImportStatus(storageNotice());
+            return;
+        }
+        if (requestCode == REQUEST_ISO) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) useIso(data.getData());
             return;
         }
         if (requestCode != REQUEST_GAME_FOLDER || resultCode != RESULT_OK || data == null || data.getData() == null) {
@@ -1337,6 +1391,31 @@ public final class MainActivity extends AppCompatActivity {
                 mainHandler.post(() -> getWindow().clearFlags(
                         android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
             }
+        });
+    }
+
+    // Keeps the path of the chosen ISO after checking it is an Xbox 360 disc image; the game mounts it in place.
+    private void useIso(Uri uri) {
+        File iso = GameIso.pathOf(uri);
+        if (iso == null || !iso.isFile()) {
+            message(tr("Não foi possível achar o caminho dessa ISO. Escolha o arquivo pelo armazenamento interno ou " +
+                       "pelo cartão de memória (no seletor, menu ☰ → nome do aparelho), não por \"Recentes\".",
+                       "Could not find that ISO's path. Pick the file through the internal storage or the memory " +
+                       "card (in the picker, menu ☰ → the device name), not through \"Recent\"."));
+            return;
+        }
+        worker.execute(() -> {
+            String problem = GameIso.check(iso);
+            mainHandler.post(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                if (problem != null) {
+                    message(iso.getName() + ": " + problem);
+                    return;
+                }
+                GameOptions.set(this, GameOptions.GAME_ISO, iso.getAbsolutePath());
+                showGameFolder(tr("ISO escolhida.", "ISO chosen."));
+                if (shadersFound != null && shadersFound != shaderLibrary().isFile()) rebuildPage(GRAPHICS);
+            });
         });
     }
 

@@ -87,7 +87,8 @@ public final class GameActivity extends SDLActivity
         }
         AppLanguage.load(this);
         File appRoot = new File(getFilesDir(), "fh2");
-        gameRoot = new File(Environment.getExternalStorageDirectory(), MainActivity.GAME_FOLDER_NAME).getAbsolutePath();
+        // The extracted folder or the disc image itself (GameIso): the SDK mounts either.
+        gameRoot = GameIso.gameDataRoot(this).getAbsolutePath();
         userRoot = new File(appRoot, "user").getAbsolutePath();
         cacheRoot = new File(appRoot, "cache").getAbsolutePath();
         new File(userRoot).mkdirs();
@@ -449,6 +450,8 @@ public final class GameActivity extends SDLActivity
     protected String[] getArguments() {
         List<String> args = new ArrayList<>();
         args.add("--game_data_root=" + gameRoot);
+        // From an ISO, the native renderer also looks for fh2_shaders.nfsp in the game folder.
+        args.add("--fh2_nativo_biblioteca_dir=" + MainActivity.gameRoot().getAbsolutePath());
         args.add("--user_data_root=" + userRoot);
         args.add("--cache_root=" + cacheRoot);
         // The launcher's options win over fh2.toml.

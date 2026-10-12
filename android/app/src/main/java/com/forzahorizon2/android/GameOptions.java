@@ -49,6 +49,8 @@ final class GameOptions {
     // Language
     static final String GAME_LANGUAGE = "game_language";  // a GameLanguage code: "en-US", "pt-BR"...
     static final String APP_LANGUAGE = "app_language";    // "pt" or "en" (AppLanguage)
+    // Game files
+    static final String GAME_ISO = "game_iso";            // path of the disc image read in place; "" = the folder
 
     static final String RES_480P = "480p";
     static final String RES_720P = "720p";
@@ -83,6 +85,7 @@ final class GameOptions {
             case VOLUME: return "100";
             // English (US), what the console settings said before this option existed.
             case GAME_LANGUAGE: return "en-US";
+            case GAME_ISO: return "";
             case APP_LANGUAGE: return "pt".equals(java.util.Locale.getDefault().getLanguage()) ? "pt" : "en";
             default: throw new IllegalArgumentException(key);
         }
