@@ -335,6 +335,13 @@ Aparelhos: S23U `RQCXB01R9LM` (Adreno 740) e moto g(9) play `0074545453` (Adreno
     diferida costuma precisar da **profundidade** da cena: conferir se no emulado esse endereço tem outra coisa no
     momento do draw); comparar as constantes desse PS nos dois; ver se a limpeza (PS n1137, modo 5) escreve 1 no nativo.
 
+### [feito] Biblioteca nova nos celulares com os faróis diferidos desligados (2026-10-12, noite)
+- Cvar `fh2_nativo_luces_diferidas` (padrão **false**): zera a booleana 228 em todo draw. Com ela desligada, a
+  biblioteca nova (grama certa, poeira sem borrões) dá a noite escura como a de 05:46, sem o cone dos faróis no chão.
+  Conferido no PC (capturas aos 60 e 70 s). Ligar (`--fh2_nativo_luces_diferidas=true`) só para trabalhar na noite clara.
+- Biblioteca enviada: `app/out/shaders_fh2/fh2_shaders.nfsp` de 19:14 (75 497 272 bytes), com backup da anterior em
+  `jogos/ForzaHorizon2/fh2_shaders.nfsp.anterior`. moto: feito (biblioteca + APK). S23: ver o relatório da sessão.
+
 ### [feito] Causa da grama achatada/marrom: swizzle dos elementos por instância
 - **Achado** (diagnóstico `[fh2 nativo] elemento VS n.. #..`, uma linha por elemento e VS): nos fetches lidos direto
   (`fh2BuscaElemento`: grama, e provavelmente partículas e billboards), o shader traduzido aplicava o swizzle do

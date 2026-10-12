@@ -1009,6 +1009,13 @@ REXCVAR_DEFINE_INT32(fh2_nativo_diag_sin_stencil_vs, -1, "FH2",
 REXCVAR_DEFINE_INT32(fh2_nativo_diag_sin_z_vs, -1, "FH2",
                      "Native renderer (debug): the draws of this vertex shader (library number) without the depth test")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// Off by default until the night lighting is fixed (docs/alteracoes_fh2.md): with the headlights' deferred light
+// contribution on (boolean 228, which the shader library gets since 394ef9c) the screen shadow mask comes out wrong
+// in this renderer and the whole night scene lights up as in daytime. Off, the night is dark as before, without the
+// headlights' cone on the ground.
+REXCVAR_DEFINE_BOOL(fh2_nativo_luces_diferidas, false, "FH2",
+                    "Native renderer: the headlights' deferred light contribution (boolean 228, "
+                    "bEnableDeferredLightContribution). Off for now: on, the night looks like day");
 REXCVAR_DEFINE_STRING(fh2_nativo_diag_mascara_ps, "", "FH2",
                       "Native renderer (debug): 'PS:mask' replaces render target 0's color write mask (4 bits, RGBA "
                       "from bit 0) in the draws of that pixel shader (library number)");
@@ -4012,6 +4019,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       for (uint32_t w = 0; w < 8; ++w) {
         vistos[w] |= compartidas[kPalabraFh2Booleanos + w];
         compartidas[kPalabraFh2Booleanos + w] &= ~apagar[w];
+      }
+      if (!REXCVAR_GET(fh2_nativo_luces_diferidas)) {
+        compartidas[kPalabraFh2Booleanos + 228 / 32] &= ~(1u << (228 % 32));  // fh2_nativo_luces_diferidas
       }
       // The headlights' parameters (HeadLightParams1/2: pixel shader c168, c169) of a draw with the deferred light
       // contribution on (boolean 228), to compare with the emulation's trace.
