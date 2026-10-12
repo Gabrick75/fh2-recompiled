@@ -213,6 +213,8 @@ REXCVAR_DEFINE_INT32(fh2_nativo_omitir_categorias, 0, "FH2",
                      "draws whose vertex shader does / does not fetch vertices directly")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 #endif
+REXCVAR_DEFINE_DOUBLE(fh2_nativo_a2c_umbral, 0.5, "FH2",
+                      "Native renderer (test): alpha threshold that stands in for alpha to coverage");
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_omitir_sombras, false, "NFSMW",
                     "Renderizador nativo (prueba de FPS): no graba los dibujos del mapa de sombras "
                     "(destino solo de profundidad de 1600 o mas de pitch); recorte visible");
@@ -993,6 +995,15 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_sin_ps_sin_color, true, "NFSMW",
                     "Renderizador nativo (17/09, build 157): en los dibujos que no escriben ningun color, "
                     "monta el pipeline sin etapa de fragmentos si el pixel shader no puede descartar pixeles "
                     "ni escribe profundidad. La imagen no cambia y la GPU no sombrea (mapa de sombras)");
+REXCVAR_DEFINE_INT32(fh2_nativo_diag_sin_stencil_vs, -1, "FH2",
+                     "Native renderer (debug): the draws of this vertex shader (library number) without the stencil test")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_INT32(fh2_nativo_diag_sin_z_vs, -1, "FH2",
+                     "Native renderer (debug): the draws of this vertex shader (library number) without the depth test")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_STRING(fh2_nativo_diag_omitir_vs, "", "FH2",
+                      "Native renderer (debug): library numbers of vertex shaders whose draws are not recorded, "
+                      "comma-separated (to find a draw)");
 REXCVAR_DEFINE_STRING(nfsmw_nativo_diag_omitir_ps, "", "NFSMW",
                       "Renderizador nativo: numeros de PS separados por comas cuyos dibujos no "
                       "se graban (solo pruebas, para localizar un dibujo)");
@@ -1196,10 +1207,16 @@ constexpr size_t kMaxRegistrosLista = 4096;
 // FH2: NFS Carbon's 128 words, then FH2's own area up to byte 1152 (FH2_COMPARTIDA_BYTES in tools/xenos/recomp's
 // shader_common.h): vertex shader samplers at 512, direct vertex fetches at 640, loop constants at 768, the patched
 // parameters of each declared vertex element at 896.
-constexpr uint32_t kPalabrasCompartidas = 312;  // up to FH2_COMPARTIDA_BYTES (1248): element parameters, exp_adjust
+constexpr uint32_t kPalabrasCompartidas = 320;  // up to FH2_COMPARTIDA_BYTES (1280): element parameters, exp_adjust, booleans
+// FH2_COMPARTIDA_BOOLEANOS: the 8 words of boolean constants (all 256; g_Booleans only carries 16 + 16).
+constexpr uint32_t kPalabraFh2Booleanos = 1248 / 4;
 constexpr uint32_t kPalabraFh2ExpAjuste = 1152 / 4;  // FH2_COMPARTIDA_EXP: a texture slot's exp_adjust (0-19)
 // FH2_COMPARTIDA_INV_ESCALA: 1 / the pass's render scale (fh2_nativo_escala), for the pixel position register.
 constexpr uint32_t kPalabraFh2InvEscala = 1232 / 4;
+// FH2_COMPARTIDA_BASE_VERTICE: what the vertex shaders subtract from SV_VertexID to get the guest vertex index.
+constexpr uint32_t kPalabraFh2BaseVertice = 1236 / 4;
+// FH2_COMPARTIDA_TAM_PUNTO: the point diameter in host pixels (point lists).
+constexpr uint32_t kPalabraFh2TamPunto = 1240 / 4;
 constexpr uint32_t kPalabraRemapeosAltos = 122;
 constexpr uint32_t kPalabraFh2TexturasVs = 128;     // 512: dimension * 4 + slot - 16
 constexpr uint32_t kPalabraFh2SamplersVs = 140;     // 560
@@ -1334,7 +1351,7 @@ constexpr VkDeviceSize kUboBytesPs = 256 * 16;
 constexpr VkDeviceSize kUboBytesPs = 224 * 16;
 #endif
 #if defined(FH2_RECOMP)
-constexpr VkDeviceSize kUboBytesCompartidas = kPalabrasCompartidas * 4;  // 312 words
+constexpr VkDeviceSize kUboBytesCompartidas = kPalabrasCompartidas * 4;  // 320 words
 #elif defined(NFSC_RECOMP)
 constexpr VkDeviceSize kUboBytesCompartidas = 32 * 16;  // 128 words
 #else
@@ -2393,6 +2410,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   }
 
   bool Dibujar(const PeticionDibujo& p) override {
+    peticion_diag_ = &p;
 #if defined(FH2_RECOMP)
     ps_encuadre_diag_ = p.ps ? int32_t(p.ps->numero) : -1;
 #endif
@@ -2444,6 +2462,28 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (ps && !omitir_ps_.empty() && omitir_ps_.count(ps->numero)) {
       return Fh2DiagSalida(p, __LINE__, true);
     }
+    {
+      // Diagnostic: VS whose draws are skipped (fh2_nativo_diag_omitir_vs), read once per frame.
+      if (diag_omitir_vs_texto_ != omitir_vs_texto_) {
+        omitir_vs_texto_ = diag_omitir_vs_texto_;
+        omitir_vs_.clear();
+        uint32_t numero = 0;
+        bool hay = false;
+        for (char c : omitir_vs_texto_ + ",") {
+          if (c >= '0' && c <= '9') {
+            numero = numero * 10 + uint32_t(c - '0');
+            hay = true;
+          } else if (hay) {
+            omitir_vs_.insert(numero);
+            numero = 0;
+            hay = false;
+          }
+        }
+      }
+      if (!omitir_vs_.empty() && omitir_vs_.count(p.vs->numero)) {
+        return Fh2DiagSalida(p, __LINE__, true);
+      }
+    }
     const uint32_t iniciador = r[gr::XE_GPU_REG_VGT_DRAW_INITIATOR];
     const uint32_t tipo = iniciador & 0x3F;
     const uint32_t fuente = (iniciador >> 6) & 0x3;
@@ -2457,6 +2497,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     bool rectangulos = false;  // the fourth corner is added to the vertices (below, with the bindings)
     bool admite_reinicio = false;
     switch (tipo) {
+#if defined(FH2_RECOMP)
+      case 1:  // point list (the night sky's stars): the vertex shaders write PointSize (FH2_COMPARTIDA_TAM_PUNTO)
+        topologia = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+        break;
+#endif
       case 2:
         topologia = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
         break;
@@ -2487,6 +2532,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         rectangulos = true;
         break;
       default:
+        if (tipo == 1 && puntos_avisados_ < 64 && (p.vs->numero != 1744 || puntos_avisados_ < 2)) {
+          ++puntos_avisados_;
+          REXLOG_INFO("[nativo] puntos: VS n{} PS n{} cuenta {} fuente {} POINT_SIZE {:08X} MINMAX {:08X} "
+                      "SQ_PROGRAM_CNTL {:08X} SQ_CONTEXT_MISC {:08X} modo_edram {}",
+                      p.vs->numero, ps ? int(ps->numero) : -1, cuenta, fuente,
+                      r[gr::XE_GPU_REG_PA_SU_POINT_SIZE], r[gr::XE_GPU_REG_PA_SU_POINT_MINMAX],
+                      r[gr::XE_GPU_REG_SQ_PROGRAM_CNTL], r[gr::XE_GPU_REG_SQ_CONTEXT_MISC], modo_edram);
+        }
         return Rechazar(100 + tipo, "tipo de primitiva todavia no soportado");
     }
     if (fuente == uint32_t(xenos::SourceSelect::kImmediate)) {
@@ -2673,7 +2726,20 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       ++dibujos_vegetacion_pronto_;
       return Fh2DiagSalida(p, __LINE__, true);
     }
-    const uint32_t control_profundidad = r[gr::XE_GPU_REG_RB_DEPTHCONTROL];
+    // Rectangle lists, points and lines are not polygons: they have no back face, and the front face's stencil state
+    // applies to them (the emulation: IsPrimitivePolygonal and pipeline_cache.cpp, backface_enable only for
+    // polygons). As two triangles, a rectangle can face away from Vulkan's front face, and it took the separate back
+    // face's stencil: FH2's cockpit view draws a rectangle list that pushes the depth near where the stencil is not
+    // 0 (the car's interior), with an ALWAYS back function, so it covered the windows too and the world behind them
+    // failed the depth test (a grey windscreen).
+    const bool poligono = tipo >= 4 && tipo != 8;
+    uint32_t control_profundidad = r[gr::XE_GPU_REG_RB_DEPTHCONTROL] & (poligono ? ~0u : ~0x80u);
+    if (diag_sin_stencil_vs_ >= 0 && int32_t(p.vs->numero) == diag_sin_stencil_vs_) {
+      control_profundidad &= ~1u;  // debug: this VS's draws without the stencil test
+    }
+    if (diag_sin_z_vs_ >= 0 && int32_t(p.vs->numero) == diag_sin_z_vs_) {
+      control_profundidad &= ~0x6u;  // debug: this VS's draws without the depth test and write
+    }
     if (control_profundidad & 0x3) {  // stencil o z
       const uint32_t info = r[gr::XE_GPU_REG_RB_DEPTH_INFO];
       claves[4] = (uint64_t(1) << 62) | (uint64_t(info & 0xFFF) << 24) |
@@ -3831,13 +3897,16 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     // Without host MSAA the coverage of one sample is alpha >= 0.5, which is an alpha test (the console's dither
     // offsets in bits 24-31 only spread the threshold between samples).
     else if (ps && ((control_color >> 4) & 0x1)) {
-      umbral_alfa = 0.5f;
+      umbral_alfa = float(REXCVAR_GET(fh2_nativo_a2c_umbral));
       funcion_alfa = 6;  // >=
       especializacion |= 0x2;
       especializacion |= (funcion_alfa & 0x7u) << kSpecFuncionAlfaDesplazamiento;
     }
 #endif
     compartidas[64] = (r[kRegBooleanos] & 0xFFFF) | ((r[kRegBooleanos + 4] & 0xFFFF) << 16);
+#if defined(FH2_RECOMP)
+    std::copy(r + kRegBooleanos, r + kRegBooleanos + 8, compartidas + kPalabraFh2Booleanos);
+#endif
     compartidas[65] = 0;  // g_SwappedTexcoords
     if (!(r[gr::XE_GPU_REG_PA_SU_VTX_CNTL] & 0x1)) {  // PixelCenter::kD3DZero
       const float medio[2] = {1.0f / viewport.width, -1.0f / std::abs(viewport.height)};
@@ -3864,10 +3933,38 @@ class DibujosVulkanImpl final : public DibujosVulkan {
      * waste; if almost all do, the double memcpy is. They are two different fixes, and counting costs one
      * increment.
      */
+    /*
+     * nfsmw_nativo_vertices_base_cero. With a single binding whose copy starts at a multiple of its stride,
+     * the upload buffer is bound at 0 (once per command buffer, or after the deferred sky) and the draw is
+     * shifted with primer_vertice. The others bind as usual. Decided here, before the shared constants,
+     * because the vertex index the shaders see depends on it (below).
+     */
+    bool base_cero = false;
+    uint32_t primer_vertice = 0;  // offset / stride: where the copy starts, in vertices
+    if (vertices_base_cero_ && entrada->enlaces.size() == 1) {
+      const VkDeviceSize zancada = entrada->enlaces[0].zancada;
+      if (offsets_vertices[0] % zancada == 0) {
+        base_cero = ComprobarBaseCero(offsets_vertices[0], zancada, origenes[0].bytes, vmin, primer_vertice);
+      } else {
+        ++base_cero_desalineados_;
+      }
+    } else if (entrada->enlaces.size() > 1) {
+      ++base_cero_varios_enlaces_;
+    }
 #if defined(FH2_RECOMP)
     {
       const float inv_escala = 1.0f / pase_escala_render_;
       std::memcpy(&compartidas[kPalabraFh2InvEscala], &inv_escala, sizeof(inv_escala));
+      // SV_VertexID = guest index (VGT_INDX_OFFSET included) + vertexOffset for indexed draws, firstVertex + i for
+      // the others, where vertex 0 of the copy is guest vertex vmin: both shift by the same amount. The vertex
+      // shaders subtract it to get the index the Xenos puts in r0.x (FH2_COMPARTIDA_BASE_VERTICE).
+      const int32_t base_vertice = base_cero ? int32_t(int64_t(primer_vertice) - int64_t(vmin)) : -int32_t(vmin);
+      std::memcpy(&compartidas[kPalabraFh2BaseVertice], &base_vertice, sizeof(base_vertice));
+      // PA_SU_POINT_SIZE: half the width in 12.4 fixed point, in guest pixels. A per-vertex size (an export the
+      // translator does not produce) is not supported: the constant one is used.
+      const float tam_punto =
+          std::max(1.0f, float(r[gr::XE_GPU_REG_PA_SU_POINT_SIZE] >> 16) * (2.0f / 16.0f) * pase_escala_render_);
+      std::memcpy(&compartidas[kPalabraFh2TamPunto], &tam_punto, sizeof(tam_punto));
     }
 #endif
     ++compartidas_miradas_;
@@ -4359,23 +4456,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
     }
     estado_grabado_ = true;
-    /*
-     * nfsmw_nativo_vertices_base_cero. With a single binding whose copy starts at a multiple of its stride,
-     * the upload buffer is bound at 0 (once per command buffer, or after the deferred sky) and the draw is
-     * shifted with primer_vertice. The others bind as usual.
-     */
-    bool base_cero = false;
-    uint32_t primer_vertice = 0;  // offset / stride: where the copy starts, in vertices
-    if (vertices_base_cero_ && entrada->enlaces.size() == 1) {
-      const VkDeviceSize zancada = entrada->enlaces[0].zancada;
-      if (offsets_vertices[0] % zancada == 0) {
-        base_cero = ComprobarBaseCero(offsets_vertices[0], zancada, origenes[0].bytes, vmin, primer_vertice);
-      } else {
-        ++base_cero_desalineados_;
-      }
-    } else if (entrada->enlaces.size() > 1) {
-      ++base_cero_varios_enlaces_;
-    }
+    // base_cero and primer_vertice (nfsmw_nativo_vertices_base_cero): decided before the shared constants.
     if (!entrada->enlaces.empty()) {
       // 16 identical pointers were filled in on every draw to bind one or two. It is filled when the upload
       // buffer changes (once per work slot), not 2,345 times per frame.
@@ -5611,6 +5692,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
      * serves no purpose: none of them changes within a frame.
      */
     diag_omitir_ps_texto_ = REXCVAR_GET(nfsmw_nativo_diag_omitir_ps);
+    diag_omitir_vs_texto_ = REXCVAR_GET(fh2_nativo_diag_omitir_vs);
     diag_vertices_repetidos_ = REXCVAR_GET(nfsmw_nativo_diag_vertices_repetidos);
     dedupe_activo_ = REXCVAR_GET(nfsmw_nativo_dedupe_vertices);
     vertices_base_cero_ = REXCVAR_GET(nfsmw_nativo_vertices_base_cero) && !vertices_base_cero_apagado_;
@@ -6310,6 +6392,12 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 #if defined(FH2_RECOMP)
   // FH2 diagnostics: where Dibujar leaves for the pixel shader number fh2_nativo_diag_ps (-1 = never).
   bool Fh2DiagSalida(const PeticionDibujo& p, int linea, bool resultado) {
+    if (!resultado && rechazos_vistos_.size() < 256) {  // diagnostic: silent drops, once per (line, VS, PS)
+      const uint32_t vs = p.vs ? p.vs->numero : 0xFFFF, ps_n = p.ps ? p.ps->numero : 0xFFFF;
+      if (rechazos_vistos_.insert((uint64_t(0x8000u | uint32_t(linea)) << 32) | (vs << 16) | ps_n).second) {
+        REXLOG_INFO("[nativo] dibujo perdido en la linea {}: VS n{} PS n{}", linea, vs, ps_n);
+      }
+    }
     static int avisos = 0;
     const int32_t ps = REXCVAR_GET(fh2_nativo_diag_ps);
     if (ps >= 0 && p.ps && int32_t(p.ps->numero) == ps && avisos < 20) {
@@ -6325,6 +6413,15 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     ++causas_[causa];
     ultima_causa_ = causa;
     Avisar(causa, texto);
+    // Diagnostic: each (cause, VS, PS) refused, once, so a missing object can be traced to its shaders.
+    if (peticion_diag_ && rechazos_vistos_.size() < 256) {
+      const PeticionDibujo& p = *peticion_diag_;
+      const uint32_t vs = p.vs ? p.vs->numero : 0xFFFF;
+      const uint32_t ps = p.ps ? p.ps->numero : 0xFFFF;
+      if (rechazos_vistos_.insert((uint64_t(causa) << 32) | (vs << 16) | ps).second) {
+        REXLOG_INFO("[nativo] rechazo causa {} VS n{} PS n{} ({})", causa, vs, ps, texto);
+      }
+    }
     return false;
   }
 
@@ -9354,7 +9451,19 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     const uint32_t dimension = (f[5] >> 9) & 0x3;
     const bool cubo = dimension == uint32_t(xenos::DataDimension::kCube);
     const bool volumen = dimension == uint32_t(xenos::DataDimension::k3D);
+#if defined(FH2_RECOMP)
+    // 1D textures (the headlights' falloff, a k_16 ramp) are linear, without packed mips, with a 24-bit width
+    // (texture util.cpp, GetGuestTextureLayout): a 2D texture one texel high, as the shaders sample them (tfetch1D
+    // is tfetch2D at (u, 0.5)). Without them the headlight shader sampled an empty texture and lit everything.
+    const bool unidimensional = dimension == uint32_t(xenos::DataDimension::k1D);
+    if (unidimensional && ((f[2] & 0xFFFFFF) + 1 > 8192 || ((f[0] >> 31) & 0x1))) {
+      Avisar(30, "textura 1D de mas de 8192 o en mosaico: se usa una vacia");
+      return;
+    }
+    if (dimension != uint32_t(xenos::DataDimension::k2DOrStacked) && !cubo && !volumen && !unidimensional) {
+#else
     if (dimension != uint32_t(xenos::DataDimension::k2DOrStacked) && !cubo && !volumen) {
+#endif
       Avisar(30, "texturas 1D todavia no soportadas: se usa una vacia");
       return;
     }
@@ -9388,8 +9497,13 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (!cubo && !volumen) {
 #if defined(FH2_RECOMP)
       // fh2_nativo_diag_textura: what a fetch of that address gets (first 30).
-      if (fh2_diag_textura_ && (base & 0x1FFFFFFF) == fh2_diag_textura_ && fh2_diag_textura_avisos_ < 30 &&
-          (REXCVAR_GET(fh2_nativo_diag_ps) < 0 || ps_encuadre_diag_ == REXCVAR_GET(fh2_nativo_diag_ps))) {
+      if (fh2_diag_textura_ && (base & 0x1FFFFFFF) == fh2_diag_textura_ &&
+          (REXCVAR_GET(fh2_nativo_diag_ps) < 0 || ps_encuadre_diag_ == REXCVAR_GET(fh2_nativo_diag_ps)) &&
+          fh2_diag_textura_vistos_.size() < 64 &&
+          fh2_diag_textura_vistos_
+              .insert((uint64_t(uint32_t(ps_encuadre_diag_)) << 1) |
+                      (contexto_->TexturaResuelta(base & 0x1FFFFFFF) ? 1u : 0u))
+              .second) {
         ++fh2_diag_textura_avisos_;
         const ImagenNativa* r = contexto_->TexturaResuelta(base & 0x1FFFFFFF);
         REXLOG_INFO("[fh2 nativo] textura {:08X} formato {} {}x{} pedida por PS n{}: resuelta {} {}x{} formato vk {} "
@@ -9492,8 +9606,13 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         : indice_bc == 5 ? VK_FORMAT_R8G8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
 #endif
     // size_2d: 13 + 13 bits; size_3d: 11 + 11 + 10 bits (xenos.h:1222-1233).
+#if defined(FH2_RECOMP)
+    const uint32_t ancho = unidimensional ? (f[2] & 0xFFFFFF) + 1 : volumen ? (f[2] & 0x7FF) + 1 : (f[2] & 0x1FFF) + 1;
+    const uint32_t alto = unidimensional ? 1 : volumen ? ((f[2] >> 11) & 0x7FF) + 1 : ((f[2] >> 13) & 0x1FFF) + 1;
+#else
     const uint32_t ancho = volumen ? (f[2] & 0x7FF) + 1 : (f[2] & 0x1FFF) + 1;
     const uint32_t alto = volumen ? ((f[2] >> 11) & 0x7FF) + 1 : ((f[2] >> 13) & 0x1FFF) + 1;
+#endif
     const uint32_t fondo = volumen ? ((f[2] >> 22) & 0x3FF) + 1 : 0;
     if (volumen && tf.bloque > 1) {
       Avisar(38, "textura 3D comprimida: se usa una vacia");
@@ -13684,6 +13803,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   uint32_t constantes_vs_bytes_ = 0;
   uint32_t constantes_ps_bytes_ = 0;
 
+  uint32_t puntos_avisados_ = 0;  // diagnostic: point-list draws logged
+  const PeticionDibujo* peticion_diag_ = nullptr;  // diagnostic: the draw Rechazar reports
+  std::unordered_set<uint64_t> rechazos_vistos_;
   bool pase_activo_ = false;
   // The game's open occlusion query and the host query counting this pass's span.
   bool oclusion_abierta_ = false;
@@ -13697,6 +13819,12 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   bool enviado_tras_sombras_ = false;        // once per frame
   // Per-frame copies of the diagnostic cvars (see the comment at the Swap).
   std::string diag_omitir_ps_texto_;
+  int32_t diag_sin_stencil_vs_ = REXCVAR_GET(fh2_nativo_diag_sin_stencil_vs);
+  int32_t diag_sin_z_vs_ = REXCVAR_GET(fh2_nativo_diag_sin_z_vs);
+  std::set<uint64_t> fh2_diag_textura_vistos_;  // fh2_nativo_diag_textura: (PS, resolved) pairs logged
+  std::string diag_omitir_vs_texto_;  // fh2_nativo_diag_omitir_vs, read once per frame
+  std::string omitir_vs_texto_;
+  std::unordered_set<uint32_t> omitir_vs_;
   bool diag_vertices_repetidos_ = false;
   bool diag_estadisticas_dibujo_ = false;
   uint32_t tijera_prueba_ = 0;

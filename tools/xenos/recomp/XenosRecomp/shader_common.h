@@ -82,7 +82,18 @@
 #define FH2_COMPARTIDA_EXP        1152
 // 1 / the render scale of the pass (fh2_nativo_escala), a float: the pixel position register is in guest pixels.
 #define FH2_COMPARTIDA_INV_ESCALA 1232
-#define FH2_COMPARTIDA_BYTES      1248
+// What to subtract from SV_VertexID to get the guest vertex index (a signed int): the native renderer shifts draws with
+// vertexOffset/firstVertex (the upload copy starts at vmin), and the Xenos hands the vertex shader the index itself in
+// r0.x. Grass and other billboards build their quads from it (instance = index / 4).
+#define FH2_COMPARTIDA_BASE_VERTICE 1236
+// Point list draws (stars): the point diameter in host pixels, a float the vertex shaders write to PointSize.
+#define FH2_COMPARTIDA_TAM_PUNTO  1240
+// The 256 boolean constants as the game set them (SHADER_CONSTANT_BOOL_000_031..224_255: 8 words, bit b of word w is
+// boolean 32 * w + b; vertex shaders use 0-127 and pixel shaders 128-255, as the control flow addresses them). The
+// 16 + 16 bits of g_Booleans could not hold FH2's high ones (the headlights' bEnableDeferredLightContribution is
+// pixel boolean 100).
+#define FH2_COMPARTIDA_BOOLEANOS  1248
+#define FH2_COMPARTIDA_BYTES      1280
 #define SPEC_CONSTANT_ALPHA_FUNC_SHIFT  16
 #define SPEC_CONSTANT_ALPHA_FUNC_MASK   (7 << 16)
 
@@ -124,6 +135,17 @@ struct NfsmwBloqueCompartidas { float4 v[FH2_COMPARTIDA_BYTES / 16]; };  // FH2:
 #define NFSMW_COMPARTIDA_UINT(B)  asuint(g_UboCompartidas.v[(B) / 16][((B) % 16) / 4])
 #define NFSMW_COMPARTIDA_FLOAT(B) g_UboCompartidas.v[(B) / 16][((B) % 16) / 4]
 #define FH2_INV_ESCALA (NFSMW_UBO ? asfloat(NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_INV_ESCALA)) : asfloat(vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + FH2_COMPARTIDA_INV_ESCALA)))
+#define FH2_BASE_VERTICE (NFSMW_UBO ? int(NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_BASE_VERTICE)) : int(vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + FH2_COMPARTIDA_BASE_VERTICE)))
+// The vertex shaders' point size output (DXC rejects the PointSize builtin on a plain out parameter).
+struct Fh2Punto
+{
+#ifdef __spirv__
+    [[vk::builtin("PointSize")]]
+#endif
+    float tam : PSIZE;
+};
+#define FH2_TAM_PUNTO (NFSMW_UBO ? asfloat(NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_TAM_PUNTO)) : asfloat(vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + FH2_COMPARTIDA_TAM_PUNTO)))
+#define FH2_BOOLEANO(ID) (((NFSMW_UBO ? NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_BOOLEANOS + ((ID) >> 5) * 4) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + FH2_COMPARTIDA_BOOLEANOS + ((ID) >> 5) * 4)) >> ((ID) & 31)) & 1)
 #define FH2_BUCLE(ID) (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_BUCLES + (ID) * 4) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + FH2_COMPARTIDA_BUCLES + (ID) * 4))
 
 #define g_Booleans                 (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT(256) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256))

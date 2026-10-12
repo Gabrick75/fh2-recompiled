@@ -4542,6 +4542,22 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
   // Synchronize the memory pages backing memory scatter export streams, and
   // calculate the range that includes the streams for the buffer barrier.
   uint32_t memexport_extent_start = UINT32_MAX, memexport_extent_end = 0;
+  if (memexport_writes_possible) {
+    // Diagnostic: which draws export to memory, and where (a native renderer must reproduce them).
+    static uint32_t memexport_logged = 0;
+    if (memexport_logged < 48) {
+      ++memexport_logged;
+      std::string ranges;
+      for (const draw_util::MemExportRange& r : memexport_ranges_) {
+        ranges += fmt::format(" {:08X}+{}", r.base_address_dwords << 2, r.size_bytes);
+      }
+      REXGPU_INFO("[memexport] draw VS {:016X} PS {:016X} prim {} n {} vs {} ps {}:{}",
+                  vertex_shader->ucode_data_hash(), pixel_shader ? pixel_shader->ucode_data_hash() : 0,
+                  uint32_t(regs.Get<reg::VGT_DRAW_INITIATOR>().prim_type),
+                  regs.Get<reg::VGT_DRAW_INITIATOR>().num_indices, memexport_used_vertex,
+                  memexport_used_pixel, ranges);
+    }
+  }
   for (const draw_util::MemExportRange& memexport_range : memexport_ranges_) {
     uint32_t memexport_range_base_bytes = memexport_range.base_address_dwords << 2;
     if (!shared_memory_->RequestRange(memexport_range_base_bytes, memexport_range.size_bytes)) {
