@@ -21,7 +21,7 @@ REXCVAR_DEFINE_STRING(fh2_teste_botoes, "", "FH2",
                       "Tests: button script of a virtual pad, in seconds since start. "
                       "\"20:start,26:a,40-60:rt\" presses START at 20 s, A at 26 s and holds the right "
                       "trigger from 40 to 60 s. Buttons: a b x y start back up down left right lb rb lt rt "
-                      "and stick_up stick_down stick_left stick_right (left stick)")
+                      "stick_up stick_down stick_left stick_right (left stick) and ls rs (thumbstick clicks)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 namespace fh2::teste {
@@ -48,6 +48,8 @@ constexpr Button kButtons[] = {
     {"start", 0x0010, 0x5814},  {"back", 0x0020, 0x5815},      {"stick_up", 1u << 18, 0x5820},
     {"stick_down", 1u << 19, 0x5821}, {"stick_right", 1u << 20, 0x5822},
     {"stick_left", 1u << 21, 0x5823},
+    // Thumbstick clicks (the camera change is on one of them).
+    {"ls", 0x0040, 0x5816},     {"rs", 0x0080, 0x5817},
 };
 
 struct Step {

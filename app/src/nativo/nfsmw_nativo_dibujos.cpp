@@ -213,6 +213,8 @@ REXCVAR_DEFINE_INT32(fh2_nativo_omitir_categorias, 0, "FH2",
                      "draws whose vertex shader does / does not fetch vertices directly")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 #endif
+REXCVAR_DEFINE_DOUBLE(fh2_nativo_a2c_umbral, 0.5, "FH2",
+                      "Native renderer (test): alpha threshold that stands in for alpha to coverage");
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_omitir_sombras, false, "NFSMW",
                     "Renderizador nativo (prueba de FPS): no graba los dibujos del mapa de sombras "
                     "(destino solo de profundidad de 1600 o mas de pitch); recorte visible");
@@ -2393,6 +2395,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   }
 
   bool Dibujar(const PeticionDibujo& p) override {
+    peticion_diag_ = &p;
 #if defined(FH2_RECOMP)
     ps_encuadre_diag_ = p.ps ? int32_t(p.ps->numero) : -1;
 #endif
@@ -2487,6 +2490,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         rectangulos = true;
         break;
       default:
+        if (tipo == 1 && puntos_avisados_ < 64 && (p.vs->numero != 1744 || puntos_avisados_ < 2)) {
+          ++puntos_avisados_;
+          REXLOG_INFO("[nativo] puntos: VS n{} PS n{} cuenta {} fuente {} POINT_SIZE {:08X} MINMAX {:08X} "
+                      "SQ_PROGRAM_CNTL {:08X} SQ_CONTEXT_MISC {:08X} modo_edram {}",
+                      p.vs->numero, ps ? int(ps->numero) : -1, cuenta, fuente,
+                      r[gr::XE_GPU_REG_PA_SU_POINT_SIZE], r[gr::XE_GPU_REG_PA_SU_POINT_MINMAX],
+                      r[gr::XE_GPU_REG_SQ_PROGRAM_CNTL], r[gr::XE_GPU_REG_SQ_CONTEXT_MISC], modo_edram);
+        }
         return Rechazar(100 + tipo, "tipo de primitiva todavia no soportado");
     }
     if (fuente == uint32_t(xenos::SourceSelect::kImmediate)) {
@@ -3831,7 +3842,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     // Without host MSAA the coverage of one sample is alpha >= 0.5, which is an alpha test (the console's dither
     // offsets in bits 24-31 only spread the threshold between samples).
     else if (ps && ((control_color >> 4) & 0x1)) {
-      umbral_alfa = 0.5f;
+      umbral_alfa = float(REXCVAR_GET(fh2_nativo_a2c_umbral));
       funcion_alfa = 6;  // >=
       especializacion |= 0x2;
       especializacion |= (funcion_alfa & 0x7u) << kSpecFuncionAlfaDesplazamiento;
@@ -6310,6 +6321,12 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 #if defined(FH2_RECOMP)
   // FH2 diagnostics: where Dibujar leaves for the pixel shader number fh2_nativo_diag_ps (-1 = never).
   bool Fh2DiagSalida(const PeticionDibujo& p, int linea, bool resultado) {
+    if (!resultado && rechazos_vistos_.size() < 256) {  // diagnostic: silent drops, once per (line, VS, PS)
+      const uint32_t vs = p.vs ? p.vs->numero : 0xFFFF, ps_n = p.ps ? p.ps->numero : 0xFFFF;
+      if (rechazos_vistos_.insert((uint64_t(0x8000u | uint32_t(linea)) << 32) | (vs << 16) | ps_n).second) {
+        REXLOG_INFO("[nativo] dibujo perdido en la linea {}: VS n{} PS n{}", linea, vs, ps_n);
+      }
+    }
     static int avisos = 0;
     const int32_t ps = REXCVAR_GET(fh2_nativo_diag_ps);
     if (ps >= 0 && p.ps && int32_t(p.ps->numero) == ps && avisos < 20) {
@@ -6325,6 +6342,15 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     ++causas_[causa];
     ultima_causa_ = causa;
     Avisar(causa, texto);
+    // Diagnostic: each (cause, VS, PS) refused, once, so a missing object can be traced to its shaders.
+    if (peticion_diag_ && rechazos_vistos_.size() < 256) {
+      const PeticionDibujo& p = *peticion_diag_;
+      const uint32_t vs = p.vs ? p.vs->numero : 0xFFFF;
+      const uint32_t ps = p.ps ? p.ps->numero : 0xFFFF;
+      if (rechazos_vistos_.insert((uint64_t(causa) << 32) | (vs << 16) | ps).second) {
+        REXLOG_INFO("[nativo] rechazo causa {} VS n{} PS n{} ({})", causa, vs, ps, texto);
+      }
+    }
     return false;
   }
 
@@ -13684,6 +13710,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   uint32_t constantes_vs_bytes_ = 0;
   uint32_t constantes_ps_bytes_ = 0;
 
+  uint32_t puntos_avisados_ = 0;  // diagnostic: point-list draws logged
+  const PeticionDibujo* peticion_diag_ = nullptr;  // diagnostic: the draw Rechazar reports
+  std::unordered_set<uint64_t> rechazos_vistos_;
   bool pase_activo_ = false;
   // The game's open occlusion query and the host query counting this pass's span.
   bool oclusion_abierta_ = false;

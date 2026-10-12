@@ -2365,6 +2365,20 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
           if (vs_dibujo_ &&
               (ps_dibujo_ || (Registro(rex::graphics::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 5)) {
             DibujarNativo();
+          } else {
+            // Diagnostic: draws dropped here without any report (no VS or PS identified for the draw).
+            ++fh2_saltados_sin_shader_;
+            const uint32_t ini = Registro(rex::graphics::XE_GPU_REG_VGT_DRAW_INITIATOR);
+            const uint64_t clave = (uint64_t(vs_dibujo_ ? vs_dibujo_->numero : 0xFFFF) << 48) |
+                                   (uint64_t(ps_dibujo_ ? ps_dibujo_->numero : 0xFFFF) << 32) | HuellaVs() >> 32;
+            if (fh2_saltados_vistos_.size() < 64 && fh2_saltados_vistos_.insert(clave).second) {
+              REXLOG_INFO("[nativo] dibujo sin shaders: VS {} PS {} (actual VS {} PS {}), huella VS {:016X} "
+                          "({} palabras), tipo {} cuenta {} modo {}; saltados hasta ahora {}",
+                          vs_dibujo_ ? int(vs_dibujo_->numero) : -1, ps_dibujo_ ? int(ps_dibujo_->numero) : -1,
+                          vs_actual_ ? int(vs_actual_->numero) : -1, ps_actual_ ? int(ps_actual_->numero) : -1,
+                          HuellaVs(), vs_microcodigo_.size(), ini & 0x3F, ini >> 16,
+                          Registro(rex::graphics::XE_GPU_REG_RB_MODECONTROL) & 0x7, fh2_saltados_sin_shader_);
+            }
           }
         }
         break;
@@ -4943,6 +4957,8 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   std::vector<uint32_t> microcodigo_;
   uint64_t dibujos_identificados_ = 0;
   uint64_t dibujos_sin_vs_ = 0;
+  uint64_t fh2_saltados_sin_shader_ = 0;  // diagnostic: draws without VS/PS
+  std::unordered_set<uint64_t> fh2_saltados_vistos_;
 #if defined(NFSC_RECOMP) || defined(FH2_RECOMP)
   struct DetalleSinVs {
     uint64_t dibujos = 0;
