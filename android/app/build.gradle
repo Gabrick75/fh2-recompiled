@@ -75,7 +75,7 @@ android {
 dependencies {
     implementation 'androidx.core:core:1.13.1'
     implementation 'androidx.documentfile:documentfile:1.0.1'
-    // The launcher's menu (cards, switches, radio buttons, dropdowns), as NFSMW-Recompiled-Mobile's.
+    // The launcher's menu (switches, sliders, buttons; the rest is drawn by Menu.java).
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
 }
