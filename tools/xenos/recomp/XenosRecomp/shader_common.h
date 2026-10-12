@@ -53,6 +53,16 @@
  */
 #define SPEC_CONSTANT_SOMBRA_MINIMO     (1 << 23)
 /*
+ * FH2: alpha to coverage as the emulation draws it without MSAA (spirv_translator_rb.cpp, the 1x case).
+ *
+ * The game draws foliage, fences and the crowd with alpha to coverage (RB_COLORCONTROL bit 4). With one sample the
+ * emulation does not cut at a fixed alpha: each pixel of a 2x2 block has its own threshold, 1 - offset / 4, where
+ * offset is the 2-bit field of RB_COLORCONTROL bits 24-31 at index (x & 1) | ((y & 1) << 1). That dither is what
+ * makes the leaves look full and soft at the edges; a single 0.5 threshold cut them thinner and harder. The app
+ * passes the 8 bits of offsets in g_AlphaThreshold (as a float holding the integer) with this bit set.
+ */
+#define SPEC_CONSTANT_A2C_PONTILHADO    (1 << 21)
+/*
  * The app knows the library has tfetch2DSombraMin because this constant appears in the SPIR-V of the
  * shaders that use it (OpConstant) and nowhere else. The specialization constant never reaches this
  * value (bits 24-30).
@@ -553,19 +563,27 @@ float4 remapInput(float4 value, uint code)
     return result;
 }
 
-// NFSMW: Xenos alpha test with its comparison function. Positive if the pixel passes.
-float alphaTestValue(float alpha)
+// NFSMW: Xenos alpha test with its comparison function. Positive if the pixel passes. position: SV_Position, for
+// the dithered alpha to coverage (SPEC_CONSTANT_A2C_PONTILHADO).
+float alphaTestValue(float alpha, float2 position)
 {
+    float threshold = g_AlphaThreshold;
+    if (g_SpecConstants() & SPEC_CONSTANT_A2C_PONTILHADO)
+    {
+        uint2 corner = uint2(position) & 1u;
+        uint offset = (uint(g_AlphaThreshold) >> ((corner.x | (corner.y << 1)) * 2u)) & 3u;
+        threshold = 1.0 - float(offset) * 0.25;
+    }
     bool pass = true;
     switch ((g_SpecConstants() & SPEC_CONSTANT_ALPHA_FUNC_MASK) >> SPEC_CONSTANT_ALPHA_FUNC_SHIFT)
     {
     case 0: pass = false; break;
-    case 1: pass = alpha < g_AlphaThreshold; break;
-    case 2: pass = alpha == g_AlphaThreshold; break;
-    case 3: pass = alpha <= g_AlphaThreshold; break;
-    case 4: pass = alpha > g_AlphaThreshold; break;
-    case 5: pass = alpha != g_AlphaThreshold; break;
-    case 6: pass = alpha >= g_AlphaThreshold; break;
+    case 1: pass = alpha < threshold; break;
+    case 2: pass = alpha == threshold; break;
+    case 3: pass = alpha <= threshold; break;
+    case 4: pass = alpha > threshold; break;
+    case 5: pass = alpha != threshold; break;
+    case 6: pass = alpha >= threshold; break;
     default: break;
     }
     return pass ? 1.0 : -1.0;

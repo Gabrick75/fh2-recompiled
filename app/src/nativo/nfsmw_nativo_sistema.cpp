@@ -4655,6 +4655,26 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
                     double(delta(19)) / 1e6,
                     presentados_intervalo ? double(delta(19)) / 1e6 / double(presentados_intervalo)
                                           : 0.0);
+        {
+          static constexpr const char* kMotivos[] = {"otro",          "copia color", "borrado color",
+                                                     "profundidad",   "intercambio", "diferido",
+                                                     "lectura resuelta", "copia+borrado color"};
+          std::string detalle;
+          for (uint32_t m = 0; m < kMotivosCierre; ++m) {
+            const uint64_t n = d.pases_reanudados_motivo[m] - reanudados_motivo_previos_[m];
+            if (!n) {
+              continue;
+            }
+            if (!detalle.empty()) {
+              detalle += ", ";
+            }
+            detalle += fmt::format("{} {}", kMotivos[m], n);
+          }
+          if (!detalle.empty()) {
+            NFSMW_INFORME_SEGUN(diferir_informe, "[nativo] C6 reanudados por causa: {}", detalle);
+          }
+          reanudados_motivo_previos_ = d.pases_reanudados_motivo;
+        }
         if (presentados_intervalo) {
           static constexpr const char* kTipos[] = {"resto",  "sombras", "escena",  "reflejo",
                                                    "cubo",   "menores", "copias",  "borrados",
@@ -5185,6 +5205,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   std::array<uint64_t, 3> dedupe_previos_{};  // "C6 contadores"
   std::array<uint64_t, kGpuCategorias> texels_categoria_previos_{};  // "C6 area abierta"
   std::array<uint64_t, kGpuCategorias> pases_categoria_previos_{};
+  std::array<uint64_t, kMotivosCierre> reanudados_motivo_previos_{};  // "C6 reanudados por causa"
   uint64_t dibujos_ps_inutil_previos_ = 0;
   uint64_t sombras_alfa_activa_previa_ = 0;
   uint64_t sombras_alfa_apagada_previa_ = 0;

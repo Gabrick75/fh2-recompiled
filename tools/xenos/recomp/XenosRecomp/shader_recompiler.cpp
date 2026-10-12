@@ -2282,7 +2282,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
                     indent();
                 #ifdef NFSMW_RECOMP
                     // NFSMW: the 8 comparison functions (alphaTestValue, shader_common.h).
-                    out += "\tclip(alphaTestValue(oC0.w));\n";
+                    out += "\tclip(alphaTestValue(oC0.w, iPos.xy));\n";
                 #else
                     out += "\tclip(oC0.w - g_AlphaThreshold);\n";
                 #endif

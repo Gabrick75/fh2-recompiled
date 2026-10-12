@@ -1488,6 +1488,8 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     dibujados_ultima_copia_ = dibujados;
     if (dibujos_) {
       dibujos_->TerminarPase();  // copying and clearing are not allowed inside a pass
+      // Diagnostic: attribute the reopen that follows to what this copy/clear does (C6 "reanudados").
+      dibujos_->AnotarMotivoCierre(kCierreCopiaColor);
       // No longer on every copy; see ObtenerResuelta and Preparar.
       if (invalidar_cada_copia_) {
         dibujos_->InvalidarTexturas();
@@ -1502,6 +1504,12 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     const uint32_t comando = (control >> 20) & 0x3;
     const bool copiar = comando == uint32_t(xenos::CopyCommand::kRaw) ||
                         comando == uint32_t(xenos::CopyCommand::kConvert);
+    // Diagnostic refinement: most FH2 color resolves come with borrar_color, and the clear is what forces
+    // the pass to close. Tell a resolve-that-clears from a plain copy and from a plain clear.
+    if (dibujos_ && origen < xenos::kMaxColorRenderTargets) {
+      dibujos_->AnotarMotivoCierre(copiar ? (borrar_color ? kCierreCopiaYBorrado : kCierreCopiaColor)
+                                          : (borrar_color ? kCierreBorradoColor : kCierreOtro));
+    }
     const uint32_t pitch = reg.rb_surface_info & 0x3FFF;
     const uint32_t msaa = (reg.rb_surface_info >> 16) & 0x3;
     if (msaa != uint32_t(xenos::MsaaSamples::k1X) && avisados_.insert(1).second) {
@@ -1511,6 +1519,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       // From depth: the copy goes to a resolved texture with the host depth
       // format, which the draws sample as k_24_8. With a depth source no color
       // is cleared (IsClearingColor, graphics/util/draw.h:534-538).
+      if (dibujos_) dibujos_->AnotarMotivoCierre(kCierreProfundidad);
       const bool borrara = ((control >> 9) & 0x1) && borrar_profundidad_;
       if (copiar) {
         CopiarProfundidad(reg, pitch, borrara);
@@ -1819,6 +1828,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
           // With x0 = y0 = 0 the tiling offset is 0, so the address is the base as is.
           if (IntercambiarConResuelta(*destino_render, *resuelta, reg.rb_copy_dest_base & 0x1FFFFFFF)) {
             ++intercambios_color_;
+            if (dibujos_) dibujos_->AnotarMotivoCierre(kCierreIntercambio);
             LeerResuelta(reg, *resuelta, x0, y0, dx, dy, ancho, alto);
             return true;
           }
@@ -1867,14 +1877,16 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
             Rechazar(9, "copia entre formatos distintos sin vkCmdBlitImage");
           }
         } else if (!AplazarCopiaFrontal(base_resuelta, *destino_render, *resuelta, copia) &&
-            !AplazarCompuesta(base_resuelta, *destino_render, *resuelta, copia,
-                              (info_color & 0xFFF) | (pitch << 12))) {
+                   !AplazarCompuesta(base_resuelta, *destino_render, *resuelta, copia,
+                                     (info_color & 0xFFF) | (pitch << 12))) {
           Fh2CopiarImagen(comandos_trabajo_, destino_render->imagen, VK_IMAGE_LAYOUT_GENERAL,
                          resuelta->imagen.imagen, VK_IMAGE_LAYOUT_GENERAL, 1, &copia);
           ++copias_;
           AnotarCopia(ancho, alto);
           ResueltaEscrita(base_resuelta, uint64_t(ancho) * alto);
           LeerResuelta(reg, *resuelta, x0, y0, dx, dy, ancho, alto);
+        } else if (dibujos_) {
+          dibujos_->AnotarMotivoCierre(kCierreDiferido);  // AplazarCopiaFrontal or AplazarCompuesta
         }
       }
     }
@@ -3777,6 +3789,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     }
     ultima_lectura_viva_[direccion] = presentados_;
     if (!pendientes_.empty() && pendientes_.count(direccion)) {
+      if (dibujos_) dibujos_->AnotarMotivoCierre(kCierreLectura);
       GrabarCopiaPendiente(direccion);
       ++perezosa_copiadas_lectura_;
     }
@@ -4084,6 +4097,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   void AnotarLecturaFrontal(uint32_t direccion) {
     frontales_leidos_[direccion] = presentados_;
     if (!frontales_pendientes_.empty() && frontales_pendientes_.count(direccion)) {
+      if (dibujos_) dibujos_->AnotarMotivoCierre(kCierreLectura);
       GrabarCopiaFrontal(direccion);
       ++frontal_copiadas_lectura_;
     }

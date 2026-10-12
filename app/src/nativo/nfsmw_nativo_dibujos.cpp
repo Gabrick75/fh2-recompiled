@@ -214,7 +214,15 @@ REXCVAR_DEFINE_INT32(fh2_nativo_omitir_categorias, 0, "FH2",
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 #endif
 REXCVAR_DEFINE_DOUBLE(fh2_nativo_a2c_umbral, 0.5, "FH2",
-                      "Native renderer (test): alpha threshold that stands in for alpha to coverage");
+                      "Native renderer (test): alpha threshold that stands in for alpha to coverage, with "
+                      "fh2_nativo_a2c_pontilhado off");
+// Off by default: it needs a shader library built with SPEC_CONSTANT_A2C_PONTILHADO (tools/xenos/biblioteca.sh after
+// 2026-10-12 16:00). With an older library the shader compares alpha against the offsets as a number (>= 135, say)
+// and the foliage, fences and crowd disappear.
+REXCVAR_DEFINE_BOOL(fh2_nativo_a2c_pontilhado, false, "FH2",
+                    "Native renderer: alpha to coverage (foliage, fences, crowd) dithered over 2x2 pixels with the "
+                    "game's offsets, as the emulation draws it without MSAA; off = one fixed threshold "
+                    "(fh2_nativo_a2c_umbral)");
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_omitir_sombras, false, "NFSMW",
                     "Renderizador nativo (prueba de FPS): no graba los dibujos del mapa de sombras "
                     "(destino solo de profundidad de 1600 o mas de pitch); recorte visible");
@@ -1263,6 +1271,9 @@ constexpr uint32_t kSpecZTemprana = uint32_t(1) << 20;
 // nfsmw_nativo_sombra_minimo. SPEC_CONSTANT_SOMBRA_MINIMO from shader_common.h: tfetch2DSombraMin takes the
 // minimum of the shadow map and its pair, which goes in the 3D index word of that register.
 constexpr uint32_t kSpecSombraMinimo = uint32_t(1) << 23;
+// SPEC_CONSTANT_A2C_PONTILHADO (shader_common.h): alpha to coverage as a per-pixel 2x2 dither, the threshold's
+// constant carrying the offsets of RB_COLORCONTROL bits 24-31.
+constexpr uint32_t kSpecA2cPontilhado = uint32_t(1) << 21;
 constexpr uint64_t kHuellaComposicion = 0x19C0C358044A29BFull;  // p_000139, the race VisualTreatment
 // nfsmw_tratamiento_visual. The final composite (kHuellaComposicion, p_000139) tints each channel with a polynomial
 // curve (Coeffs0..3 = c6..c9, evaluated at MISCMAP1.w), mixes in a desaturated part with its x component and adds a
@@ -3389,6 +3400,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
           ++fetch_fallos_caducada_;
         }
         bool muestreo_puntual = false;
+        registro_diag_ = int(sampler.registro);
         PrepararTextura(fetch, ranura_textura, monton, bytes_texturas, muestreo_puntual, valido_hasta,
                         ancho_host, alto_host);
         ranura_sampler = RanuraSampler(fetch, muestreo_puntual);
@@ -3571,6 +3583,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         ++pases_por_generacion_;
       } else if (!pase_activo_ && clave_pase == pase_clave_) {
         ++pases_reanudados_;
+        pases_reanudados_motivo_[motivo_cierre_]++;
+        motivo_cierre_ = kCierreOtro;
       } else {
         ++pases_por_destino_;
       }
@@ -3894,11 +3908,18 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     }
 #if defined(FH2_RECOMP)
     // Alpha to coverage (RB_COLORCONTROL bit 4): FH2 draws its fences, foliage and crowd with it under 4x MSAA.
-    // Without host MSAA the coverage of one sample is alpha >= 0.5, which is an alpha test (the console's dither
-    // offsets in bits 24-31 only spread the threshold between samples).
+    // Without host MSAA it becomes an alpha test. Not at one fixed threshold: the emulation's 1x case
+    // (spirv_translator_rb.cpp) gives each pixel of a 2x2 block the threshold 1 - offset / 4, with the 2-bit
+    // offsets of bits 24-31, and the leaves look full and soft at the edges; at 0.5 everywhere they came out
+    // thinner and harder. The offsets go to the shader in the threshold's constant (alphaTestValue).
     else if (ps && ((control_color >> 4) & 0x1)) {
-      umbral_alfa = float(REXCVAR_GET(fh2_nativo_a2c_umbral));
       funcion_alfa = 6;  // >=
+      if (REXCVAR_GET(fh2_nativo_a2c_pontilhado)) {
+        umbral_alfa = float(control_color >> 24);
+        especializacion |= kSpecA2cPontilhado;
+      } else {
+        umbral_alfa = float(REXCVAR_GET(fh2_nativo_a2c_umbral));
+      }
       especializacion |= 0x2;
       especializacion |= (funcion_alfa & 0x7u) << kSpecFuncionAlfaDesplazamiento;
     }
@@ -5618,6 +5639,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     }
   }
 
+  // Diagnostic: the ring names what is about to close the pass (kCierre*), so the reopen that follows can
+  // be attributed to it. Consumed (and reset) at the reopen counter below.
+  void AnotarMotivoCierre(uint32_t motivo) override { motivo_cierre_ = motivo; }
+
   void AntesDeEnviar() override {
     EsperarSubidas();  // deferred vertex copies, before flushing the mapping and submitting
     TerminarPase();
@@ -6360,6 +6385,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     e.pases_por_generacion = pases_por_generacion_;
     e.pases_por_destino = pases_por_destino_;
     e.pases_reanudados = pases_reanudados_;
+    e.pases_reanudados_motivo = pases_reanudados_motivo_;
     e.ns_render_pass = ns_render_pass_;
     e.texels_pases = texels_pases_;
     e.texels_por_categoria = texels_por_categoria_;
@@ -9587,6 +9613,16 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     FormatoTextura tf;
     if (!FormatoTexturaDe(formato, tf)) {
       Avisar(400 + formato, "formato de textura todavia no soportado: se usa una vacia");
+#if defined(FH2_RECOMP)
+      // Which texture and which pixel shader (first 24 of each pair), to tell what the empty one stands in for.
+      static std::set<uint64_t> vistos_sin_formato;
+      if (vistos_sin_formato.size() < 24 &&
+          vistos_sin_formato.insert((uint64_t(base) << 16) | uint32_t(ps_encuadre_diag_ & 0xFFFF)).second) {
+        REXLOG_INFO("[fh2 nativo] textura sin formato {:08X}: formato {} {}x{} dimension {} pitch {} tiled {} PS n{} "
+                    "registro {}", base, formato, (f[2] & 0x1FFF) + 1, ((f[2] >> 13) & 0x1FFF) + 1, dimension,
+                    ((f[0] >> 22) & 0x1FF) * 32, (f[0] >> 31) & 1, ps_encuadre_diag_, registro_diag_);
+      }
+#endif
       return;
     }
     const uint32_t indice_bc = IndiceBc(tf.formato);
@@ -13807,6 +13843,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   const PeticionDibujo* peticion_diag_ = nullptr;  // diagnostic: the draw Rechazar reports
   std::unordered_set<uint64_t> rechazos_vistos_;
   bool pase_activo_ = false;
+  int registro_diag_ = -1;  // diagnostic: the pixel shader sampler register PrepararTextura is filling
+  // Diagnostic: what the ring said would close the pass (kCierre*), read at the next reopen.
+  uint32_t motivo_cierre_ = kCierreOtro;
   // The game's open occlusion query and the host query counting this pass's span.
   bool oclusion_abierta_ = false;
   // nfsmw_reflejo_visibilidad (see nfsmw_reflejo_demanda.h). The witness, every ~1 s at 30 FPS.
@@ -14219,6 +14258,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   uint64_t pases_por_generacion_ = 0;
   uint64_t pases_por_destino_ = 0;
   uint64_t pases_reanudados_ = 0;
+  std::array<uint64_t, kMotivosCierre> pases_reanudados_motivo_{};
   uint64_t texels_pases_ = 0;
   std::array<uint64_t, kGpuCategorias> texels_por_categoria_{};
   std::array<uint64_t, kGpuCategorias> dibujos_por_categoria_{};

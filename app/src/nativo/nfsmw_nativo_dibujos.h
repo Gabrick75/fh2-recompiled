@@ -111,6 +111,21 @@ inline constexpr uint32_t kGpuEscenaSinProfundidad = 8;
 // Not a pass type but the GPU gap between the end of one submission and the start of the next.
 inline constexpr uint32_t kGpuHuecoEntreTrabajos = 9;
 inline constexpr uint32_t kGpuCategorias = 10;
+
+// Why a pass was closed before a draw reopened the same one (the C6 "reanudados" breakdown). The ring
+// (ContextoDestinos) names the operation that is about to close the pass with AnotarMotivoCierre; the
+// counter is consumed at the next reopen of the same pass. Default kCierreOtro covers a pass change,
+// AntesDeEnviar and any close nobody tagged.
+inline constexpr uint32_t kCierreOtro = 0;
+inline constexpr uint32_t kCierreCopiaColor = 1;    // a color render target resolved to a texture
+inline constexpr uint32_t kCierreBorradoColor = 2;  // a color clear
+inline constexpr uint32_t kCierreProfundidad = 3;   // a depth copy or clear
+inline constexpr uint32_t kCierreIntercambio = 4;   // the image swap of nfsmw_nativo_intercambiar_color
+inline constexpr uint32_t kCierreDiferido = 5;      // a deferred copy recorded now (front or composite)
+inline constexpr uint32_t kCierreLectura = 6;       // a draw samples a resolved texture (TexturaResuelta)
+inline constexpr uint32_t kCierreCopiaYBorrado = 7; // the same register write resolves color and clears it
+inline constexpr uint32_t kMotivosCierre = 8;
+
 // Buckets of the histogram of intervals between Swaps (originally <15, 15-18, 18-25, 25-30, 30-36, 36-50,
 // >=50 ms). Now 11 buckets: the top ones were all lumped into ">=50 ms", where 83 % of race frames fell,
 // so a 55 ms frame could not be told from a 150 ms one, which is exactly the difference between "slow"
@@ -269,6 +284,8 @@ struct EstadisticasDibujos {
   uint64_t pases_por_generacion = 0;  // pass change due to a new command buffer
   uint64_t pases_por_destino = 0;     // pass change due to other render targets
   uint64_t pases_reanudados = 0;      // the same pass, closed earlier by a copy or a clear
+  // The pases_reanudados above, split by what closed the pass (kCierre*), to know what to attack.
+  std::array<uint64_t, kMotivosCierre> pases_reanudados_motivo{};
   uint64_t ns_render_pass = 0;        // en vkCmdBeginRenderPass + vkCmdEndRenderPass
   uint64_t texels_pases = 0;          // area opened, summed over every pass opening
   // The same area, split by render target type (indices kGpuSombras..kGpuMenores).
@@ -323,6 +340,9 @@ class DibujosVulkan {
   virtual bool Dibujar(const PeticionDibujo& peticion) = 0;
   // Before copies, clears and any command outside a pass.
   virtual void TerminarPase() = 0;
+  // Diagnostic: names the operation that is about to close the pass (a kCierre* value), so the next
+  // reopen of the same pass can be attributed to it in the C6 "reanudados" breakdown.
+  virtual void AnotarMotivoCierre(uint32_t motivo) { (void)motivo; }
   // ZCULL: clears a depth image by opening a pass with loadOp = CLEAR, instead of with
   // vkCmdClearDepthStencilImage. Needed for images created without TRANSFER_DST, the only ones the driver
   // can give a ZCULL plane. Returns false if it could not.
