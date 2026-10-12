@@ -995,6 +995,9 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_sin_ps_sin_color, true, "NFSMW",
                     "Renderizador nativo (17/09, build 157): en los dibujos que no escriben ningun color, "
                     "monta el pipeline sin etapa de fragmentos si el pixel shader no puede descartar pixeles "
                     "ni escribe profundidad. La imagen no cambia y la GPU no sombrea (mapa de sombras)");
+REXCVAR_DEFINE_INT32(fh2_nativo_diag_sin_stencil_vs, -1, "FH2",
+                     "Native renderer (debug): the draws of this vertex shader (library number) without the stencil test")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_STRING(fh2_nativo_diag_omitir_vs, "", "FH2",
                       "Native renderer (debug): library numbers of vertex shaders whose draws are not recorded, "
                       "comma-separated (to find a draw)");
@@ -2725,7 +2728,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     // 0 (the car's interior), with an ALWAYS back function, so it covered the windows too and the world behind them
     // failed the depth test (a grey windscreen).
     const bool poligono = tipo >= 4 && tipo != 8;
-    const uint32_t control_profundidad = r[gr::XE_GPU_REG_RB_DEPTHCONTROL] & (poligono ? ~0u : ~0x80u);
+    uint32_t control_profundidad = r[gr::XE_GPU_REG_RB_DEPTHCONTROL] & (poligono ? ~0u : ~0x80u);
+    if (diag_sin_stencil_vs_ >= 0 && int32_t(p.vs->numero) == diag_sin_stencil_vs_) {
+      control_profundidad &= ~1u;  // debug: this VS's draws without the stencil test
+    }
     if (control_profundidad & 0x3) {  // stencil o z
       const uint32_t info = r[gr::XE_GPU_REG_RB_DEPTH_INFO];
       claves[4] = (uint64_t(1) << 62) | (uint64_t(info & 0xFFF) << 24) |
@@ -13780,6 +13786,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   bool enviado_tras_sombras_ = false;        // once per frame
   // Per-frame copies of the diagnostic cvars (see the comment at the Swap).
   std::string diag_omitir_ps_texto_;
+  int32_t diag_sin_stencil_vs_ = REXCVAR_GET(fh2_nativo_diag_sin_stencil_vs);
   std::string diag_omitir_vs_texto_;  // fh2_nativo_diag_omitir_vs, read once per frame
   std::string omitir_vs_texto_;
   std::unordered_set<uint32_t> omitir_vs_;

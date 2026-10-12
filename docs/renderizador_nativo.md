@@ -284,6 +284,36 @@ Com isso, abertura, título, carregamento, menu e corrida saem no PC como na emu
 `VK_EXT_descriptor_indexing`, de que ele precisa para as tabelas de texturas. Caminhos possíveis: carregar o Turnip
 (libadrenotools; o launcher já importa drivers) ou um modo sem descriptor indexing.
 
+### Diferenças visuais contra a emulação (2026-10-12)
+
+Comparação no PC, mesma cena (save do S23, noite na costa), traço de um quadro nos dois renderizadores
+(`--nfsmw_nativo_diag_fotograma_s` e `--gpu_traco_quadro_s`, `tools/comparar_trazas.py`):
+
+- **Grama ausente (corrigido).** Os vertex shaders do FH2 começavam com `r0 = 0`: o XenosRecomp só declarava
+  `SV_VertexID` para o Unleashed. O Xenos põe o índice do vértice em `r0.x`, e os shaders da grama (v_003789 e
+  parecidos) montam o quad de cada tufo a partir dele (instância = índice / 4). Agora `r0.x = SV_VertexID -
+  FH2_BASE_VERTICE`, onde a constante compartilhada `FH2_COMPARTIDA_BASE_VERTICE` (byte 1236) é o deslocamento que
+  o draw aplicou (`vertexOffset`/`firstVertex`: `primer_vertice - vmin` no caminho base-zero, `-vmin` no outro).
+  **Exige regerar a biblioteca** (`tools/xenos/biblioteca.sh`) e enviá-la ao celular.
+- **Estrelas (corrigido).** As listas de pontos (tipo 1; o céu noturno, VS n1292, 9096 pontos de 1 px) eram
+  recusadas. Agora são `VK_PRIMITIVE_TOPOLOGY_POINT_LIST`, e os vertex shaders escrevem `PointSize`
+  (struct `Fh2Punto`; o DXC não aceita o builtin num parâmetro `out` simples) a partir de
+  `FH2_COMPARTIDA_TAM_PUNTO` (byte 1240, de `PA_SU_POINT_SIZE`). Tamanho por vértice não é suportado.
+- **Câmera interna cinza (corrigido).** O jogo desenha o habitáculo marcando o stencil, depois uma lista de
+  retângulos em modo só-profundidade que empurra a profundidade para perto onde o stencil ≠ 0
+  (`RB_DEPTHCONTROL 087005F7`: NOTEQUAL na frente, ALWAYS na face de trás), depois o mundo com GEQUAL, que só passa
+  pelos vidros. Como dois triângulos, os retângulos podiam ficar de costas e pegavam o ALWAYS da face de trás.
+  Listas de retângulos, pontos e linhas não são polígonos: como na emulação, `backface_enable` é ignorado nelas.
+- **Faróis sem cone de luz no chão (aberto).** Os volumes de luz por stencil (VS n2599 + quad VS n1196) existem
+  no nativo e desligar o stencil do quad não mostra nada: o cone dos faróis deve vir de outro caminho (provavelmente
+  dentro dos shaders do chão/grama). Na comparação o carro também sai iluminado de cima, diferente da emulação.
+- **Pistas que não eram a causa:** a primeira comparação sugeriu 180 draws de vegetação "faltando" no nativo; era
+  variação entre quadros (o carro do emulado andava). Os filtros do NFSMW (`nfsmw_d3d_vegetacion_juego`: nem é
+  chamado no FH2; `nfsmw_sombras_sin_vegetacion`, `ps_solo_alfa`, `saltar_invisibles`), o limiar do
+  alpha-to-coverage, as consultas de oclusão, as leituras de volta e o modo de uma faixa foram testados sem efeito.
+- **Depuração nova:** `fh2_nativo_diag_omitir_vs` (pula os draws de VS dados), `fh2_nativo_diag_sin_stencil_vs`,
+  `fh2_censo` com cadeias de chamadores dos draws, e os traços listam os buffers indiretos.
+
 ### A biblioteca no celular (decidido, ainda não implementado)
 
 `fh2_shaders.nfsp` é feito a partir dos arquivos do jogo de cada um, então não pode ir no APK. Decisão do dono do
