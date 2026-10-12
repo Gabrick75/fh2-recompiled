@@ -340,7 +340,7 @@ Aparelhos: S23U `RQCXB01R9LM` (Adreno 740) e moto g(9) play `0074545453` (Adreno
   biblioteca nova (grama certa, poeira sem borrões) dá a noite escura como a de 05:46, sem o cone dos faróis no chão.
   Conferido no PC (capturas aos 60 e 70 s). Ligar (`--fh2_nativo_luces_diferidas=true`) só para trabalhar na noite clara.
 - Biblioteca enviada: `app/out/shaders_fh2/fh2_shaders.nfsp` de 19:14 (75 497 272 bytes), com backup da anterior em
-  `jogos/ForzaHorizon2/fh2_shaders.nfsp.anterior`. moto: feito (biblioteca + APK). S23: ver o relatório da sessão.
+  `jogos/ForzaHorizon2/fh2_shaders.nfsp.anterior`. moto e S23: feito (biblioteca + APK `a415b91`). No S23 o jogo está também como ISO em `jogos/`: sem biblioteca ao lado dela, vale a de `jogos/ForzaHorizon2`.
 
 ### [feito] Causa da grama achatada/marrom: swizzle dos elementos por instância
 - **Achado** (diagnóstico `[fh2 nativo] elemento VS n.. #..`, uma linha por elemento e VS): nos fetches lidos direto
