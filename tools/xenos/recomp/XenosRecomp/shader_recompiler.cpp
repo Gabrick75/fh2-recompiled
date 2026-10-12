@@ -1723,11 +1723,20 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             out += "\tin uint iInstanceId : SV_InstanceID,\n";
         }
     #endif
+    #ifdef FH2_RECOMP
+        // The Xenos puts the vertex index in r0.x (FH2's grass and billboards compute their corners from it).
+        out += "\tin uint iVertexId : SV_VertexID,\n";
+    #endif
 
         out += "\tout float4 oPos : SV_Position";
 
         for (auto& [usage, usageIndex] : INTERPOLATORS)
             print(",\n\tout float4 o{0}{1} : {2}{1}", USAGE_VARIABLES[uint32_t(usage)], usageIndex, USAGE_SEMANTICS[uint32_t(usage)]);
+    #ifdef FH2_RECOMP
+        // Point lists (the night sky's stars): Vulkan wants PointSize written; the renderer gives the diameter.
+        // (DXC only takes the PointSize builtin inside a struct: shader_common.h, Fh2Punto.)
+        out += ",\n\tout Fh2Punto oPunto";
+    #endif
     }
 
     out += ")\n";
@@ -1834,6 +1843,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
 
         for (auto& [usage, usageIndex] : INTERPOLATORS)
             println("\to{}{} = 0.0;", USAGE_VARIABLES[uint32_t(usage)], usageIndex);
+    #ifdef FH2_RECOMP
+        out += "\toPunto.tam = FH2_TAM_PUNTO;\n";
+    #endif
 
         out += "\n";
     }
@@ -1856,6 +1868,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
             else if (!isPixelShader && hasIndexCount && i == 0)
             {
                 out += "float4(iVertexId + g_IndexCount.x * iInstanceId, 0.0, 0.0, 0.0);\n";
+            }
+        #endif
+        #ifdef FH2_RECOMP
+            else if (!isPixelShader && i == 0)
+            {
+                out += "float4(float(int(iVertexId) - FH2_BASE_VERTICE), 0.0, 0.0, 0.0);\n";
             }
         #endif
             else

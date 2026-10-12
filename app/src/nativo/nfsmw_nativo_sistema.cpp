@@ -3800,14 +3800,23 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
 
   void BuferIndirecto(uint32_t direccion, uint32_t palabras, int profundidad) {
     SumarSoloAnillo(indirectos_);
+    if (trazando_) {  // diagnostic: the frame trace also lists the indirect buffers
+      REXLOG_INFO("[traza] IB {:08X} {} palabras profundidad {}", direccion, palabras, profundidad);
+    }
     Lector lector;
     lector.base = memory_->TranslatePhysical(direccion);
     lector.pos = 0;
     lector.fin = palabras;
     while (lector.Pendientes()) {
       if (!Paquete(lector, profundidad)) {
+        if (trazando_) {
+          REXLOG_INFO("[traza] IB {:08X} cortado en la palabra {} de {}", direccion, lector.pos, palabras);
+        }
         break;
       }
+    }
+    if (trazando_) {
+      REXLOG_INFO("[traza] IB fin {:08X}", direccion);
     }
   }
 

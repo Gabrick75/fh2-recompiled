@@ -1334,7 +1334,13 @@ bool CommandProcessor::ExecutePacketType3_INDIRECT_BUFFER(memory::RingBuffer* re
       period_start = std::chrono::steady_clock::now();
     }
   }
+  if (rex_frame_trace_active.load(std::memory_order_relaxed)) {
+    REXGPU_INFO("[traco] IB {:08X} {} dwords{}", GpuToCpu(list_ptr), list_length, (packet & 1) ? " (predicado)" : "");
+  }
   ExecuteIndirectBuffer(GpuToCpu(list_ptr), list_length);
+  if (rex_frame_trace_active.load(std::memory_order_relaxed)) {
+    REXGPU_INFO("[traco] IB fim {:08X}", GpuToCpu(list_ptr));
+  }
   return true;
 }
 

@@ -82,6 +82,12 @@
 #define FH2_COMPARTIDA_EXP        1152
 // 1 / the render scale of the pass (fh2_nativo_escala), a float: the pixel position register is in guest pixels.
 #define FH2_COMPARTIDA_INV_ESCALA 1232
+// What to subtract from SV_VertexID to get the guest vertex index (a signed int): the native renderer shifts draws with
+// vertexOffset/firstVertex (the upload copy starts at vmin), and the Xenos hands the vertex shader the index itself in
+// r0.x. Grass and other billboards build their quads from it (instance = index / 4).
+#define FH2_COMPARTIDA_BASE_VERTICE 1236
+// Point list draws (stars): the point diameter in host pixels, a float the vertex shaders write to PointSize.
+#define FH2_COMPARTIDA_TAM_PUNTO  1240
 #define FH2_COMPARTIDA_BYTES      1248
 #define SPEC_CONSTANT_ALPHA_FUNC_SHIFT  16
 #define SPEC_CONSTANT_ALPHA_FUNC_MASK   (7 << 16)
@@ -124,6 +130,16 @@ struct NfsmwBloqueCompartidas { float4 v[FH2_COMPARTIDA_BYTES / 16]; };  // FH2:
 #define NFSMW_COMPARTIDA_UINT(B)  asuint(g_UboCompartidas.v[(B) / 16][((B) % 16) / 4])
 #define NFSMW_COMPARTIDA_FLOAT(B) g_UboCompartidas.v[(B) / 16][((B) % 16) / 4]
 #define FH2_INV_ESCALA (NFSMW_UBO ? asfloat(NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_INV_ESCALA)) : asfloat(vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + FH2_COMPARTIDA_INV_ESCALA)))
+#define FH2_BASE_VERTICE (NFSMW_UBO ? int(NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_BASE_VERTICE)) : int(vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + FH2_COMPARTIDA_BASE_VERTICE)))
+// The vertex shaders' point size output (DXC rejects the PointSize builtin on a plain out parameter).
+struct Fh2Punto
+{
+#ifdef __spirv__
+    [[vk::builtin("PointSize")]]
+#endif
+    float tam : PSIZE;
+};
+#define FH2_TAM_PUNTO (NFSMW_UBO ? asfloat(NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_TAM_PUNTO)) : asfloat(vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + FH2_COMPARTIDA_TAM_PUNTO)))
 #define FH2_BUCLE(ID) (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT(FH2_COMPARTIDA_BUCLES + (ID) * 4) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + FH2_COMPARTIDA_BUCLES + (ID) * 4))
 
 #define g_Booleans                 (NFSMW_UBO ? NFSMW_COMPARTIDA_UINT(256) : vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256))

@@ -5,6 +5,8 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <array>
+#include <map>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -676,8 +678,33 @@ bool ReadGuest(uint8_t* base, uint32_t address, uint32_t& value) {
   return true;
 }
 
+// Debug (fh2_censo_cadeia): the call chains (return addresses up the PPC back chain) into the draw entries,
+// to tell which game draw sites run less in one mode than in another.
+std::mutex g_chains_mutex;
+std::map<std::array<uint32_t, 6>, uint64_t> g_chains;
+void CountChain(int entry, PPCContext& ctx, uint8_t* base) {
+  std::array<uint32_t, 6> chain{};
+  chain[5] = uint32_t(entry);
+  chain[0] = static_cast<uint32_t>(ctx.lr);
+  uint32_t sp = ctx.r1.u32;
+  for (size_t k = 1; k < 5; ++k) {
+    uint32_t previous = 0, lr = 0;
+    if (!ReadGuest(base, sp, previous) || previous <= sp || previous - sp > 0x10000 ||
+        !ReadGuest(base, previous - 8, lr)) {
+      break;
+    }
+    chain[k] = lr;
+    sp = previous;
+  }
+  std::lock_guard<std::mutex> lock(g_chains_mutex);
+  ++g_chains[chain];
+}
+
 inline void Count(int i, PPCContext& ctx, uint8_t* base) {
   CensoEntry& e = g_entries[i];
+  if (i == 260 || i == 259 || i == 262) {  // sub_82426180, sub_82425D68 (DRAW_INDX), sub_82426800 (RunCommandBuffer)
+    CountChain(i, ctx, base);
+  }
   const uint32_t args[3] = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32};
   for (uint32_t k = 0; k < 3; ++k) {
     uint32_t w;
@@ -731,6 +758,24 @@ void Report() {
     s += buf;
   }
   REXLOG_INFO("[censo] {} quadros, {} pontos de entrada usados:{}", kFrames, rows.size(), s);
+  {
+    std::vector<std::pair<uint64_t, std::array<uint32_t, 6>>> chains;
+    {
+      std::lock_guard<std::mutex> lock(g_chains_mutex);
+      for (const auto& [chain, n] : g_chains) chains.push_back({n, chain});
+      g_chains.clear();
+    }
+    std::sort(chains.begin(), chains.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::string t;
+    for (size_t k = 0; k < chains.size() && k < 200; ++k) {
+      const auto& c = chains[k].second;
+      char buf[160];
+      std::snprintf(buf, sizeof(buf), "\n  %8.2f/quadro %s %08X <- %08X <- %08X <- %08X <- %08X",
+                    double(chains[k].first) / kFrames, g_entries[c[5]].name, c[0], c[1], c[2], c[3], c[4]);
+      t += buf;
+    }
+    REXLOG_INFO("[censo] cadeias de chamada dos draws ({} distintas):{}", chains.size(), t);
+  }
   // Since the start: the functions that received shader containers (the constructors run while loading).
   std::string c;
   for (int i = 0; i < kEntries; ++i) {

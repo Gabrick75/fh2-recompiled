@@ -1202,6 +1202,10 @@ constexpr uint32_t kPalabrasCompartidas = 312;  // up to FH2_COMPARTIDA_BYTES (1
 constexpr uint32_t kPalabraFh2ExpAjuste = 1152 / 4;  // FH2_COMPARTIDA_EXP: a texture slot's exp_adjust (0-19)
 // FH2_COMPARTIDA_INV_ESCALA: 1 / the pass's render scale (fh2_nativo_escala), for the pixel position register.
 constexpr uint32_t kPalabraFh2InvEscala = 1232 / 4;
+// FH2_COMPARTIDA_BASE_VERTICE: what the vertex shaders subtract from SV_VertexID to get the guest vertex index.
+constexpr uint32_t kPalabraFh2BaseVertice = 1236 / 4;
+// FH2_COMPARTIDA_TAM_PUNTO: the point diameter in host pixels (point lists).
+constexpr uint32_t kPalabraFh2TamPunto = 1240 / 4;
 constexpr uint32_t kPalabraRemapeosAltos = 122;
 constexpr uint32_t kPalabraFh2TexturasVs = 128;     // 512: dimension * 4 + slot - 16
 constexpr uint32_t kPalabraFh2SamplersVs = 140;     // 560
@@ -2460,6 +2464,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     bool rectangulos = false;  // the fourth corner is added to the vertices (below, with the bindings)
     bool admite_reinicio = false;
     switch (tipo) {
+#if defined(FH2_RECOMP)
+      case 1:  // point list (the night sky's stars): the vertex shaders write PointSize (FH2_COMPARTIDA_TAM_PUNTO)
+        topologia = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+        break;
+#endif
       case 2:
         topologia = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
         break;
@@ -3875,10 +3884,38 @@ class DibujosVulkanImpl final : public DibujosVulkan {
      * waste; if almost all do, the double memcpy is. They are two different fixes, and counting costs one
      * increment.
      */
+    /*
+     * nfsmw_nativo_vertices_base_cero. With a single binding whose copy starts at a multiple of its stride,
+     * the upload buffer is bound at 0 (once per command buffer, or after the deferred sky) and the draw is
+     * shifted with primer_vertice. The others bind as usual. Decided here, before the shared constants,
+     * because the vertex index the shaders see depends on it (below).
+     */
+    bool base_cero = false;
+    uint32_t primer_vertice = 0;  // offset / stride: where the copy starts, in vertices
+    if (vertices_base_cero_ && entrada->enlaces.size() == 1) {
+      const VkDeviceSize zancada = entrada->enlaces[0].zancada;
+      if (offsets_vertices[0] % zancada == 0) {
+        base_cero = ComprobarBaseCero(offsets_vertices[0], zancada, origenes[0].bytes, vmin, primer_vertice);
+      } else {
+        ++base_cero_desalineados_;
+      }
+    } else if (entrada->enlaces.size() > 1) {
+      ++base_cero_varios_enlaces_;
+    }
 #if defined(FH2_RECOMP)
     {
       const float inv_escala = 1.0f / pase_escala_render_;
       std::memcpy(&compartidas[kPalabraFh2InvEscala], &inv_escala, sizeof(inv_escala));
+      // SV_VertexID = guest index (VGT_INDX_OFFSET included) + vertexOffset for indexed draws, firstVertex + i for
+      // the others, where vertex 0 of the copy is guest vertex vmin: both shift by the same amount. The vertex
+      // shaders subtract it to get the index the Xenos puts in r0.x (FH2_COMPARTIDA_BASE_VERTICE).
+      const int32_t base_vertice = base_cero ? int32_t(int64_t(primer_vertice) - int64_t(vmin)) : -int32_t(vmin);
+      std::memcpy(&compartidas[kPalabraFh2BaseVertice], &base_vertice, sizeof(base_vertice));
+      // PA_SU_POINT_SIZE: half the width in 12.4 fixed point, in guest pixels. A per-vertex size (an export the
+      // translator does not produce) is not supported: the constant one is used.
+      const float tam_punto =
+          std::max(1.0f, float(r[gr::XE_GPU_REG_PA_SU_POINT_SIZE] >> 16) * (2.0f / 16.0f) * pase_escala_render_);
+      std::memcpy(&compartidas[kPalabraFh2TamPunto], &tam_punto, sizeof(tam_punto));
     }
 #endif
     ++compartidas_miradas_;
@@ -4370,23 +4407,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
     }
     estado_grabado_ = true;
-    /*
-     * nfsmw_nativo_vertices_base_cero. With a single binding whose copy starts at a multiple of its stride,
-     * the upload buffer is bound at 0 (once per command buffer, or after the deferred sky) and the draw is
-     * shifted with primer_vertice. The others bind as usual.
-     */
-    bool base_cero = false;
-    uint32_t primer_vertice = 0;  // offset / stride: where the copy starts, in vertices
-    if (vertices_base_cero_ && entrada->enlaces.size() == 1) {
-      const VkDeviceSize zancada = entrada->enlaces[0].zancada;
-      if (offsets_vertices[0] % zancada == 0) {
-        base_cero = ComprobarBaseCero(offsets_vertices[0], zancada, origenes[0].bytes, vmin, primer_vertice);
-      } else {
-        ++base_cero_desalineados_;
-      }
-    } else if (entrada->enlaces.size() > 1) {
-      ++base_cero_varios_enlaces_;
-    }
+    // base_cero and primer_vertice (nfsmw_nativo_vertices_base_cero): decided before the shared constants.
     if (!entrada->enlaces.empty()) {
       // 16 identical pointers were filled in on every draw to bind one or two. It is filled when the upload
       // buffer changes (once per work slot), not 2,345 times per frame.
