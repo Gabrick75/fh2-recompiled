@@ -404,6 +404,24 @@ Aparelhos: S23U `RQCXB01R9LM` (Adreno 740) e moto g(9) play `0074545453` (Adreno
 - **Correção**: o bloco devolvido fica no vetor sem memória (pulado por `Reservar`, `Estado` e pelo cálculo de folga) e
   a vaga é reaproveitada quando o pool cresce; o teto não muda; nunca encolhe abaixo dos blocos pré-aquecidos.
 
+### [feito] Colisões atravessadas: contas vetoriais diferentes das do Xenon (2026-10-14)
+- **Sintoma**: o carro atravessava carros, paredes e postes (nativo e emulado, PC e celular). No FH2 sobre o SDK do
+  Pinyon Shift (branch `comparacao/shiftglue`) a colisão funciona com o mesmo jogo, manifesto e correções.
+- **Pista medida**: a guarda de `sub_82ECEB88` ("formas a distancia cero tratadas como en contacto",
+  `fh2_correcoes.cpp`) disparava no nosso e **nunca** no ShiftGlue, na mesma rota do PC: a função de distância entre
+  formas de colisão recebia pontos idênticos. A guarda de `sub_82EC93F8` ("cara N de una malla de M") dispara nos dois:
+  não explica a diferença.
+- **Causa**: o gerador e os auxiliares de PowerPC do ShiftGlue fazem como o Xenon contas que o nosso fazia como x86:
+  `vmsum3fp128`/`vmsum4fp128` (produto escalar em double, na ordem do hardware, QNaN no estouro; o comentário deles diz
+  que o `simde_mm_dp_ps` "muda comparações no código de colisão"), `vmaddfp`/`vnmsubfp` fundidos (FMA),
+  `vmaxfp`/`vminfp` (NaN, zeros com sinal, denormais), `vrsqrtefp`/`frsqrte`/`vexptefp` (negativos e faixa),
+  `vcmpbfp` (NaN e CR6), `vsr`/`vsl` (byte da contagem e transporte entre metades).
+- **Correção**: portados do ShiftGlue (BSD-3) para `sdk/include/rex/ppc/intrinsics.h`, `sdk/include/rex/ppc/context.h`
+  (`simde/x86/fma.h`), `sdk/src/codegen/builders/vector.cpp` e `floating_point.cpp`; código regenerado (apagar
+  `generated/*/codegen.stamp`, senão o codegen diz "up to date" e não reescreve nada).
+- **Resultado no PC**: a guarda de distância zero não dispara mais (0 no nativo e no emulado); aos 80 s da rota o carro
+  para no poste e na grade, como no ShiftGlue (antes passava a 36 km/h).
+
 ### [medido] Avaliação: o FH2 no SDK do Pinyon Shift (ShiftGlue), 2026-10-13
 - **O que é**: [Pinyon Shift](https://github.com/arcanite24/pinyon-shift) recompila o FH1 (mesma engine) com o
   [ShiftGlue](https://github.com/arcanite24/shiftglue-sdk), fork BSD-3 do ReXGlue 0.10.0 (a mesma versão do nosso).

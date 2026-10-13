@@ -273,9 +273,15 @@ bool build_fres(BuilderContext& ctx) {
 }
 
 bool build_frsqrte(BuilderContext& ctx) {
+  // Computed in double: rounding the result through float overflowed to
+  // infinity for inputs below 2^-256, which the hardware estimates (its
+  // 12-bit estimate itself is not reproduced). A negative input gives the
+  // positive QNaN.
   ctx.emit_set_flush_mode(false);
-  ctx.println("\t{}.f64 = double(float(1.0 / sqrt({}.f64)));", ctx.f(ctx.insn.operands[0]),
-              ctx.f(ctx.insn.operands[1]));
+  ctx.println(
+      "\t{0}.f64 = ({1}.f64 < 0.0) ? std::numeric_limits<double>::quiet_NaN() : "
+      "1.0 / sqrt({1}.f64);",
+      ctx.f(ctx.insn.operands[0]), ctx.f(ctx.insn.operands[1]));
   return true;
 }
 

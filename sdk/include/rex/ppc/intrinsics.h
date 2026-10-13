@@ -13,8 +13,10 @@
 
 #pragma once
 
+#include <bit>
 #include <climits>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 
 #include <simde/x86/avx.h>
@@ -115,6 +117,53 @@ inline uint8_t VectorShiftTableR[] = {
 //=============================================================================
 // SIMD Helper Functions
 //=============================================================================
+
+// Xenon vmsum3fp128/vmsum4fp128 return QNaN when a dot product of finite
+// inputs overflows its single-precision result. simde_mm_dp_ps instead returns
+// +/-infinity, which changes ordered comparisons in guest collision code.
+inline float simde_mm_vmsum_narrow_result(double accumulator) noexcept {
+  const float result = static_cast<float>(accumulator);
+  if (std::isinf(result) && !std::isinf(accumulator)) {
+    return std::bit_cast<float>(uint32_t{0x7FC00000});
+  }
+
+  // The generated instruction path runs with FTZ/DAZ enabled. Keep the same
+  // output behavior when the scalar-double implementation produces a denormal.
+  const uint32_t result_bits = std::bit_cast<uint32_t>(result);
+  if ((result_bits & 0x7FFFFFFFu) != 0 && (result_bits & 0x7F800000u) == 0) {
+    return std::bit_cast<float>(result_bits & 0x80000000u);
+  }
+  return result;
+}
+
+// Guest vector elements are reversed relative to host lanes. Accumulate exact
+// float products in double and preserve Xenia's hardware-verified reduction
+// order: (x + z) + y for vmsum3fp128.
+inline simde__m128 simde_mm_vmsum3fp128(simde__m128 a, simde__m128 b) noexcept {
+  alignas(16) float a_lanes[4];
+  alignas(16) float b_lanes[4];
+  simde_mm_store_ps(a_lanes, a);
+  simde_mm_store_ps(b_lanes, b);
+
+  const double x = static_cast<double>(a_lanes[3]) * static_cast<double>(b_lanes[3]);
+  const double y = static_cast<double>(a_lanes[2]) * static_cast<double>(b_lanes[2]);
+  const double z = static_cast<double>(a_lanes[1]) * static_cast<double>(b_lanes[1]);
+  return simde_mm_set1_ps(simde_mm_vmsum_narrow_result((x + z) + y));
+}
+
+// vmsum4fp128 uses the pairwise reduction (x + z) + (y + w).
+inline simde__m128 simde_mm_vmsum4fp128(simde__m128 a, simde__m128 b) noexcept {
+  alignas(16) float a_lanes[4];
+  alignas(16) float b_lanes[4];
+  simde_mm_store_ps(a_lanes, a);
+  simde_mm_store_ps(b_lanes, b);
+
+  const double x = static_cast<double>(a_lanes[3]) * static_cast<double>(b_lanes[3]);
+  const double y = static_cast<double>(a_lanes[2]) * static_cast<double>(b_lanes[2]);
+  const double z = static_cast<double>(a_lanes[1]) * static_cast<double>(b_lanes[1]);
+  const double w = static_cast<double>(a_lanes[0]) * static_cast<double>(b_lanes[0]);
+  return simde_mm_set1_ps(simde_mm_vmsum_narrow_result((x + z) + (y + w)));
+}
 
 // Unsigned 32-bit saturating add
 inline simde__m128i simde_mm_adds_epu32(simde__m128i a, simde__m128i b) {
@@ -223,16 +272,27 @@ inline simde__m128i simde_mm_vctuxs(simde__m128 src1) {
 }
 
 // Vector Shift Right
+// Vector Shift Right - shift the whole 128-bit vector right by the low 3 bits
+// of vB's last byte (big-endian byte 15, host index 0), carrying across the
+// two 64-bit halves.
 inline simde__m128i simde_mm_vsr(simde__m128i a, simde__m128i b) {
-  b = simde_mm_srli_epi64(simde_mm_slli_epi64(b, 61), 61);
-  return simde_mm_castps_si128(simde_mm_insert_ps(
-      simde_mm_castsi128_ps(simde_mm_srl_epi64(a, b)),
-      simde_mm_castsi128_ps(simde_mm_srl_epi64(simde_mm_srli_si128(a, 4), b)), 0x10));
+  int shift = simde_mm_extract_epi8(b, 0) & 0x7;
+  if (shift == 0)
+    return a;
+  // Variable counts go through the vector-count forms: the immediate forms
+  // need a constant on NEON.
+  simde__m128i shifted = simde_mm_srl_epi64(a, simde_mm_cvtsi32_si128(shift));
+  // The high half's low bits move into the low half's high bits.
+  simde__m128i carry =
+      simde_mm_srli_si128(simde_mm_sll_epi64(a, simde_mm_cvtsi32_si128(64 - shift)), 8);
+  return simde_mm_or_si128(shifted, carry);
 }
 
 // Vector Shift Left - shift entire 128-bit vector left by bits in low 3 bits of b
 inline simde__m128i simde_mm_vsl(simde__m128i a, simde__m128i b) {
-  int shift = simde_mm_extract_epi8(b, 15) & 0x7;  // Get low 3 bits from byte 15 (BE: byte 0)
+  // The count is the low 3 bits of vB's last byte (big-endian byte 15, host
+  // index 0), as the hardware reads it when the bytes disagree.
+  int shift = simde_mm_extract_epi8(b, 0) & 0x7;
   if (shift == 0)
     return a;
 
@@ -274,6 +334,48 @@ inline simde__m128i simde_mm_vsl(simde__m128i a, simde__m128i b) {
 #else
 #error "Unsupported architecture for simde_mm_vsl (only x86_64 and ARM64 supported)"
 #endif
+}
+
+// Vector Maximum / Minimum Floating Point with the AltiVec rules the SSE
+// min/max do not have: a NaN operand is the result (vA first), and between
+// zeros of either sign the maximum is +0 and the minimum is -0.
+// A denormal input is a signed zero to the hardware (non-Java mode), and a
+// NaN result is quiet. The flush is explicit because DAZ only makes the
+// compare treat a denormal as zero while its bits stay in the operand.
+inline simde__m128 simde_mm_vflushfp(simde__m128 x) {
+  simde__m128i bits = simde_mm_castps_si128(x);
+  simde__m128i exponent = simde_mm_and_si128(bits, simde_mm_set1_epi32(0x7F800000));
+  simde__m128i denormal = simde_mm_cmpeq_epi32(exponent, simde_mm_setzero_si128());
+  simde__m128i sign = simde_mm_and_si128(bits, simde_mm_set1_epi32(int(0x80000000)));
+  return simde_mm_castsi128_ps(simde_mm_blendv_epi8(bits, sign, denormal));
+}
+
+inline simde__m128 simde_mm_vquietnan(simde__m128 x) {
+  simde__m128 nan = simde_mm_cmpunord_ps(x, x);
+  simde__m128 quiet = simde_mm_or_ps(x, simde_mm_castsi128_ps(simde_mm_set1_epi32(0x00400000)));
+  return simde_mm_blendv_ps(x, quiet, nan);
+}
+
+inline simde__m128 simde_mm_vmaxfp(simde__m128 a, simde__m128 b) {
+  a = simde_mm_vflushfp(a);
+  b = simde_mm_vflushfp(b);
+  simde__m128 r = simde_mm_max_ps(a, b);
+  // Equal values (both zeros among them): the sign bit of the result is set
+  // only when both are negative, which the AND of the two gives.
+  r = simde_mm_blendv_ps(r, simde_mm_and_ps(a, b), simde_mm_cmpeq_ps(a, b));
+  r = simde_mm_blendv_ps(r, b, simde_mm_cmpunord_ps(b, b));
+  r = simde_mm_blendv_ps(r, a, simde_mm_cmpunord_ps(a, a));
+  return simde_mm_vquietnan(r);
+}
+
+inline simde__m128 simde_mm_vminfp(simde__m128 a, simde__m128 b) {
+  a = simde_mm_vflushfp(a);
+  b = simde_mm_vflushfp(b);
+  simde__m128 r = simde_mm_min_ps(a, b);
+  r = simde_mm_blendv_ps(r, simde_mm_or_ps(a, b), simde_mm_cmpeq_ps(a, b));
+  r = simde_mm_blendv_ps(r, b, simde_mm_cmpunord_ps(b, b));
+  r = simde_mm_blendv_ps(r, a, simde_mm_cmpunord_ps(a, a));
+  return simde_mm_vquietnan(r);
 }
 
 // Vector Shift Left by Octet - shift entire vector left by bytes in bits [121:124] of vB

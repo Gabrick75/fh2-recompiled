@@ -24,6 +24,7 @@
 #include <simde/x86/avx.h>
 #include <simde/x86/sse.h>
 #include <simde/x86/sse4.1.h>
+#include <simde/x86/fma.h>
 
 //=============================================================================
 // Pack/Unpack Constants (NORMPACKED32 - 2:10:10:10 format)
