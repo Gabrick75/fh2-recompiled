@@ -391,6 +391,18 @@ Aparelhos: S23U `RQCXB01R9LM` (Adreno 740) e moto g(9) play `0074545453` (Adreno
 - **Validação pendente**: rodar nos dois celulares (S23U Adreno 740, moto g9 play Adreno 610) e confirmar visualmente em ambos renderizadores (emulado e nativo).
 - **Commit**: `70d6fbf` ("Fix achievement toast positioning and sizing for Android")
 
+### [feito] Pool de texturas: devolver slabs vazios ao sistema (2026-10-13)
+- **Branch**: `perf/ram-gpu-optimizations` (commit `22bbece`)
+- **Arquivos**: `app/src/nativo/nfsmw_nativo_texturas_pool.h/.cpp`
+- **Problema**: o pool de texturas (C3) alocava slabs de 32 MB até o tope (~416 MB) mas **nunca os devolvia**. Em mudanças de zona a cache esvaziava mas a memória residente ficava alta (contribui pro crescimento 0.8→2.3 GB em 40 min no S23U).
+- **Correção**:
+  - Novo cvar `nfsmw_nativo_texturas_pool_encoger` (default **true**, `kHotReload`): liga/desliga o shrink.
+  - Novo cvar `nfsmw_nativo_texturas_pool_encoger_espera` (default **300** frames ≈ 5 s a 60 fps): frames que um slab deve ficar 100% livre antes de ser devolvido.
+  - Em `PorFotograma`: slabs com `unidades_en_uso == 0` incrementam `fotogramas_libre`; ao atingir o limiar, `vkFreeMemory` devolve ao sistema e o slab é removido do vetor.
+  - Contador `slabs_devueltos` adicionado ao `EstadoPoolTexturas` e ao `Resumen()` do log C3.
+- **Risco baixo**: só devolve slabs **completamente livres** (sem texturas vivas); mantém pelo menos 1 slab. Cvars em runtime permitem desligar instantaneamente se houver regressão.
+- **Teste**: build Linux OK; build Android OK.
+
 ### [feito] Biblioteca nova nos celulares com os faróis diferidos desligados (2026-10-12, noite)
 - Cvar `fh2_nativo_luces_diferidas` (padrão **false**): zera a booleana 228 em todo draw. Com ela desligada, a
   biblioteca nova (grama certa, poeira sem borrões) dá a noite escura como a de 05:46, sem o cone dos faróis no chão.
