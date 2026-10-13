@@ -177,6 +177,8 @@ public final class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        // Back from the game: it may have unlocked some.
+        if (content != null && pages[ACHIEVEMENTS] != null) rebuildPage(ACHIEVEMENTS);
         if (hasStorageAccess()) {
             showGameFolder(null);
         }
@@ -188,10 +190,11 @@ public final class MainActivity extends AppCompatActivity {
     // it are the chosen renderer's own, so the emulated and the native ones never mix. Every text is in the app's
     // two languages (AppLanguage.tr); changing the language builds the screen again.
 
-    private static final int GRAPHICS = 0, DISPLAY = 1, PERFORMANCE = 2, SOUND = 3, LANGUAGE = 4, GAME = 5, ABOUT = 6;
+    private static final int GRAPHICS = 0, DISPLAY = 1, PERFORMANCE = 2, SOUND = 3, ACHIEVEMENTS = 4, LANGUAGE = 5,
+            GAME = 6, ABOUT = 7;
     private static final int[] PAGE_ICONS = {R.drawable.ic_menu_graficos, R.drawable.ic_menu_tela,
-            R.drawable.ic_menu_desempenho, R.drawable.ic_menu_som, R.drawable.ic_menu_idioma, R.drawable.ic_menu_jogo,
-            R.drawable.ic_menu_sobre};
+            R.drawable.ic_menu_desempenho, R.drawable.ic_menu_som, R.drawable.ic_menu_conquistas,
+            R.drawable.ic_menu_idioma, R.drawable.ic_menu_jogo, R.drawable.ic_menu_sobre};
     private static final String STATE_PAGE = "page";
 
     private Menu ui;
@@ -212,6 +215,7 @@ public final class MainActivity extends AppCompatActivity {
             case DISPLAY: return tr("Tela", "Display");
             case PERFORMANCE: return tr("Desempenho", "Performance");
             case SOUND: return tr("Som", "Sound");
+            case ACHIEVEMENTS: return tr("Conquistas", "Achievements");
             case LANGUAGE: return tr("Idioma", "Language");
             case GAME: return tr("Jogo e saves", "Game and saves");
             default: return tr("Sobre", "About");
@@ -375,6 +379,7 @@ public final class MainActivity extends AppCompatActivity {
             case DISPLAY: return displayPage();
             case PERFORMANCE: return performancePage();
             case SOUND: return soundPage();
+            case ACHIEVEMENTS: return achievementsPage();
             case LANGUAGE: return languagePage();
             case GAME: return gamePage();
             default: return aboutPage();
@@ -632,8 +637,8 @@ public final class MainActivity extends AppCompatActivity {
                 size.setText("");
                 return;
             }
-            // Same rounding as ObtenerProfundidad (nfsmw_nativo_destinos.cpp): at least 10 %, multiples of 16.
-            int side = value >= 100 ? 1600 : Math.max(64, ((1600 * Math.max(10, value) / 100) + 15) & ~15);
+            // Same rounding as ObtenerProfundidad (nfsmw_nativo_destinos.cpp): multiples of 16, at least 64.
+            int side = value >= 100 ? 1600 : Math.max(64, ((1600 * value / 100) + 15) & ~15);
             percent.setText(value + " %");
             size.setText(side + "×" + side + (value >= 100 ? tr(" · como o Xbox 360", " · as on the Xbox 360") : ""));
         };
@@ -1048,6 +1053,163 @@ public final class MainActivity extends AppCompatActivity {
                         new String[] {"100", "125", "150", "200"})),
                 ui.footer(tr("Acima de Normal o som pode distorcer nos picos.",
                         "Above Normal the sound may distort at its peaks.")));
+    }
+
+    // ---- Achievements: the game's, unlocked ones in the app's magenta, locked ones grey with a lock ------------
+
+    private ScrollView achievementsPage() {
+        List<Achievements.Entry> all = Achievements.load(this);
+        if (all.isEmpty()) {
+            return pageScroll(ui.pageTitle(pageName(ACHIEVEMENTS), null),
+                    ui.group(ui.row(tr("Nenhuma conquista ainda", "No achievements yet"),
+                            tr("A lista vem do próprio jogo: abra o jogo uma vez e ela aparece aqui.",
+                               "The list comes from the game itself: open the game once and it shows up here."),
+                            null)));
+        }
+        List<Achievements.Entry> unlocked = new ArrayList<>();
+        List<Achievements.Entry> locked = new ArrayList<>();
+        int score = 0, total = 0;
+        for (Achievements.Entry e : all) {
+            total += e.gamerscore;
+            if (e.unlocked()) {
+                unlocked.add(e);
+                score += e.gamerscore;
+            } else {
+                locked.add(e);
+            }
+        }
+        unlocked.sort((a, b) -> Long.compare(b.unlockedAtMillis, a.unlockedAtMillis));  // the latest first
+
+        List<View> parts = new ArrayList<>();
+        parts.add(ui.pageTitle(pageName(ACHIEVEMENTS), null));
+        parts.add(achievementsSummary(unlocked.size(), all.size(), score, total));
+        if (!unlocked.isEmpty()) {
+            parts.add(ui.header(tr("Desbloqueadas", "Unlocked")));
+            List<View> rows = new ArrayList<>();
+            for (Achievements.Entry e : unlocked) rows.add(achievementRow(e));
+            parts.add(ui.group(rows.toArray(new View[0])));
+        }
+        if (!locked.isEmpty()) {
+            parts.add(ui.header(tr("Bloqueadas", "Locked")));
+            List<View> rows = new ArrayList<>();
+            for (Achievements.Entry e : locked) rows.add(achievementRow(e));
+            parts.add(ui.group(rows.toArray(new View[0])));
+        }
+        return pageScroll(parts.toArray(new View[0]));
+    }
+
+    /** How many are unlocked and the gamerscore, with a bar in the app's magenta. */
+    private View achievementsSummary(int done, int count, int score, int total) {
+        LinearLayout box = ui.column();
+        box.setPadding(dp(16), dp(14), dp(16), dp(16));
+        LinearLayout line = new LinearLayout(this);
+        line.setOrientation(LinearLayout.HORIZONTAL);
+        line.setGravity(Gravity.BOTTOM);
+        line.addView(ui.text(done + " / " + count, 26, Menu.PRIMARY, true));
+        TextView of = ui.text(tr("desbloqueadas", "unlocked"), 14, Menu.SECONDARY, false);
+        of.setPadding(dp(8), 0, 0, dp(4));
+        line.addView(of, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        TextView points = ui.text(score + " / " + total + " G", 15, Menu.ACCENT_TEXT, true);
+        points.setPadding(0, 0, 0, dp(4));
+        line.addView(points);
+        box.addView(line);
+
+        FrameLayout track = new FrameLayout(this);
+        track.setBackground(Menu.rounded(Menu.FILL, dp(3)));
+        View fill = new View(this);
+        fill.setBackground(Menu.rounded(Menu.ACCENT, dp(3)));
+        track.addView(fill, new FrameLayout.LayoutParams(0, FrameLayout.LayoutParams.MATCH_PARENT));
+        float fraction = count == 0 ? 0f : done / (float) count;
+        track.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            int width = done == 0 ? 0 : Math.max(dp(6), Math.round((r - l) * fraction));
+            if (fill.getLayoutParams().width != width) {
+                fill.getLayoutParams().width = width;
+                fill.post(fill::requestLayout);
+            }
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(6));
+        lp.topMargin = dp(10);
+        box.addView(track, lp);
+        return ui.group(box);
+    }
+
+    /**
+     * One achievement: unlocked ones with their colour icon, a magenta ring and gamerscore, and the day; locked ones
+     * grey, their icon without colour under a lock. A secret one says nothing about itself until unlocked.
+     */
+    private View achievementRow(Achievements.Entry e) {
+        boolean got = e.unlocked();
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(14), dp(10), dp(16), dp(10));
+
+        FrameLayout badge = new FrameLayout(this);
+        ImageView icon = new ImageView(this);
+        icon.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        icon.setBackground(Menu.rounded(Menu.FILL, dp(10)));
+        icon.setClipToOutline(true);
+        if (e.icon != null && !(e.secret && !got)) {
+            icon.setImageBitmap(android.graphics.BitmapFactory.decodeFile(e.icon.getAbsolutePath()));
+        }
+        if (!got) {
+            android.graphics.ColorMatrix grey = new android.graphics.ColorMatrix();
+            grey.setSaturation(0f);
+            icon.setColorFilter(new android.graphics.ColorMatrixColorFilter(grey));
+            icon.setImageAlpha(110);
+        }
+        int side = dp(48);
+        FrameLayout.LayoutParams iconParams = new FrameLayout.LayoutParams(side, side, Gravity.CENTER);
+        badge.addView(icon, iconParams);
+        if (got) {
+            badge.setBackground(ring(Menu.ACCENT, dp(13)));
+        } else {
+            ImageView lock = new ImageView(this);
+            lock.setImageResource(R.drawable.ic_cadeado);
+            lock.setImageTintList(ColorStateList.valueOf(Menu.PRIMARY));
+            lock.setBackground(Menu.rounded(0xCC1B1B1F, dp(9)));
+            lock.setPadding(dp(3), dp(3), dp(3), dp(3));
+            badge.addView(lock, new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.BOTTOM | Gravity.END));
+        }
+        row.addView(badge, new LinearLayout.LayoutParams(dp(54), dp(54)));
+
+        LinearLayout labels = ui.column();
+        labels.setPadding(dp(14), 0, dp(12), 0);
+        boolean hidden = e.secret && !got;
+        labels.addView(ui.text(hidden ? tr("Conquista secreta", "Secret achievement") : e.label, 15.5f,
+                got ? Menu.PRIMARY : Menu.SECONDARY, got));
+        String text = got ? e.description : hidden
+                ? tr("Continue jogando para descobrir.", "Keep playing to find out.") : e.lockedDescription;
+        if (text != null && !text.isEmpty()) {
+            TextView d = ui.text(text, 13, got ? Menu.SECONDARY : Menu.TERTIARY, false);
+            d.setLineSpacing(0, 1.1f);
+            d.setPadding(0, dp(2), 0, 0);
+            labels.addView(d);
+        }
+        if (got) {
+            String day = java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM,
+                    AppLanguage.english() ? java.util.Locale.US : new java.util.Locale("pt", "BR"))
+                    .format(new java.util.Date(e.unlockedAtMillis));
+            TextView when = ui.text(tr("Desbloqueada em ", "Unlocked on ") + day, 12, Menu.ACCENT_TEXT, false);
+            when.setPadding(0, dp(3), 0, 0);
+            labels.addView(when);
+        }
+        row.addView(labels, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView points = ui.text(e.gamerscore + " G", 14, got ? Menu.ACCENT_TEXT : Menu.TERTIARY, true);
+        points.setPadding(dp(10), dp(4), dp(10), dp(4));
+        points.setBackground(Menu.rounded(got ? Menu.ACCENT_SOFT : Menu.FILL, dp(8)));
+        row.addView(points);
+        return ui.plainRow(row);
+    }
+
+    /** A rounded outline, for the unlocked achievements' icons. */
+    private android.graphics.drawable.GradientDrawable ring(int color, float radius) {
+        android.graphics.drawable.GradientDrawable shape = new android.graphics.drawable.GradientDrawable();
+        shape.setCornerRadius(radius);
+        shape.setStroke(dp(2), color);
+        shape.setColor(Color.TRANSPARENT);
+        return shape;
     }
 
     // ---- Language: the game's (every one on the disc) and the app's ----------------------------------------

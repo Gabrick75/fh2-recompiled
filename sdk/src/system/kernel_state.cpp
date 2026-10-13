@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #include <fmt/format.h>
@@ -280,6 +281,80 @@ std::vector<AchievementInfo> KernelState::loaded_achievements() const {
   return achievement_manager_.ListAchievements();
 }
 
+namespace {
+
+std::string JsonEscape(const std::string& text) {
+  std::string out;
+  out.reserve(text.size() + 8);
+  for (const unsigned char c : text) {
+    switch (c) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (c < 0x20) {
+          out += fmt::format("\\u{:04x}", c);
+        } else {
+          out += char(c);
+        }
+    }
+  }
+  return out;
+}
+
+/*
+ * The title's achievements for a launcher to list without running the game: the list lives in the executable's
+ * XDBF, read only here. catalog_<title>.json goes next to the unlock save (<title>.toml, which says which ones are
+ * unlocked), with each icon as icons/<image id>.png (the XDBF images are PNG). Rewritten on every start, so the
+ * names follow the game language; icons are only written once.
+ */
+void ExportAchievementCatalog(const util::XdbfGameData& db, const std::vector<AchievementInfo>& achievements,
+                              const std::filesystem::path& folder, uint32_t title_id) {
+  std::error_code ec;
+  std::filesystem::create_directories(folder / "icons", ec);
+  if (ec) {
+    REXSYS_WARN("Achievement catalog: cannot create {}: {}", (folder / "icons").string(), ec.message());
+    return;
+  }
+  std::string json = fmt::format("{{\n  \"title_id\": \"{:08X}\",\n  \"achievements\": [", title_id);
+  bool first = true;
+  for (const AchievementInfo& a : achievements) {
+    json += fmt::format(
+        "{}\n    {{\"id\": {}, \"label\": \"{}\", \"description\": \"{}\", \"locked_description\": \"{}\", "
+        "\"gamerscore\": {}, \"image_id\": {}, \"flags\": {}}}",
+        first ? "" : ",", a.id, JsonEscape(a.label), JsonEscape(a.description), JsonEscape(a.unachieved_description),
+        a.gamerscore, a.image_id, a.flags);
+    first = false;
+    if (a.image_id != 0) {
+      const auto icon = folder / "icons" / fmt::format("{}.png", a.image_id);
+      if (!std::filesystem::exists(icon, ec)) {
+        const auto block = db.GetEntry(util::XdbfSection::kImage, static_cast<uint64_t>(a.image_id));
+        if (block) {
+          std::ofstream file(icon, std::ios::binary);
+          file.write(reinterpret_cast<const char*>(block.buffer), std::streamsize(block.size));
+        }
+      }
+    }
+  }
+  json += "\n  ]\n}\n";
+  const auto path = folder / fmt::format("catalog_{:08X}.json", title_id);
+  auto temporary = path;
+  temporary += ".tmp";
+  {
+    std::ofstream file(temporary, std::ios::binary);
+    if (!file) {
+      REXSYS_WARN("Achievement catalog: cannot write {}", temporary.string());
+      return;
+    }
+    file << json;
+  }
+  std::filesystem::rename(temporary, path, ec);
+}
+
+}  // namespace
+
 void KernelState::LoadAchievementsData() {
   std::vector<AchievementInfo> achievements;
 
@@ -300,13 +375,17 @@ void KernelState::LoadAchievementsData() {
     }
   }
 
+  const auto user_root = emulator_->user_data_root();
+  if (db.is_valid() && !user_root.empty() && !achievements.empty()) {
+    ExportAchievementCatalog(db, achievements, user_root / "achievements", title_id());
+  }
+
   SetLoadedAchievements(std::move(achievements));
   if (auto metadata_path = emulator_->FindMetadataPath("achievements.toml")) {
     achievement_manager_.LoadMetadataFile(*metadata_path);
   }
 
   // Set up the unlock save path and restore persisted state.
-  const auto user_root = emulator_->user_data_root();
   if (!user_root.empty()) {
     achievement_manager_.SetUnlockSavePath(user_root / "achievements" /
                                            fmt::format("{:08X}.toml", title_id()));

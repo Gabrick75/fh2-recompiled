@@ -4712,7 +4712,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if (pitch == kLadoSombras && alto == kLadoSombras) {
       if (escala_sombras_ == 0) {
         // 0 = no shadows (SombrasApagadas): the map is never drawn, so it is kept at the smallest size.
-        escala_sombras_ = uint32_t(std::clamp(REXCVAR_GET(nfsmw_nativo_sombras_escala), 10, 100));
+        escala_sombras_ = uint32_t(std::clamp(REXCVAR_GET(nfsmw_nativo_sombras_escala), 1, 100));
         if (!blit_ || !profundidad_escalable_) {
           escala_sombras_ = 100;
         }

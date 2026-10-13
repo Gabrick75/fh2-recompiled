@@ -404,11 +404,22 @@ Aparelhos: S23U `RQCXB01R9LM` (Adreno 740) e moto g(9) play `0074545453` (Adreno
 - **Correção**: o bloco devolvido fica no vetor sem memória (pulado por `Reservar`, `Estado` e pelo cálculo de folga) e
   a vaga é reaproveitada quando o pool cresce; o teto não muda; nunca encolhe abaixo dos blocos pré-aquecidos.
 
+### [feito] Tela de conquistas no app (2026-10-13)
+- **De onde vem a lista**: das conquistas no XDBF do executável, que só o jogo lê. A cada início o SDK grava
+  `user/achievements/catalog_4D530AA4.json` (nome, descrição, descrição bloqueada, pontos, imagem, flags) e os ícones
+  em `user/achievements/icons/<imagem>.png` (`ExportAchievementCatalog`, `sdk/src/system/kernel_state.cpp`). Os
+  desbloqueios são o save do próprio SDK ao lado, `4D530AA4.toml`. No PC: 46 conquistas, 1000 G, 46 ícones PNG 64×64.
+- **App**: página "Conquistas" abaixo de Som (`Achievements.java`, `MainActivity.achievementsPage`). Resumo com
+  desbloqueadas/total, pontos e barra magenta; desbloqueadas primeiro (mais recente no topo) com ícone colorido, anel,
+  data e pontos em magenta; bloqueadas em cinza, ícone sem cor e cadeado. Sem a flag 0x8 do XDBF a conquista é
+  secreta: nome e ícone escondidos até desbloquear. Sem catálogo (jogo nunca aberto) a página explica isso. Recarrega
+  ao voltar do jogo.
+
 ### [feito, não testado] Opções de gráfico no menu em vez de padrões escondidos (2026-10-13)
 - Os valores iniciais que a branch `perf/ram-gpu-optimizations` tinha baixado voltaram aos de antes (escala 100 %,
   anisotrópico 4x, distância das sombras "longe", reflexos "altos"); quem tem celular fraco baixa no menu.
 - **Qualidade das sombras** (nativo): slider de 0 a 100 % (passos de 5) → `nfsmw_nativo_sombras_escala`, padrão 100.
-  Abaixo de 10 % o mapa fica em 10 %. **0 desliga as sombras**: os desenhos no mapa de sombras (pitch 1600) são
+  Cada valor vale como escolhido (5 % = 80×80; o lado mínimo da imagem é 64). **0 desliga as sombras**: os desenhos no mapa de sombras (pitch 1600) são
   descartados em `DestinosVulkan::Dibujar` e o mapa fica no valor do borrado, então nada projeta sombra.
 - **Compilar shaders em segundo plano** (emulado): `async_shader_compilation`, padrão desligado (como antes).
 - **Cópia adiada da cena** (nativo): `nfsmw_nativo_compuesta_perezosa`, padrão desligado (como antes; o padrão do C++

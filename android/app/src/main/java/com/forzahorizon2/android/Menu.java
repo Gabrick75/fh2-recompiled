@@ -227,6 +227,11 @@ final class Menu {
         return frame(content);
     }
 
+    /** A row of the caller's own layout, with the group's hairline above it. */
+    LinearLayout plainRow(View content) {
+        return frame(content);
+    }
+
     /** A row with a control below the labels, the whole width of the group. */
     LinearLayout stackedRow(String title, String description, View control) {
         LinearLayout content = column();
