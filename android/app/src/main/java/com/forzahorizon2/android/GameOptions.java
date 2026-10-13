@@ -68,7 +68,7 @@ final class GameOptions {
             case RESOLUTION: return RES_NATIVE;
             case RENDERER: return "emulated";
             case PRESENT_MODE: return "fifo";
-            case RENDER_SCALE: return "100";
+            case RENDER_SCALE: return "75";       // 75% default for native renderer (50-100 range); saves GPU bandwidth
             case FPS: return "30";  // the Xbox 360's
             // Off: the GPU cost of the game's MSAA 4x nearly halves the frame rate on a phone (event menu on the
             // S23 Ultra: 6.8 fps 4x, 13.0 off), and the image is right without it (the MSAA cap leaves the game's
@@ -77,10 +77,10 @@ final class GameOptions {
             case MSAA_SAMPLES: return "4";
             case FXAA_QUALITY: return "normal";
             case SCALING: return "bilinear";
-            case ANISOTROPIC: return "3";
+            case ANISOTROPIC: return "2";       // 2x instead of 4x (16x was "5"); Adreno gains little from >2x
             case SHADOWS: return "1";
-            case SHADOW_DISTANCE: return "far";
-            case CAR_REFLECTIONS: return "high";
+            case SHADOW_DISTANCE: return "medium";  // far = almost all shadow cost; medium saves GPU
+            case CAR_REFLECTIONS: return "medium";  // high redraws all cubemap faces/frame; medium = fewer
             case DRIVER: return "";
             case VOLUME: return "100";
             // English (US), what the console settings said before this option existed.
