@@ -637,8 +637,9 @@ public final class MainActivity extends AppCompatActivity {
                 size.setText("");
                 return;
             }
-            // Same rounding as ObtenerProfundidad (nfsmw_nativo_destinos.cpp): multiples of 16, at least 64.
-            int side = value >= 100 ? 1600 : Math.max(64, ((1600 * value / 100) + 15) & ~15);
+            // Same rounding as Fh2Escalar (nfsmw_nativo_destinos.cpp): the 1040 target in multiples of 16, at least
+            // 64; the 1024x1024 the game resolves scales with it.
+            int side = value >= 100 ? 1024 : Math.max(64, ((1040 * value / 100) + 15) & ~15) * 1024 / 1040;
             percent.setText(value + " %");
             size.setText(side + "×" + side + (value >= 100 ? tr(" · como o Xbox 360", " · as on the Xbox 360") : ""));
         };
@@ -649,10 +650,10 @@ public final class MainActivity extends AppCompatActivity {
         });
         show.run();
         return ui.stackedRow(tr("Qualidade das sombras", "Shadow quality"),
-                tr("Tamanho do mapa de sombras (o do jogo é 1600×1600). Menor deixa as bordas das sombras mais " +
-                   "serrilhadas e alivia a GPU; 0 desliga as sombras.",
-                   "Size of the shadow map (the game's is 1600×1600). Smaller makes shadow edges more jagged and " +
-                   "eases the GPU; 0 turns shadows off."), box);
+                tr("Tamanho dos mapas de sombras do sol (o jogo usa 4 de 1024×1024). Menor deixa as bordas das " +
+                   "sombras mais borradas e alivia a GPU; 0 desliga as sombras. Vale ao abrir o jogo.",
+                   "Size of the sun's shadow maps (the game uses four of 1024×1024). Smaller makes shadow edges " +
+                   "blurrier and eases the GPU; 0 turns shadows off. Applied when the game starts."), box);
     }
 
     private LinearLayout anisotropicRow() {

@@ -404,6 +404,21 @@ Aparelhos: S23U `RQCXB01R9LM` (Adreno 740) e moto g(9) play `0074545453` (Adreno
 - **Correção**: o bloco devolvido fica no vetor sem memória (pulado por `Reservar`, `Estado` e pelo cálculo de folga) e
   a vaga é reaproveitada quando o pool cresce; o teto não muda; nunca encolhe abaixo dos blocos pré-aquecidos.
 
+### [feito] Qualidade das sombras funcionando no FH2 (2026-10-13)
+- **Por que não funcionava**: a escala e o desligar reconheciam o mapa de sombras pelo pitch 1600, que é o do NFSMW.
+  O FH2 nunca usa 1600 (o usuário testou no S23U: slider sem efeito e sombras no 0).
+- **As sombras do FH2** (quadro traçado de dia no S23U, `--nfsmw_nativo_diag_fotograma_s`): 4 cascatas do sol por
+  quadro, cada uma desenhada num alvo de profundidade de pitch **1040** (EDRAM base 720, `sup 10000410`, ~560 desenhos,
+  `LEQUAL`) e resolvida como 1024×1024 em `1CA95000`, `1CE95000`, `1D295000` e `1D6C5000`. Só existem de dia: os
+  testes do PC (à noite) nunca as tinham.
+- **Escala**: o caminho do NFSMW (blit de profundidade) não serve — nem o driver do S23U nem o do PC escalam
+  profundidade. As cascatas agora passam pelo mesmo caminho da escala de render do nativo (`Fh2Escalar`): alvo
+  menor, enquadramento escalado e cópia 1:1 para textura do mesmo tamanho.
+- **0 = desligadas**: os desenhos no alvo de 1040 são descartados e, antes de cada cópia, o alvo é limpo a 1.0 (longe),
+  então nada projeta sombra.
+- **Teste no PC com o save de dia do S23U** (`app/out/save_s23_dia`, `USUARIO=` no `rodar_pc.sh`): 100 % com sombra do
+  carro, da tenda e da grade; 25 % as mesmas, mais suaves; 0 sem nenhuma sombra.
+
 ### [feito] Tela de conquistas no app (2026-10-13)
 - **De onde vem a lista**: das conquistas no XDBF do executável, que só o jogo lê. A cada início o SDK grava
   `user/achievements/catalog_4D530AA4.json` (nome, descrição, descrição bloqueada, pontos, imagem, flags) e os ícones

@@ -1522,6 +1522,13 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       // is cleared (IsClearingColor, graphics/util/draw.h:534-538).
       if (dibujos_) dibujos_->AnotarMotivoCierre(kCierreProfundidad);
       const bool borrara = ((control >> 9) & 0x1) && borrar_profundidad_;
+      if (copiar && SombrasApagadas() && EsMapaDeSombras(pitch)) {
+        // No shadows: its draws were dropped (Dibujar), so the map is cleared to the far depth (1.0; the cascades
+        // test LEQUAL) before each resolve. Every pixel is then lit, and no stale map is ever sampled.
+        RegistrosCopia lejos = reg;
+        lejos.rb_depth_clear = 0xFFFFFF00u;
+        BorrarProfundidad(lejos, pitch);
+      }
       if (copiar) {
         CopiarProfundidad(reg, pitch, borrara);
       }
@@ -3310,10 +3317,20 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 #endif
     // nfsmw_nativo_sombras_escala = 0: the shadow map's draws are dropped. The map keeps the depth its clears give
     // it, so nothing casts a shadow, and the GPU skips the whole shadow pass.
-    if (SombrasApagadas() && peticion.registros && (peticion.registros[0x2000] & 0x3FFF) == kLadoSombras) {
+    if (SombrasApagadas() && peticion.registros && EsMapaDeSombras(peticion.registros[0x2000] & 0x3FFF)) {
       return true;
     }
     return dibujos_ && dibujos_->Dibujar(peticion);
+  }
+
+  // The shadow maps by their surface pitch, which no other render target uses: NFSMW's two 1600x1600 maps and FH2's
+  // sun cascades (four per frame, each drawn at 1040 and resolved as 1024x1024 to 1CA95000, 1CE95000, 1D295000 and
+  // 1D6C5000; traced by day on the S23 Ultra, 2026-10-13).
+  static bool EsMapaDeSombras(uint32_t pitch) {
+#if defined(FH2_RECOMP)
+    if (pitch == kLadoSombrasFh2) return true;
+#endif
+    return pitch == kLadoSombras;
   }
 
   bool SombrasApagadas() {
@@ -4611,6 +4628,21 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         REXLOG_INFO("[fh2 nativo] escala de render {} %: los destinos de 1280 se dibujan a {}x{}", fh2_escala_,
                     ((1280 * fh2_escala_ / 100) + 15) & ~15u, (((1280 * fh2_escala_ / 100) + 15) & ~15u) * 720 / 1280);
       }
+    }
+    // The sun's shadow cascades (EsMapaDeSombras) at nfsmw_nativo_sombras_escala, through this same path: the pass
+    // scales its framing and the resolve copies 1 to 1 into a texture as small, so no depth image is ever stretched
+    // (the S23 Ultra's and the PC's drivers cannot blit depth, which the NFSMW map's own scaling needs).
+    if (pitch == kLadoSombrasFh2) {
+      if (escala_sombras_ == 0) {
+        escala_sombras_ = uint32_t(std::clamp(REXCVAR_GET(nfsmw_nativo_sombras_escala), 1, 100));
+        REXLOG_INFO("[fh2 nativo] sombras del sol a {} %{}", escala_sombras_,
+                    SombrasApagadas() ? " (apagadas: no se dibujan)" : "");
+      }
+      if (escala_sombras_ < 100) {
+        ancho_imagen = std::max<uint32_t>(64, ((pitch * escala_sombras_ / 100) + 15) & ~15u);
+        alto_imagen = std::max<uint32_t>(64, uint32_t(uint64_t(alto) * ancho_imagen / pitch));
+      }
+      return;
     }
     if (fh2_escala_ >= 100 || pitch != 1280) {
       return;
@@ -7288,6 +7320,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   FnBlit blit_ = nullptr;
   // The game's shadow map, and the scale it is being drawn at (0 = not decided yet).
   static constexpr uint32_t kLadoSombras = 1600;
+#if defined(FH2_RECOMP)
+  static constexpr uint32_t kLadoSombrasFh2 = 1040;
+#endif
   bool profundidad_escalable_ = false;
   uint32_t escala_sombras_ = 0;
   int32_t sombras_apagadas_ = -1;  // nfsmw_nativo_sombras_escala == 0, read once; -1 = not read yet
