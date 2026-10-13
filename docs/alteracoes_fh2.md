@@ -335,6 +335,30 @@ Aparelhos: S23U `RQCXB01R9LM` (Adreno 740) e moto g(9) play `0074545453` (Adreno
     diferida costuma precisar da **profundidade** da cena: conferir se no emulado esse endereço tem outra coisa no
     momento do draw); comparar as constantes desse PS nos dois; ver se a limpeza (PS n1137, modo 5) escreve 1 no nativo.
 
+### [medido, aberto] Faróis: rodada de testes de 2026-10-13
+- **Já verificado igual ao emulado (não repetir)**: a profundidade lida pelo projetor (`1DAC5000` é a cópia da
+  profundidade, `control 4`, empacotada em 8888: o nativo usa `fh2_profundidad_rgba8`, "empaquetada si", e os bytes do
+  emulado batem com esse empacotamento); as constantes do projetor (PS n3005 = `p_003825`: `undoProjection` c0–c1,
+  `lightTransform` c2–c4, `lightParams1/2` c5–c6, cor c7); a geometria do quad (lista de retângulos, 4º canto certo,
+  `--fh2_nativo_diag_ps=3005`); as constantes dos faróis no terreno (c168, c169).
+- O projetor (`p_003825`) lê a profundidade (`.x`), reconstrói a posição, usa o feixe 2D (`samplerBeam`) e a queda 1D
+  (`samplerFalloff`) e escreve `exp2(−luz)` em G/B/A da máscara (mistura multiplicativa). Os 106 PS do mundo somam
+  `−log2(máscara) · N·L · 0,2`, sem textura. O emulado tem **dois** quads de projetor por quadro (um por farol), o
+  nativo **um**.
+- **Testes negativos (não repetir)**, todos com `--fh2_nativo_luces_diferidas=true`, a noite continuou clara:
+  queda ou feixe trocados por cinza (`fh2_nativo_diag_vaciar` com endereços de outra rodada: talvez nem tenham
+  pegado); base da máscara (`p_004017`) escrevendo B/A = 1 (com e sem o projetor); máscara inteira = 1 e projetor
+  pulado (`--nfsmw_nativo_diag_omitir_ps=3005`); sem cópias adiadas (`--nfsmw_nativo_frontal_perezoso=false
+  --nfsmw_nativo_resolver_sin_copia=false`). Edições de shader feitas com `tools/xenos/recompilar_um.sh` (o
+  `p_002953` tem o gêmeo `p_002960`, mesmo microcódigo: editar os dois) e revertidas.
+- **Contradição em aberto**: trocar `1CE2D000` por cinza via `fh2_nativo_diag_vaciar` muda a luz, mas fazer o pass
+  da máscara escrever 1 não muda. Ou os materiais visíveis não leem a máscara que esse pass produz, ou a luz extra vem
+  de outro termo. A visualização do que o `p_002953` lê não apareceu: ele não desenha as superfícies do trajeto.
+- **Observação do usuário**: no celular o cone do farol às vezes aparece **em outro lugar**, sem relação com a noite
+  clara: sugere posição reconstruída errada (projetor) ou máscara de outro quadro.
+- **Próximo passo sugerido**: achar os PS das rochas/estrada (bisseção com `nfsmw_nativo_diag_omitir_ps`) e
+  visualizar neles o que leem da máscara; verificar por que o nativo desenha um só quad de projetor.
+
 ### [feito] Biblioteca nova nos celulares com os faróis diferidos desligados (2026-10-12, noite)
 - Cvar `fh2_nativo_luces_diferidas` (padrão **false**): zera a booleana 228 em todo draw. Com ela desligada, a
   biblioteca nova (grama certa, poeira sem borrões) dá a noite escura como a de 05:46, sem o cone dos faróis no chão.
