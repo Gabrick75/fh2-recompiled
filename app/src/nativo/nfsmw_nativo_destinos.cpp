@@ -670,11 +670,6 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_variantes, false, "FH2",
 REXCVAR_DEFINE_BOOL(fh2_nativo_lecturas_antes_de_valla, true, "FH2",
                     "Read-backs of resolves reach guest memory before the ring writes the next fence (one GPU wait per "
                     "frame); without it they arrive submissions late and the race's exposure can end up black");
-REXCVAR_DEFINE_BOOL(fh2_nativo_intercambiar_color_tiras, true, "FH2",
-                    "Experimental: for FH2 scene resolves (1280x720 strips into 1280x1280 RT), create the resolved "
-                    "texture at full RT height and swap images when the last strip completes, avoiding the 1280x720 copy. "
-                    "Requires fh2_sesgo == 0 (no HDR/blur bias). Default true for FH2.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(fh2_nativo_prueba_magenta, "", "FH2",
                       "Debug: hex address whose colour copies take a render target painted magenta");
 REXCVAR_DEFINE_BOOL(fh2_nativo_empaquetar_primera, false, "FH2",
@@ -815,15 +810,6 @@ struct Resuelta {
   // map because TexturaResuelta is on the hot path (one call per texture and draw, ~8,000 per frame) and the
   // lookup of the resolved texture is done anyway.
   uint64_t lecturas = 0;
-#if defined(FH2_RECOMP)
-  // FH2 strip-based swap tracking: for scene resolves into 1280x1280 RT, the resolved texture is created at
-  // full RT height (1280) and strips are copied. When the last strip (gy1 >= alto_objetivo) completes,
-  // we swap instead of copying the remaining strips.
-  uint32_t fh2_alto_objetivo = 0;      // target height in guest pixels (720 for scene)
-  uint32_t fh2_ultima_tira_y = 0;      // last strip's gy1
-  bool fh2_es_cena = false;            // true if this is a scene color resolve (not blur/HDR)
-  bool fh2_intercambio_pendiente = false; // swap pending on last strip completion
-#endif
 };
 
 // C2 report of readbacks per render target (base and size) and cadence of nfsmw_nativo_lecturas_cada.
@@ -1714,23 +1700,13 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         dx = uint32_t(x0) - base_x;
         dy = uint32_t(y0) - base_y;
 #if defined(FH2_RECOMP)
-        // Detect FH2 scene color resolve: full-width strips into 1280x1280 RT, drawn in 3 strips of 256 rows.
-        // For these, create the resolved texture at full RT height (1280) to enable strip-based swap.
-        const bool fh2_es_cena_resuelta = fh2_escalado &&
-                                          x0 == 0 && uint32_t(x1 - x0) == pitch_destino &&
-                                          destino_render->ancho == 1280 && destino_render->alto == 1280 &&
-                                          formato_destino == 3;  // kFormatoColor (2_10_10_10_FLOAT)
-        const uint32_t resuelta_alto = fh2_es_cena_resuelta ? destino_render->alto : alto_destino;
         if (fh2_escalado) {
           resuelta = ObtenerResuelta(base & 0x1FFFFFFF, uint32_t(std::max(1, fh2_a_imagen_x(int32_t(pitch_destino)))),
-                                       uint32_t(std::max(1, fh2_a_imagen_y(int32_t(resuelta_alto)))), formato_destino,
-                                       (info_destino >> 24) & 0x1, formato_host_copia);
+                                     uint32_t(std::max(1, fh2_a_imagen_y(int32_t(alto_destino)))), formato_destino,
+                                     (info_destino >> 24) & 0x1, formato_host_copia);
           if (resuelta) {
             resuelta->imagen.ancho_guest = pitch_destino;
-            resuelta->imagen.alto_guest = resuelta_alto;
-            resuelta->fh2_es_cena = fh2_es_cena_resuelta;
-            resuelta->fh2_alto_objetivo = 720;
-            resuelta->fh2_intercambio_pendiente = fh2_es_cena_resuelta;
+            resuelta->imagen.alto_guest = alto_destino;
           }
         } else
 #endif
@@ -1852,25 +1828,8 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 #if defined(FH2_RECOMP)
         // The copy's exponent bias (RB_COPY_DEST_INFO 16-21): FH2 resolves its HDR scene with -2 and its blurs with -4.
         const int32_t fh2_sesgo = int32_t(reg.rb_copy_dest_info << 10) >> 26;
-
-        // FH2 strip-based swap detection: scene color resolves are full-width strips (x0=0, ancho=pitch)
-        // into a 1280x1280 RT, drawn in 3 strips of 256 rows each (0-256, 256-512, 512-720).
-        // The resolved texture is created at full RT height (1280). When the last strip reaches
-        // gy1 >= 720, we swap the full 1280x1280 images instead of copying.
-        const bool fh2_es_cena = (x0 == 0 && uint32_t(ancho) == pitch &&
-                                  destino_render->ancho == 1280 && destino_render->alto == 1280 &&
-                                  fh2_sesgo == 0 && borrar_color);
-        const uint32_t alto_objetivo = ((reg.rb_copy_dest_pitch >> 16) & 0x3FFF) ? ((reg.rb_copy_dest_pitch >> 16) & 0x3FFF) : 720u;
-
-        // Check if this is the last strip of a scene resolve
-        const bool fh2_es_ultima_tira = fh2_es_cena && REXCVAR_GET(fh2_nativo_intercambiar_color_tiras) &&
-                                        uint32_t(gy1) >= alto_objetivo && resuelta &&
-                                        resuelta->fh2_es_cena;
 #else
         const int32_t fh2_sesgo = 0;
-        const bool fh2_es_cena = false;
-        const bool fh2_es_ultima_tira = false;
-        const uint32_t alto_objetivo = 720;
 #endif
         if (entero_color && borrar_color && ResolverSinCopia() && fh2_sesgo == 0 &&
             REXCVAR_GET(nfsmw_nativo_intercambiar_color)) {
@@ -1881,19 +1840,6 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
             LeerResuelta(reg, *resuelta, x0, y0, dx, dy, ancho, alto);
             return true;
           }
-        }
-        // FH2 strip-based swap: on the last strip of a scene resolve, swap the full RT and resolved texture
-        // instead of copying this strip. The resolved texture was created at full RT height (1280).
-        else if (fh2_es_ultima_tira) {
-          if (IntercambiarConResuelta(*destino_render, *resuelta, reg.rb_copy_dest_base & 0x1FFFFFFF)) {
-            ++intercambios_color_;
-            if (dibujos_) dibujos_->AnotarMotivoCierre(kCierreIntercambio);
-            // Mark that the swap happened; the resolved texture now has the full RT content (including cleared rows 720-1280)
-            resuelta->fh2_intercambio_pendiente = false;
-            LeerResuelta(reg, *resuelta, 0, 0, 0, 0, destino_render->ancho, destino_render->alto);
-            return true;
-          }
-          // If swap failed, fall through to normal copy path
         }
         VkImageCopy copia{};
         copia.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -4956,14 +4902,6 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         it->second.formato_guest = formato;
         it->second.intercambio_rb = intercambio_rb;
         it->second.imagen.intercambio_rb = intercambio_rb;
-#if defined(FH2_RECOMP)
-        // Update FH2 scene resolve flag if this is a scene color resolve
-        const bool fh2_es_cena_resuelta = (ancho == 1280 && alto == 1280 && formato == 3 &&
-                                           intercambio_rb == false);
-        it->second.fh2_es_cena = fh2_es_cena_resuelta;
-        it->second.fh2_alto_objetivo = fh2_es_cena_resuelta ? 720 : 0;
-        it->second.fh2_intercambio_pendiente = fh2_es_cena_resuelta;
-#endif
         return &it->second;
       }
 #if defined(FH2_RECOMP)

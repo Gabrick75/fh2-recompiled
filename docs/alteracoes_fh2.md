@@ -379,29 +379,34 @@ Aparelhos: S23U `RQCXB01R9LM` (Adreno 740) e moto g(9) play `0074545453` (Adreno
 - **Próximo passo sugerido**: achar os PS das rochas/estrada (bisseção com `nfsmw_nativo_diag_omitir_ps`) e
   visualizar neles o que leem da máscara; verificar por que o nativo desenha um só quad de projetor.
 
-### [feito] Toast de conquista pequeno e centralizado (2026-10-12)
-- **Arquivos**: `sdk/src/ui/overlay/achievement_toast.cpp:63-99`
-- **Problema**: a notificação verde ("toast") aparecia gigante no Android e saía cortada da tela. Usava posição fixa no canto inferior direito (320×70 px) sem considerar escala de DPI/fonte do ImGui.
-- **Correção**:
-  - Posição: centro inferior da tela (`(DisplaySize.x - max_width) * 0.5f`) em vez de canto direito.
-  - Tamanho: `ImGuiWindowFlags_AlwaysAutoResize` com `SetNextWindowSizeConstraints` limitando largura a 80% da tela (máx. 400 px).
-  - Margem inferior: 3% da altura da tela (`DisplaySize.y * 0.03f`), igual ao watermark do debug overlay.
-  - Texto da conquista: `TextWrapped` com `PushTextWrapPos` para quebrar linha dentro da largura máxima.
-- **Teste**: build Linux OK (`cmake --build app/out/linux`); build Android OK (`./gradlew assembleRelease`, APK em `android/app/build/outputs/apk/release/app-release.apk`).
-- **Validação pendente**: rodar nos dois celulares (S23U Adreno 740, moto g9 play Adreno 610) e confirmar visualmente em ambos renderizadores (emulado e nativo).
-- **Commit**: `70d6fbf` ("Fix achievement toast positioning and sizing for Android")
+### [feito] Toast de conquista pequeno e centralizado (2026-10-12, corrigido em 2026-10-13)
+- **Arquivo**: `sdk/src/ui/overlay/achievement_toast.cpp`.
+- **Por que ficava gigante**: no Android o ImGui desenha numa tela lógica (pixels físicos ÷ DPI), com só ~300 linhas
+  de altura. O toast fixo de 320×70 ocupava um quarto da tela.
+- **Primeira tentativa (`70d6fbf`) não funcionava**: posicionava o canto de **cima** da janela a 3 % do fim da tela,
+  então a janela descia para fora dela. Também centralizava pela largura máxima, não pela real, e não mudava o
+  tamanho.
+- **Correção**: tamanho proporcional à tela (~12 % da altura; nunca maior que no PC, nunca menor que metade, com fonte,
+  ícone e margens na mesma escala), ancorado pelo meio da borda de baixo (`pivot (0.5, 1)`) a 3 % do fim. O nome
+  quebra linha dentro da largura, com a pontuação junto.
+- **Teste**: `--achievement_toast_test=true` mostra um toast de exemplo o tempo todo (a janela é criada já no início
+  nesse modo). No PC: pequeno, centralizado embaixo, com quebra de linha. No Android: `am start` com
+  `--esa fh2.args --achievement_toast_test=true`.
 
-### [feito] Pool de texturas: devolver slabs vazios ao sistema (2026-10-13)
-- **Branch**: `perf/ram-gpu-optimizations` (commit `22bbece`)
-- **Arquivos**: `app/src/nativo/nfsmw_nativo_texturas_pool.h/.cpp`
-- **Problema**: o pool de texturas (C3) alocava slabs de 32 MB até o tope (~416 MB) mas **nunca os devolvia**. Em mudanças de zona a cache esvaziava mas a memória residente ficava alta (contribui pro crescimento 0.8→2.3 GB em 40 min no S23U).
-- **Correção**:
-  - Novo cvar `nfsmw_nativo_texturas_pool_encoger` (default **true**, `kHotReload`): liga/desliga o shrink.
-  - Novo cvar `nfsmw_nativo_texturas_pool_encoger_espera` (default **300** frames ≈ 5 s a 60 fps): frames que um slab deve ficar 100% livre antes de ser devolvido.
-  - Em `PorFotograma`: slabs com `unidades_en_uso == 0` incrementam `fotogramas_libre`; ao atingir o limiar, `vkFreeMemory` devolve ao sistema e o slab é removido do vetor.
-  - Contador `slabs_devueltos` adicionado ao `EstadoPoolTexturas` e ao `Resumen()` do log C3.
-- **Risco baixo**: só devolve slabs **completamente livres** (sem texturas vivas); mantém pelo menos 1 slab. Cvars em runtime permitem desligar instantaneamente se houver regressão.
-- **Teste**: build Linux OK; build Android OK.
+### [corrigido] Pool de texturas: devolver blocos vazios ao sistema (2026-10-13)
+- **Branch**: `perf/ram-gpu-optimizations`. Arquivos `app/src/nativo/nfsmw_nativo_texturas_pool.h/.cpp`.
+- **Ideia (`22bbece`)**: o pool reservava blocos de 32 MB e nunca os devolvia. Cvars `nfsmw_nativo_texturas_pool_encoger`
+  (padrão true) e `nfsmw_nativo_texturas_pool_encoger_espera` (300 quadros).
+- **Bug da primeira versão**: apagava o bloco do vetor. Cada textura guarda o bloco pelo índice (`bloque = slab << 24
+  | início`), então os blocos seguintes mudavam de índice e suas texturas liberavam unidades do bloco errado. No PC
+  isso aconteceu (bloco 1 devolvido com blocos depois dele). Também reduzia o teto a cada devolução e devolvia os
+  blocos pré-aquecidos, que logo eram recriados (memset de 32 MB cada).
+- **Correção**: o bloco devolvido fica no vetor sem memória (pulado por `Reservar`, `Estado` e pelo cálculo de folga) e
+  a vaga é reaproveitada quando o pool cresce; o teto não muda; nunca encolhe abaixo dos blocos pré-aquecidos.
+
+### [removido] Troca de imagens por faixas na resolução da cena (`2ed1d29`, 2026-10-13)
+- Nunca era executada: exigia viés de expoente 0 (a cena resolve com −2) e um alvo de 1280 px com escala ativa (com
+  escala o alvo é menor). Código apagado; não há ganho a medir.
 
 ### [feito] Biblioteca nova nos celulares com os faróis diferidos desligados (2026-10-12, noite)
 - Cvar `fh2_nativo_luces_diferidas` (padrão **false**): zera a booleana 228 em todo draw. Com ela desligada, a

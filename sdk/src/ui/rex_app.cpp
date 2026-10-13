@@ -67,6 +67,8 @@ REXCVAR_DEFINE_STRING(gpu_plugin, "", "GPU",
                       "GPU emulation")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
+REXCVAR_DECLARE(bool, achievement_toast_test);  // defined in overlay/achievement_toast.cpp
+
 namespace rex {
 
 // --- ReXApp ---
@@ -498,6 +500,12 @@ void ReXApp::LaunchModule() {
               }
             });
           });
+    }
+
+    // achievement_toast_test: the sample toast needs the dialog from the start.
+    if (REXCVAR_GET(achievement_toast_test) && !achievement_notification_) {
+      achievement_notification_ =
+          std::shared_ptr<ui::AchievementNotificationDialog>(CreateAchievementNotificationDialog());
     }
 
     OnPreLaunchModule();

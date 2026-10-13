@@ -208,6 +208,9 @@ class PoolTexturas {
     std::vector<uint32_t> largo;     // units reserved from each start (0 = not a start)
     uint32_t fotogramas_libre = 0;   // consecutive frames completely free
   };
+  // Slabs with memory (a returned slab keeps its place in slabs_ with no memory: the textures' block identifiers
+  // carry their slab's index, so slabs are never erased or moved).
+  uint32_t SlabsConMemoria() const;
 
   // 8 MB of headroom: below that a new slab is requested.
   static constexpr uint64_t kHolguraBytes = 8ull << 20;
@@ -226,6 +229,7 @@ class PoolTexturas {
   uint64_t slab_bytes_ = 0;
   uint32_t slab_unidades_ = 0;
   uint32_t slabs_tope_ = 0;
+  uint32_t slabs_iniciales_ = 0;  // prewarmed: the shrink never goes below this
   uint64_t ultimo_crecimiento_ = 0;
   std::vector<Slab> slabs_;
 
