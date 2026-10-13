@@ -404,6 +404,22 @@ Aparelhos: S23U `RQCXB01R9LM` (Adreno 740) e moto g(9) play `0074545453` (Adreno
 - **Correção**: o bloco devolvido fica no vetor sem memória (pulado por `Reservar`, `Estado` e pelo cálculo de folga) e
   a vaga é reaproveitada quando o pool cresce; o teto não muda; nunca encolhe abaixo dos blocos pré-aquecidos.
 
+### [medido, aberto] Colisão restante (~10 %): comum ao nosso SDK e ao ShiftGlue (2026-10-13)
+- Depois das contas vetoriais, o usuário avalia a colisão em ~90 %: objetos caem certo, mas às vezes carros sobem uns
+  nos outros e um poste atingido por um oponente ricocheteou e voou rápido demais.
+- **No ShiftGlue do PC acontece igual** (mesmo save, limite de 30 fps, ~26 fps): não é algo que o SDK deles corrige.
+  No celular o ShiftGlue rodava a ~13 fps e o usuário não tinha notado.
+- O código gerado das 85.237 funções foi comparado com o do ShiftGlue (normalizando rótulos, entrada pelo meio,
+  pilha, barreiras e chamadas de cauda): a matemática é a mesma. Sobram a forma do `stwcx` (CAS) e ~150 chamadas de
+  segurança depois de funções que não retornam.
+- Diferença que resta: com o mesmo save, a guarda de `sub_82ECEB88` ("formas a distancia cero") dispara 4 vezes ao
+  carregar no nosso e nenhuma no ShiftGlue.
+- **Testes negativos (não repetir)**: desligar essa guarda (a resposta "em contato") não mudou nada para o usuário e
+  o jogo não travou sem ela (o travamento de 11/10 era das contas vetoriais); os ganchos de `fh2_desempenho.cpp` só
+  mexem no anel e nas faixas da cena; o relógio do nosso SDK espera o outro thread e devolve um tempo atual.
+- **Próxima hipótese**: o passo de tempo da física. No Xbox o FH2 roda travado a 30 fps; aqui o ritmo oscila nos
+  dois SDKs. Achar como o jogo mede o tempo do quadro e testar com 1/30 s fixo.
+
 ### [feito] Queda a ~4 fps no festival: tabela de buscas vigiladas cheia (2026-10-13)
 - **Sintoma**: no S23 Ultra, ao chegar ao festival, de ~25–30 para ~4,5 fps; GPU em ~30 %, a thread do anel do nativo
   em 80–84 %. Reproduzido no PC dirigindo até o festival (quadros de 75–150 ms).
