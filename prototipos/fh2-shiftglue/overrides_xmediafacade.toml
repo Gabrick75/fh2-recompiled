@@ -1,0 +1,37 @@
+# ============================================================================
+#  XMediaFacade_default.xex (DLL at 0x88000000) - manual declarations for the codegen
+#  Included from the module's entry in fh2_manifest.toml.
+# ============================================================================
+
+[functions]
+
+# Virtual call thunk: lwz r11, 0(r3); lwz r10, 0x48(r11); mtctr r10; bctr.
+# Reached from the stub table at 0x880503B8 (0x880503D0: b here).
+"0x88055B80" = { size = 0x10 }
+
+# --- Code pointers in the data that land in no function (tools/ponteiros_orfaos.py --toml) --------
+# Static initializers, adjustor and vcall thunks and small methods reached only from vtables and
+# initializer tables. Generated with the "declare" class of the tool (in a gap, right after a
+# b / blr / bctr); the "inside" ones (case labels, catch blocks) and the import thunks are left out.
+"0x88065498" = {}  # lwz r11, 0(r3) ; addi r7, r3, 0xcc
+"0x88067730" = {}  # addi r3, r3, 0x16c ; blr 
+"0x88067750" = {}  # addi r3, r3, 0x11c ; blr 
+"0x880678D8" = {}  # lwz r10, 0x40(r3) ; lwz r11, 0x30(r3)
+"0x880678F8" = {}  # lwz r10, 0x40(r3) ; lwz r11, 0x30(r3)
+"0x88067918" = {}  # lwz r10, 0x40(r3) ; lwz r11, 0x30(r3)
+"0x88067938" = {}  # lwz r11, 0x40(r3) ; lwz r10, 0x30(r3)
+"0x88067958" = {}  # lwz r10, 0x40(r3) ; lwz r11, 0x30(r3)
+"0x88067978" = {}  # lwz r11, 0x40(r3) ; lwz r10, 0x30(r3)
+"0x88067998" = {}  # lwz r11, 0x40(r3) ; lwz r10, 0x30(r3)
+"0x880679B8" = {}  # lwz r11, 0x40(r3) ; lwz r10, 0x30(r3)
+"0x880679D8" = {}  # lwz r11, 0x40(r3) ; lwz r10, 0x30(r3)
+"0x880679F8" = {}  # lwz r11, 0x40(r3) ; lwz r10, 0x30(r3)
+"0x880CD528" = {}  # addi r3, r3, 0x2c ; blr 
+"0x881EC4B4" = {}  # li r11, 0 ; stw r11, 0x164(r31)
+"0x882435D8" = {}  # lis r11, -0x77d6 ; addi r3, r11, 0x50b0
+
+# --- Second pass of tools/ponteiros_orfaos.py: addresses built in the code ------------------------
+# The other "declare" candidates of this module (0x880507B8, 0x88051FF4, 0x880596E8, 0x8805A1FC,
+# 0x8805A794) are catch blocks and SEH filters: they use their parent's frame (r31) and are only
+# referenced from the exception tables at 0x880495xx-0x880496xx.
+"0x88069278" = {}  # vcall thunk: lwz r11, 0(r3) ; lwz r10, 0x88(r11) ; mtctr ; bctr

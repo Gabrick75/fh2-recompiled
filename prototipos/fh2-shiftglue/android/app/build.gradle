@@ -1,0 +1,88 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Release signing key, kept outside the repository: FH2_KEYSTORE_PROPERTIES, or
+// ~/.android-keys/fh2-recompiled/keystore.properties (storeFile, storePassword, keyAlias, keyPassword).
+// Without it the release build is signed with the debug key, so anyone can build the project.
+def releaseKeyProperties = new Properties()
+def releaseKeyFile = file(System.getenv('FH2_KEYSTORE_PROPERTIES') ?:
+        "${System.getProperty('user.home')}/.android-keys/fh2-recompiled/keystore.properties")
+if (releaseKeyFile.exists()) {
+    releaseKeyFile.withInputStream { releaseKeyProperties.load(it) }
+}
+
+android {
+    namespace 'com.forzahorizon2.android'
+    compileSdk 35
+
+    sourceSets {
+        main.java.srcDirs += ["/home/gabriel/vscodeprojects/emuladores/referencias/shiftglue-sdk/thirdparty/sdl3/android-project/app/src/main/java"]
+    }
+
+    defaultConfig {
+        applicationId 'com.forzahorizon2.shiftglue'
+        minSdk 33
+        targetSdk 35
+        versionCode 2
+        versionName '0.2.0-shiftglue'
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+        externalNativeBuild {
+            cmake {
+                cppFlags '-std=c++23'
+                arguments '-DANDROID_STL=c++_shared'
+            }
+        }
+    }
+
+    signingConfigs {
+        if (releaseKeyFile.exists()) {
+            release {
+                storeFile file(releaseKeyProperties['storeFile'])
+                storePassword releaseKeyProperties['storePassword']
+                keyAlias releaseKeyProperties['keyAlias']
+                keyPassword releaseKeyProperties['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig releaseKeyFile.exists() ? signingConfigs.release : signingConfigs.debug
+            // AGP builds release natives as RelWithDebInfo (-O2 -g); the game wants the SDK's Release
+            // flags (-O3, no asserts) (src/main/cpp/CMakeLists.txt).
+            externalNativeBuild {
+                cmake {
+                    arguments '-DCMAKE_BUILD_TYPE=Release'
+                }
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.30.5'
+        }
+    }
+
+    // Prototype on ShiftGlue: its runtime looks for the GPU plugin (librexgpu-fh1.so) as a file, so the native
+    // libraries are extracted at install instead of being read from inside the APK.
+    packaging {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+    ndkVersion '29.0.14206865'
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.13.1'
+    implementation 'androidx.documentfile:documentfile:1.0.1'
+    // The launcher's menu (switches, sliders, buttons; the rest is drawn by Menu.java).
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+}

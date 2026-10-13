@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <uses-feature android:name="android.hardware.vulkan.version" android:version="0x00400000" android:required="false" />
+    <application
+        android:name=".DiagnosticsApplication"
+        android:allowBackup="false"
+        android:appCategory="game"
+        android:isGame="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="FH2 ShiftGlue (teste)"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:theme="@android:style/Theme.Material.NoActionBar"
+        android:usesCleartextTraffic="false">
+        <!-- simpleperf from adb without root (tools/perfil_android.sh). -->
+        <profileable android:shell="true" />
+        <provider
+            android:name=".ReportFileProvider"
+            android:authorities="${applicationId}.reports"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/report_paths" />
+        </provider>
+        <activity
+            android:name=".MainActivity"
+            android:theme="@style/Theme.FH2.Launcher"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:screenOrientation="sensorLandscape"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- The driver test: a throwaway process, transparent (no screenOrientation: Android 8.0 refuses it on a
+             translucent activity). GpuProbeActivity. -->
+        <activity
+            android:name=".GpuProbeActivity"
+            android:process=":gpu_probe"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false" />
+        <activity
+            android:name=".GameActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape" />
+    </application>
+</manifest>

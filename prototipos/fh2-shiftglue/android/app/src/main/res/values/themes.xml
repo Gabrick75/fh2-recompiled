@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The launcher: Material 3 dark with the Horizon magenta, no title bar; the background is Menu.BACKGROUND. -->
+    <style name="Theme.FH2.Launcher" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">#E6007E</item>
+        <item name="colorSecondary">#E6007E</item>
+        <item name="android:windowBackground">#09090B</item>
+    </style>
+</resources>

@@ -1,0 +1,95 @@
+# ============================================================================
+#  SpeechFacade_default.xex (DLL at 0x89000000) - manual declarations for the codegen
+#  Included from the module's entry in fh2_manifest.toml.
+# ============================================================================
+
+[functions]
+
+# --- Code pointers in the data that land in no function (tools/ponteiros_orfaos.py --toml) --------
+# Static initializers, adjustor and vcall thunks and small methods reached only from vtables and
+# initializer tables. Generated with the "declare" class of the tool (in a gap, right after a
+# b / blr / bctr); the "inside" ones (case labels, catch blocks) and the import thunks are left out.
+"0x890B2F58" = {}  # addi r3, r3, -4 ; b 0x890b13e0
+"0x890B2F60" = {}  # addi r3, r3, -4 ; b 0x890b1530
+"0x890B2F68" = {}  # addi r3, r3, -4 ; b 0x890b1d28
+"0x890B2F78" = {}  # addi r3, r3, -8 ; b 0x890b17e8
+"0x890B2F80" = {}  # addi r3, r3, -4 ; b 0x890b2b80
+"0x890B2F88" = {}  # addi r3, r3, -4 ; b 0x890b1518
+"0x890B2F90" = {}  # addi r3, r3, -4 ; b 0x890b1818
+"0x890B2FA0" = {}  # addi r3, r3, -8 ; b 0x890b2b80
+"0x890B2FA8" = {}  # addi r3, r3, -4 ; b 0x890b1bf0
+"0x890B2FB0" = {}  # addi r3, r3, -4 ; b 0x890b16b0
+"0x890B2FB8" = {}  # addi r3, r3, -8 ; b 0x890b1818
+"0x890B2FC8" = {}  # addi r3, r3, -4 ; b 0x890b1aa0
+"0x890B2FD8" = {}  # addi r3, r3, -8 ; b 0x890b2b68
+"0x890B2FE0" = {}  # addi r3, r3, -4 ; b 0x890b1548
+"0x890B4170" = {}  # addi r3, r3, -8 ; b 0x890b4148
+"0x890B4178" = {}  # addi r3, r3, -4 ; b 0x890b4120
+"0x890B4180" = {}  # addi r3, r3, -8 ; b 0x890b4120
+"0x890B7E20" = {}  # addi r3, r3, -8 ; b 0x890b7ce0
+"0x890B7E28" = {}  # addi r3, r3, -4 ; b 0x890b9ec0
+"0x890B7E30" = {}  # addi r3, r3, -8 ; b 0x890b9ec0
+"0x890B8960" = {}  # addi r3, r3, -4 ; b 0x890b88f8
+"0x890BAA68" = {}  # addi r3, r3, -8 ; b 0x890e8928
+"0x890BAAB8" = {}  # addi r3, r3, -8 ; b 0x890baa98
+"0x890BAAC0" = {}  # addi r3, r3, -0xc ; b 0x890baa98
+"0x890BB048" = {}  # addi r3, r3, -4 ; b 0x890bafa8
+"0x890BB050" = {}  # cmplwi cr6, r3, 0 ; bne cr6, 0x890bb05c
+"0x890BB850" = {}  # addi r3, r3, -4 ; b 0x890bb830
+"0x890BC018" = {}  # addi r3, r3, -8 ; b 0x890bbf88
+"0x890BC020" = {}  # addi r3, r3, -0xc ; b 0x890bbf88
+"0x890BC028" = {}  # addi r3, r3, -4 ; b 0x890bbf70
+"0x890BC030" = {}  # addi r3, r3, -0x10 ; b 0x890bbf88
+"0x890BC038" = {}  # addi r3, r3, -8 ; b 0x890bbf70
+"0x890BC040" = {}  # addi r3, r3, -4 ; b 0x890bbfa0
+"0x890BC050" = {}  # addi r3, r3, -8 ; b 0x890bbfa0
+"0x890BC060" = {}  # addi r3, r3, -4 ; b 0x890bbe30
+"0x890BC4F8" = {}  # addi r3, r3, -8 ; b 0x890bc4d8
+"0x890BC500" = {}  # addi r3, r3, -0xc ; b 0x890bc4d8
+"0x890BC508" = {}  # addi r3, r3, -0x10 ; b 0x890bc4d8
+"0x890C30E8" = {}  # addi r3, r3, -4 ; b 0x890c2ed8
+"0x890C60F8" = {}  # lwz r11, 0x2c(r3) ; lwz r3, 0(r11)
+"0x890C6110" = {}  # lwz r11, 0x2c(r3) ; lwz r3, 0(r11)
+"0x890C6128" = {}  # cmplwi cr6, r4, 0 ; beq cr6, 0x890c613c
+"0x890E3608" = {}  # addi r11, r3, 8 ; mfmsr r9
+"0x890E3CD0" = {}  # addi r3, r3, -8 ; b 0x890e3ac8
+"0x890E3CD8" = {}  # addi r3, r3, -0xc ; b 0x890e3ac0
+"0x890E3CE0" = {}  # addi r3, r3, -4 ; b 0x890e3af0
+"0x890E3CE8" = {}  # addi r3, r3, -0xc ; b 0x890e3ac8
+"0x890E3CF0" = {}  # addi r3, r3, -8 ; b 0x890e3af0
+"0x890E3CF8" = {}  # addi r3, r3, -0x10 ; b 0x890e3ac8
+"0x890E3D00" = {}  # addi r3, r3, -0xc ; b 0x890e3af0
+"0x890E3D08" = {}  # addi r3, r3, -0x10 ; b 0x890e3af0
+"0x890E3D10" = {}  # addi r3, r3, 0x2a0 ; b 0x890b7e38
+"0x890E3DE0" = {}  # addi r3, r3, -0xc ; b 0x890e3d10
+"0x890E3DE8" = {}  # addi r3, r3, -0xc ; b 0x890e3d18
+"0x890E3DF0" = {}  # addi r3, r3, -0xc ; b 0x890e3d20
+"0x890E3DF8" = {}  # addi r3, r3, -0xc ; b 0x890e3d28
+"0x890E3E00" = {}  # addi r3, r3, -0xc ; b 0x890e3d30
+"0x890E3E08" = {}  # addi r3, r3, -0xc ; b 0x890e3d40
+"0x890F2A50" = {}  # addi r3, r3, -4 ; b 0x890e3608
+"0x890F8FF0" = {}  # stw r4, 0x20(r3) ; li r3, 0
+"0x891255D0" = {}  # cmpwi cr6, r4, -2 ; bne cr6, 0x89125610
+"0x8912B4C8" = {}  # addi r3, r3, -0x10 ; b 0x8912b438
+"0x8912B4D0" = {}  # addi r3, r3, -4 ; b 0x8912b3c8
+"0x8912B4E0" = {}  # addi r3, r3, -8 ; b 0x8912b3c8
+"0x8912B4F8" = {}  # addi r3, r3, -0x10 ; b 0x8912b3c8
+"0x8912B508" = {}  # addi r3, r3, -0x14 ; b 0x8912b3c8
+"0x8912B518" = {}  # addi r3, r3, -4 ; b 0x8912b438
+"0x8912B520" = {}  # addi r3, r3, -0x10 ; b 0x8912b3a0
+"0x8912B528" = {}  # addi r3, r3, -8 ; b 0x8912b438
+"0x8912B530" = {}  # addi r3, r3, -0x14 ; b 0x8912b3a0
+"0x8912B6E0" = {}  # addi r3, r3, 0x48 ; blr 
+"0x8912C478" = {}  # addi r3, r3, 0x24 ; b 0x890b7e38
+"0x8917B738" = {}  # li r11, 1 ; stb r11, 0x20(r3)
+"0x8919F700" = {}  # lwz r11, 0x24(r3) ; lwz r3, 0(r11)
+"0x8919F718" = {}  # lwz r11, 0x24(r3) ; lwz r3, 0(r11)
+"0x8919F730" = {}  # mr r4, r3 ; lwz r3, 0x2c(r3)
+"0x891A4A50" = {}  # lwz r11, 0x1c(r3) ; mr r3, r4
+"0x891A5988" = {}  # li r11, 0 ; clrlwi r10, r4, 0x10
+"0x891F3784" = {}  # li r11, 0 ; stw r11, 0x164(r31)
+
+# --- Second pass of tools/ponteiros_orfaos.py: addresses built in the code ------------------------
+# Left out: 0x890A0420 and 0x890A1CB4 (catch block and SEH filter, only in the exception tables at
+# 0x8908FBxx) and 0x891EDE1C (a run of lbz from r30 that looks like data).
+"0x890CE550" = {}  # comparator: lhz r11, 0(r3) ; lhz r10, 0(r4) ; subf r3, r10, r11 ; blr
