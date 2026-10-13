@@ -60,17 +60,19 @@ void AchievementToastDialog::OnDraw(ImGuiIO& io) {
     alpha = (kDisplaySeconds - age) / 0.5f;
   alpha = std::max(0.0f, std::min(1.0f, alpha));
 
-  const float pad = 16.0f;
-  const float w = 320.0f;
-  ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - w - pad, io.DisplaySize.y - 80.0f - pad),
+  const float max_width = std::min(400.0f, io.DisplaySize.x * 0.8f);
+  const float bottom_offset = io.DisplaySize.y * 0.03f;
+  ImGui::SetNextWindowPos(ImVec2((io.DisplaySize.x - max_width) * 0.5f,
+                                  io.DisplaySize.y - bottom_offset),
                           ImGuiCond_Always);
-  ImGui::SetNextWindowSize(ImVec2(w, 70.0f), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
+  ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(max_width, FLT_MAX));
   const ToastStyle& s = imgui_drawer()->style().toast;
   ImGui::SetNextWindowBgAlpha(s.background_alpha * alpha);
 
   ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav |
                            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
-                           ImGuiWindowFlags_NoInputs;
+                           ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_AlwaysAutoResize;
   // Colors carry the fade envelope; the style holds them at full opacity.
   auto faded = [alpha](ImVec4 c) { return ImVec4(c.x, c.y, c.z, c.w * alpha); };
 
@@ -87,7 +89,9 @@ void AchievementToastDialog::OnDraw(ImGuiIO& io) {
     ImGui::PushStyleColor(ImGuiCol_Text, faded(s.title));
     ImGui::TextUnformatted("Achievement Unlocked");
     ImGui::PopStyleColor();
-    ImGui::TextUnformatted(toast.event.achievement.label.c_str());
+    ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + max_width - s.icon_size - 24.0f);
+    ImGui::TextWrapped("%s", toast.event.achievement.label.c_str());
+    ImGui::PopTextWrapPos();
     ImGui::SameLine();
     ImGui::TextDisabled(" (%dG)", static_cast<int>(toast.event.achievement.gamerscore));
     ImGui::EndGroup();
