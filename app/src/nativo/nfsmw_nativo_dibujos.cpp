@@ -1009,19 +1009,21 @@ REXCVAR_DEFINE_INT32(fh2_nativo_diag_sin_stencil_vs, -1, "FH2",
 REXCVAR_DEFINE_INT32(fh2_nativo_diag_sin_z_vs, -1, "FH2",
                      "Native renderer (debug): the draws of this vertex shader (library number) without the depth test")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
-// Off by default until the night lighting is fixed (docs/alteracoes_fh2.md): with the headlights' deferred light
-// contribution on (boolean 228, which the shader library gets since 394ef9c) the screen shadow mask comes out wrong
-// in this renderer and the whole night scene lights up as in daytime. Off, the night is dark as before, without the
-// headlights' cone on the ground.
-REXCVAR_DEFINE_BOOL(fh2_nativo_luces_diferidas, false, "FH2",
+// The headlights' cone on the ground (boolean 228). It was off while the night looked like day with it: the screen
+// mask it reads started black here, where on the console an EDRAM alias fills it with 1 (Fh2RellenoEdramMascara in
+// nfsmw_nativo_destinos.cpp, docs/alteracoes_fh2.md). Off, the night is dark without the cone.
+REXCVAR_DEFINE_BOOL(fh2_nativo_luces_diferidas, true, "FH2",
                     "Native renderer: the headlights' deferred light contribution (boolean 228, "
-                    "bEnableDeferredLightContribution). Off for now: on, the night looks like day");
+                    "bEnableDeferredLightContribution), the cone of light on the ground");
 REXCVAR_DEFINE_STRING(fh2_nativo_diag_mascara_ps, "", "FH2",
                       "Native renderer (debug): 'PS:mask' replaces render target 0's color write mask (4 bits, RGBA "
                       "from bit 0) in the draws of that pixel shader (library number)");
 REXCVAR_DEFINE_STRING(fh2_nativo_diag_vaciar, "", "FH2",
                       "Native renderer (debug): texture address (hex) sampled as the empty texture instead (gray with "
                       "nfsmw_nativo_diag_vacias_grises), to test what a texture changes");
+REXCVAR_DEFINE_BOOL(fh2_nativo_diag_vacias_blancas, false, "FH2",
+                    "Native renderer (debug): the empty texture is white (1 in every channel), with "
+                    "fh2_nativo_diag_vaciar to make a texture read as 1");
 REXCVAR_DEFINE_BOOL(fh2_nativo_diag_luces, false, "FH2",
                     "Native renderer (debug): log the boolean constants the game sets (every 10 s) and the headlights' "
                     "parameters (pixel shader c168, c169) of a draw with the deferred light contribution on");
@@ -3405,6 +3407,17 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       // The fetch's exp_adjust (dword 3 bits 13-18): FH2 resolves with a negative exponent bias and samples back
       // with this; without it every post-processing input and the exposure's luminance were 4 to 16 times dark.
       compartidas[kPalabraFh2ExpAjuste + sampler.registro] = uint32_t(int32_t(fetch[3] << 13) >> 26);
+      // fh2_nativo_diag_luces: the screen shadow mask (ShadowMaskSamp, register 13) the draws with the headlights'
+      // contribution on (boolean 228) sample, once per pixel shader and address.
+      if (REXCVAR_GET(fh2_nativo_diag_luces) && sampler.registro == 13 && ((r[kRegBooleanos + 7] >> 4) & 1)) {
+        static std::set<uint64_t> vistos_mascara;
+        const uint32_t base = (fetch[1] & 0xFFFFF000u) & 0x1FFFFFFFu;
+        if (vistos_mascara.size() < 200 && vistos_mascara.insert((uint64_t(ps->numero) << 32) | base).second) {
+          REXLOG_INFO("[fh2 nativo] mascara PS n{} lee {:08X} formato {} {}x{} resuelta {} (fotograma {})",
+                      ps->numero, base, fetch[1] & 0x3F, (fetch[2] & 0x1FFF) + 1, ((fetch[2] >> 13) & 0x1FFF) + 1,
+                      contexto_->TexturaResuelta(base) ? "si" : "NO", fotograma_);
+        }
+      }
 #endif
       // nfsmw_reflejo_visibilidad. Here and not in TexturaResuelta, which, because of the caches, only sees
       // the first draw of each frame that samples it. Without checking the dimension: over-counting only
@@ -9292,6 +9305,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         cero.float32[0] = cero.float32[1] = cero.float32[2] = 0.5f;
         cero.float32[3] = 1.0f;
       }
+#if defined(FH2_RECOMP)
+      if (REXCVAR_GET(fh2_nativo_diag_vacias_blancas)) {
+        cero.float32[0] = cero.float32[1] = cero.float32[2] = cero.float32[3] = 1.0f;
+      }
+#endif
       const VkImageSubresourceRange rango{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, capas};
       dfn_.vkCmdClearColorImage(subida, vacias_[i].imagen, VK_IMAGE_LAYOUT_GENERAL, &cero, 1,
                                 &rango);

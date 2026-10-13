@@ -335,7 +335,27 @@ Aparelhos: S23U `RQCXB01R9LM` (Adreno 740) e moto g(9) play `0074545453` (Adreno
     diferida costuma precisar da **profundidade** da cena: conferir se no emulado esse endereço tem outra coisa no
     momento do draw); comparar as constantes desse PS nos dois; ver se a limpeza (PS n1137, modo 5) escreve 1 no nativo.
 
-### [medido, aberto] Faróis: rodada de testes de 2026-10-13
+### [feito] Faróis: a máscara começava preta (alias da EDRAM), 2026-10-13
+- **Causa**: a máscara dos faróis (cor 8_8_8_8, EDRAM base 720, pitch 1280, 1x) precisa começar em 1 nos quatro
+  canais: o passe base (`p_004017`) só escreve onde passa o teste de Z (céu) e os quads dos faróis **multiplicam**
+  nela. O jogo não a limpa: antes, desenha um retângulo só de profundidade (VS n2310, `modo 5`) num buffer de
+  profundidade 4x MSAA de pitch 640 **na mesma base 720**, com Z sempre 1.0 e stencil 0xFF (replace). Na EDRAM são os
+  mesmos blocos e as mesmas palavras de 32 bits, então todas viram `FFFFFFFF`. O dump do emulado
+  (`traco_despejo/0518_1CE2D000...bin`) tem 86 % das palavras em `FFFFFFFF`.
+- No nativo, cor e profundidade são imagens separadas: a máscara ficava preta (foto da origem da cópia, com
+  `--nfsmw_nativo_diag_resueltas=true --fh2_nativo_foto_copia=1CE2D000 --fh2_nativo_foto_completa=true`), e os
+  shaders do mundo fazem `−log2(máscara)` → luz infinita → noite como dia.
+- **Prova**: `--fh2_nativo_diag_vaciar=1CE2D000 --fh2_nativo_diag_vacias_blancas=true` (máscara lida como 1) deixou a
+  noite escura.
+- **Correção**: `Fh2RellenoEdramMascara` (`nfsmw_nativo_destinos.cpp`). Ao ver esse retângulo (modo 5, 4x MSAA, Z
+  sempre com escrita, stencil replace com ref e máscara de escrita 0xFF), limpa com 1 a imagem de cor 8_8_8_8 da mesma
+  base com o dobro do pitch. `fh2_nativo_luces_diferidas` voltou a `true` por padrão: noite escura e cone do farol
+  no chão, como no emulado (capturas de 60 e 80 s).
+- **Pistas falsas desta investigação (não repetir)**: a segunda cópia para `1CE2D000` a partir da base 000 em ~20 %
+  dos quadros (pulá-la não muda nada); o cache de texturas entre quadros; o swizzle `60A`→`688` (é a identidade);
+  tirar o teste de Z do passe base.
+
+### [medido, resolvido acima] Faróis: rodada de testes de 2026-10-13
 - **Já verificado igual ao emulado (não repetir)**: a profundidade lida pelo projetor (`1DAC5000` é a cópia da
   profundidade, `control 4`, empacotada em 8888: o nativo usa `fh2_profundidad_rgba8`, "empaquetada si", e os bytes do
   emulado batem com esse empacotamento); as constantes do projetor (PS n3005 = `p_003825`: `undoProjection` c0–c1,

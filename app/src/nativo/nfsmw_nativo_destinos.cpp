@@ -1577,9 +1577,11 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       static int avisos = 0;
       if (avisos < 400) {
         ++avisos;
-        REXLOG_INFO("[fh2 nativo] copia a {:08X} lee la imagen {} (base {:03X} formato {} pitch {}) rect ({},{})-({},{})",
+        REXLOG_INFO("[fh2 nativo] copia a {:08X} lee la imagen {} (base {:03X} formato {} pitch {}) rect ({},{})-({},{}) "
+                    "control {:08X} sup {:08X} rt0 {:08X} prof {:08X} dest_info {:08X} dest_pitch {:08X}",
                     reg.rb_copy_dest_base, static_cast<const void*>(destino_render->imagen), info_color & 0xFFF,
-                    formato_color, pitch, x0, y0, x1, y1);
+                    formato_color, pitch, x0, y0, x1, y1, reg.rb_copy_control, reg.rb_surface_info,
+                    reg.rb_color_info[0], reg.rb_depth_info, reg.rb_copy_dest_info, reg.rb_copy_dest_pitch);
       }
     }
     const bool fh2_es_la_copia = (reg.rb_copy_dest_base & 0x1FFFFFFF) ==
@@ -3300,8 +3302,76 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     } else if (!diag_vigiladas_.empty()) {
       DiagVigilar(peticion);
     }
+#if defined(FH2_RECOMP)
+    if (peticion.registros) {
+      Fh2RellenoEdramMascara(peticion.registros);
+    }
+#endif
     return dibujos_ && dibujos_->Dibujar(peticion);
   }
+
+#if defined(FH2_RECOMP)
+  /*
+   * EDRAM aliasing the headlights' screen mask relies on (fh2_nativo_luces_diferidas, docs/alteracoes_fh2.md).
+   *
+   * The mask is an 8_8_8_8 color target at EDRAM base B, pitch 1280, no MSAA. Its first pass only writes the sky (depth
+   * test), and the headlight quads multiply into it, so the rest has to start at 1 in every channel. FH2 gets that
+   * without a clear: a depth-only rectangle on a 640-pitch 4x MSAA depth buffer at the same base B, which is the same
+   * EDRAM tiles and the same 32-bit words, writes depth 1.0 (always) and stencil 0xFF (replace), so every word becomes
+   * FFFFFFFF. The emulation's dump of the resolved mask is FFFFFFFF on 86 % of its pixels.
+   *
+   * Here color and depth are separate images, so the mask kept whatever it had: black, and the ground shaders'
+   * -log2(mask) turned that into infinite headlight, the whole night lit as by day. The fill is done on the color
+   * image: cleared to 1, as the EDRAM words end up.
+   */
+  void Fh2RellenoEdramMascara(const uint32_t* r) {
+    constexpr uint32_t kSurfaceInfo = 0x2000, kDepthInfo = 0x2002, kStencilRefMask = 0x210D, kDepthControl = 0x2200,
+                       kModeControl = 0x2208;
+    if ((r[kModeControl] & 0x7) != 5) return;  // depth only
+    const uint32_t superficie = r[kSurfaceInfo];
+    if (((superficie >> 16) & 0x3) != 2) return;  // 4x MSAA
+    const uint32_t control = r[kDepthControl];
+    // Stencil on, depth test and write on, depth function always, stencil function always, depth pass: replace.
+    if ((control & 0x7) != 0x7 || ((control >> 4) & 0x7) != 7 || ((control >> 8) & 0x7) != 7 ||
+        ((control >> 14) & 0x7) != 2) {
+      return;
+    }
+    const uint32_t stencil = r[kStencilRefMask];
+    if ((stencil & 0xFF) != 0xFF || ((stencil >> 16) & 0xFF) != 0xFF) return;  // reference and write mask 0xFF
+    const uint32_t base = r[kDepthInfo] & 0xFFF;
+    const uint32_t pitch = (superficie & 0x3FFF) * 2;  // 4x MSAA: twice as wide in 1x pixels
+    Imagen* mascara = ObtenerDestino(base, 0, pitch);
+    if (!mascara || !Grabar()) return;
+    Preparar(*mascara);
+    mascara->contenido_invalido = false;
+    if (BorradoRedundante(*mascara, 0xFFFFFFFFull)) {
+      ++borrados_saltados_;
+      return;
+    }
+    RotarFrontalAntesDeBorrar(*mascara);
+    MarcarGpu(kGpuBorrados);
+    VkClearValue valor{};
+    valor.color.float32[0] = valor.color.float32[1] = valor.color.float32[2] = valor.color.float32[3] = 1.0f;
+    if (fh2_diferir_borrados_ < 0) {
+      fh2_diferir_borrados_ = REXCVAR_GET(fh2_nativo_borrados_diferidos) ? 1 : 0;
+    }
+    if (fh2_diferir_borrados_ == 1) {
+      Fh2DiferirBorrado(*mascara, valor);
+    } else {
+      if (dibujos_) dibujos_->TerminarPase();
+      dfn_.vkCmdClearColorImage(comandos_trabajo_, mascara->imagen, VK_IMAGE_LAYOUT_GENERAL, &valor.color, 1,
+                                &kRangoColor);
+    }
+    QuitarBanda(*mascara);
+    ++borrados_;
+    ++fh2_rellenos_mascara_;
+    if (fh2_rellenos_mascara_ == 1 || fh2_rellenos_mascara_ % 3600 == 0) {
+      REXLOG_INFO("[fh2 nativo] mascara de los faros (EDRAM base {:03X}, pitch {}): rellenada a 1, {} veces", base,
+                  pitch, fh2_rellenos_mascara_);
+    }
+  }
+  uint64_t fh2_rellenos_mascara_ = 0;
+#endif
 
   EstadisticasDibujos EstadisticasDeDibujos() const override {
     return dibujos_ ? dibujos_->Estadisticas() : EstadisticasDibujos{};
