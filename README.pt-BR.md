@@ -34,10 +34,12 @@
 O FH2 Recompiled traduz antecipadamente o código PowerPC do executável de Xbox 360 de Forza Horizon 2 para C++ e
 o compila como programa nativo para celulares Android ARM64 e para Linux x86-64. Ele é construído sobre o
 [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk), que fornece o kernel do Xbox 360, o runtime e a emulação
-da GPU Xenos do console sobre Vulkan.
+da GPU Xenos do console sobre Vulkan. Há também um renderizador nativo experimental, que desenha os comandos de
+GPU do jogo direto em Vulkan com shaders traduzidos.
 
-O aplicativo Android inclui um launcher com opções de gráficos e desempenho, controles de toque com editor,
-suporte a controles físicos e um painel de desempenho durante o jogo.
+O aplicativo Android inclui um launcher com opções de gráficos e desempenho, o jogo lido direto da imagem do
+disco (.iso), drivers Vulkan personalizados, uma tela de conquistas, controles de toque com editor, suporte a
+controles físicos e um painel de desempenho durante o jogo.
 
 ## Como funciona
 
@@ -45,7 +47,8 @@ suporte a controles físicos e um painel de desempenho durante o jogo.
 |---|---|
 | Código do jogo (CPU) | Recompilado antecipadamente: as instruções PowerPC do `default.xex` viram C++, compilado numa biblioteca nativa. Não há interpretador nem JIT para o código do jogo. |
 | Kernel e bibliotecas do sistema do Xbox 360 | Reimplementados pelo ReXGlue SDK (derivado do projeto Xenia). |
-| GPU (Xenos) | Emulada: o fluxo de comandos da GPU é interpretado, a EDRAM é reproduzida com render targets Vulkan e os shaders são traduzidos para SPIR-V. |
+| GPU (Xenos), emulada | O padrão. O fluxo de comandos da GPU é interpretado, a EDRAM é reproduzida com render targets Vulkan e os shaders são traduzidos para SPIR-V durante o jogo. |
+| GPU, nativa (experimental) | Adaptada do [nfsmw-nx](https://github.com/StevensND/nfsmw-nx): lê o mesmo fluxo de comandos e desenha direto em Vulkan, com shaders traduzidos antes (XenosRecomp) numa biblioteca, `fh2_shaders.nfsp`, feita a partir dos seus próprios arquivos do jogo. Bem mais rápida, ainda com alguns erros de imagem. |
 | Áudio, entrada, vídeo | ReXGlue SDK, SDL3 e FFmpeg. |
 
 Ao compilar, o código gerado a partir do jogo é produzido na sua máquina, a partir da sua cópia do jogo; o
@@ -58,8 +61,16 @@ quadros do console original.
 
 O que este projeto acrescenta ao SDK:
 
-- Um launcher Android: resolução de renderização em porcentagem, MSAA/FXAA, filtro anisotrópico, modo de
-  apresentação, fixação de threads e um painel com FPS e uso de GPU, CPU e RAM.
+- Um launcher Android: renderizador emulado ou nativo, resolução de renderização em porcentagem, MSAA/FXAA,
+  filtro anisotrópico, qualidade das sombras (nativo), limite de FPS (de 30 a livre), modo de apresentação,
+  fixação de threads, idioma do jogo e do app, um painel com FPS e uso de GPU, CPU e RAM, importar/exportar
+  saves e cópias de segurança.
+- O jogo rodando direto da imagem do disco (.iso), sem precisar extrair.
+- Drivers Vulkan personalizados (Turnip, pacotes da Qualcomm) carregados pelo libadrenotools, com um teste de
+  Vulkan antes do uso.
+- Uma tela de conquistas com todas as conquistas do jogo, as desbloqueadas coloridas e com a data, e um aviso
+  pequeno de conquista desbloqueada durante o jogo.
+- O renderizador nativo para o FH2: grama e folhagem, partículas, os faróis à noite e as cascatas de sombra do sol.
 - Otimizações no caminho da GPU emulada: as faixas de tiling da cena em uma passada só, resolução abaixo de 1x,
   limite de MSAA, espera por futex no anel de comandos, afinidade de threads, vblank adaptativo.
 - Correções: barreiras de memória reais no gerador de código no ARM, laço de eventos do SDL girando à toa no
@@ -72,6 +83,7 @@ Problemas conhecidos:
 - Taxa de quadros baixa nos celulares, limitada pela emulação da GPU (o processamento de comandos nos celulares
   rápidos; os resolves e recargas de textura nos mais fracos).
 - No Android, às vezes a colisão falha (o carro atravessa alguns objetos); em investigação.
+- O renderizador nativo ainda tem erros de imagem em alguns lugares; o emulado é o fiel.
 - Algumas opções do menu ainda não funcionam (o launcher as marca assim).
 
 ## Requisitos
@@ -132,11 +144,22 @@ Problemas conhecidos:
 1. Baixe o APK em [Releases](../../releases) e instale, ou instale a sua própria build com
    `adb install -r android/app/build/outputs/apk/release/app-release.apk`. Builds assinadas com chaves
    diferentes (a dos Releases e a sua) não se atualizam entre si: desinstale uma antes de instalar a outra.
-2. Copie os arquivos extraídos do jogo para `Armazenamento interno/jogos/ForzaHorizon2`, por exemplo com
-   `adb push assets/game_root /sdcard/jogos/ForzaHorizon2`, ou escolha a pasta no launcher.
+2. Dê o jogo ao launcher: escolha a imagem do seu disco (.iso) em **Jogo e saves**, que é lida no lugar, ou copie
+   os arquivos extraídos do jogo para `Armazenamento interno/jogos/ForzaHorizon2`, por exemplo com
+   `adb push assets/game_root /sdcard/jogos/ForzaHorizon2`.
 3. Conceda o acesso a arquivos que o launcher pedir e toque em **Jogar**.
 
 Para começar: resolução de renderização em 50 % ou menos, suavização desligada, modo de apresentação FIFO.
+
+**Renderizador nativo.** Ele precisa da biblioteca de shaders traduzidos, que é feita a partir dos arquivos do
+próprio jogo e por isso não vem no APK. Gere-a no PC com `tools/xenos/biblioteca.sh` (depois do passo 2 de
+[Compilando](#compilando)) e copie `app/out/shaders_fh2/fh2_shaders.nfsp` para junto dos arquivos do jogo no
+celular (ou junto da .iso), por exemplo com `tools/enviar_biblioteca_android.sh`. Depois escolha **Nativo** em
+**Gráficos**.
+
+**Drivers de GPU.** **Desempenho > Driver da GPU** importa um pacote de driver do adrenotools (.zip) e o testa
+com Vulkan antes de deixar escolhê-lo. Nos Adreno 6xx e 7xx um Turnip (Mesa) costuma ser mais rápido que o
+driver do próprio celular.
 
 ## Estrutura do repositório
 
