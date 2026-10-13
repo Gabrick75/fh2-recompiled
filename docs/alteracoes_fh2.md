@@ -404,6 +404,18 @@ Aparelhos: S23U `RQCXB01R9LM` (Adreno 740) e moto g(9) play `0074545453` (Adreno
 - **Correção**: o bloco devolvido fica no vetor sem memória (pulado por `Reservar`, `Estado` e pelo cálculo de folga) e
   a vaga é reaproveitada quando o pool cresce; o teto não muda; nunca encolhe abaixo dos blocos pré-aquecidos.
 
+### [feito] Queda a ~4 fps no festival: tabela de buscas vigiladas cheia (2026-10-13)
+- **Sintoma**: no S23 Ultra, ao chegar ao festival, de ~25–30 para ~4,5 fps; GPU em ~30 %, a thread do anel do nativo
+  em 80–84 %. Reproduzido no PC dirigindo até o festival (quadros de 75–150 ms).
+- **Medido** (`[tiron] envios por linea`, contagem nova dos envios de trabalho por linha de `nfsmw_nativo_destinos.cpp`):
+  16–17 envios por quadro em `EnviarYEsperar` (buffer de subida cheio). O buffer enchia com **buscas** (dados de
+  vértice lidos pelos shaders): ~100 GB a cada 10 s, motivo **tabla llena**.
+- **Causa**: a tabela `fh2_vigilados_` (16.384 faixas ≥ 4 KB reaproveitadas no quadro enquanto o jogo não as escreve)
+  só crescia. No festival ela enche em ~20 s; cheia, toda faixa fora dela era copiada **a cada desenho** em vez de uma
+  vez por quadro.
+- **Correção**: quando enche, recomeça (`fh2_vigilados_reinicios_`). No PC, mesma viagem: a tabela recomeçou 5 vezes,
+  "tabla llena" 0, buscas estáveis em ~1,7 GB/10 s e os quadros no ritmo normal.
+
 ### [feito] Colisões atravessadas: contas vetoriais diferentes das do Xenon (2026-10-14)
 - **Sintoma**: o carro atravessava carros, paredes e postes (nativo e emulado, PC e celular). No FH2 sobre o SDK do
   Pinyon Shift (branch `comparacao/shiftglue`) a colisão funciona com o mesmo jogo, manifesto e correções.

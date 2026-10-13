@@ -3772,16 +3772,28 @@ class DibujosVulkanImpl final : public DibujosVulkan {
           if (it != fh2_indice_vigilados_.end()) {
             vigilado = &fh2_vigilados_[it->second];
           } else {
-            const uint32_t n = fh2_vigilados_n_.load(std::memory_order_relaxed);
-            if (n < fh2_vigilados_.size()) {
+            uint32_t n = fh2_vigilados_n_.load(std::memory_order_relaxed);
+            if (n >= fh2_vigilados_.size()) {
+              /*
+               * Full: start over. The table only grows while the player drives (new parts of the map bring new
+               * ranges), and once full every range missing from it was copied on every draw instead of once per
+               * frame: from ~2 minutes of play, 10 GB/s of copies, the upload buffer filling 17 times a frame and
+               * 4 fps (S23 Ultra and PC, 2026-10-13). The ranges in use come back at their next draw, one copy each.
+               * Reusing entries is safe with the write watch (Fh2EscrituraVigilada): a reused entry starts dirty,
+               * and its watch is enabled again when it is copied.
+               */
+              fh2_indice_vigilados_.clear();
+              fh2_vigilados_n_.store(0, std::memory_order_release);
+              n = 0;
+              ++fh2_vigilados_reinicios_;
+            }
+            {
               vigilado = &fh2_vigilados_[n];
               vigilado->direccion = b.direccion;
               vigilado->bytes = bytes_busca;
               vigilado->sucio.store(1, std::memory_order_relaxed);
               fh2_vigilados_n_.store(n + 1, std::memory_order_release);
               fh2_indice_vigilados_.emplace(clave, n);
-            } else {
-              motivo = 1;  // the table is full
             }
           }
         } else {
@@ -3818,9 +3830,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
           static auto ultimo = std::chrono::steady_clock::now();
           if (std::chrono::steady_clock::now() - ultimo > std::chrono::seconds(10)) {
             ultimo = std::chrono::steady_clock::now();
-            REXLOG_INFO("[fh2 nativo] buscas vigiladas: {} rangos, {} reusadas, {} copiadas, {} avisos de escritura",
+            REXLOG_INFO("[fh2 nativo] buscas vigiladas: {} rangos, {} reusadas, {} copiadas, {} avisos de escritura, "
+                        "tabla reiniciada {} veces",
                         fh2_vigilados_n_.load(), fh2_vigilados_reusados_, fh2_vigilados_copiados_,
-                        fh2_avisos_escritura_.load());
+                        fh2_avisos_escritura_.load(), fh2_vigilados_reinicios_);
             double motivos[6];
             for (size_t m = 0; m < 6; ++m) {
               motivos[m] = double(fh2_bytes_busca_motivo_[m]) / 1048576.0;
@@ -13949,7 +13962,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   std::array<uint64_t, 6> fh2_bytes_busca_motivo_{};
   std::atomic<uint32_t> fh2_vigilados_n_{0};
   void* fh2_vigilancia_ = nullptr;
-  uint64_t fh2_vigilados_reusados_ = 0, fh2_vigilados_copiados_ = 0;
+  uint64_t fh2_vigilados_reusados_ = 0, fh2_vigilados_copiados_ = 0, fh2_vigilados_reinicios_ = 0;
   std::atomic<uint64_t> fh2_avisos_escritura_{0};
 
   // Called on the writing guest thread with the memory lock held: only atomics here.

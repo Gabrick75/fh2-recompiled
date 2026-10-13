@@ -50,6 +50,7 @@
 #include <cstdlib>
 #include <array>
 #include <map>
+#include <source_location>
 #include <set>
 #include <chrono>
 
@@ -2457,6 +2458,16 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
               ms, gpu_ms, double(ns_grabar_ - tiron_ns_grabar_) / 1e6, copias_ - tiron_copias_,
               borrados_ - tiron_borrados_, intercambios_ - tiron_resolves_,
               restauraciones_ - tiron_restaura_, esperas_gpu_ - tiron_esperas_);
+          {
+            // The submissions of this frame by source line of nfsmw_nativo_destinos.cpp.
+            std::string sitios;
+            for (const auto& [linea, n] : envios_por_linea_) {
+              const auto it = tiron_envios_por_linea_.find(linea);
+              const uint64_t d = n - (it == tiron_envios_por_linea_.end() ? 0 : it->second);
+              if (d) sitios += fmt::format(" {}x{}", d, linea);
+            }
+            NFSMW_INFORME_ANILLO("[tiron] envios por linea (destinos.cpp):{}", sitios);
+          }
           /*
            * Who waits for whom in this frame, in ms (see nfsmw_esperas_tiron.h).
            * The game's and the ring's waits overlap: they do not add up to the frame, they say where it went.
@@ -2568,6 +2579,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         tiron_copias_ = copias_;
         tiron_restaura_ = restauraciones_;
         tiron_esperas_ = esperas_gpu_;
+        tiron_envios_por_linea_ = envios_por_linea_;
         tiron_borrados_ = borrados_;
         tiron_resolves_ = intercambios_;
       }
@@ -6429,8 +6441,10 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     oclusiones_juego_.erase(it);
   }
 
-  bool EnviarTrabajo(bool esperar) {
+  bool EnviarTrabajo(bool esperar, std::source_location sitio = std::source_location::current()) {
     if (grabando_) {
+      // Who submits (the [tiron] report lists the sites of the stutter frame's submissions).
+      ++envios_por_linea_[sitio.line()];
       if (dibujos_) {
         dibujos_->AntesDeEnviar();  // closes the pass and publishes the upload buffer
       }
@@ -6575,9 +6589,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   }
 #endif
 
-  void EsperarGpu() {
+  void EsperarGpu(std::source_location sitio = std::source_location::current()) {
     if (grabando_) {
-      EnviarTrabajo(false);
+      EnviarTrabajo(false, sitio);
     }
     for (RanuraTrabajo& ranura : ranuras_) {
       Completar(ranura);
@@ -7641,6 +7655,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   // State of the previous frame, for the stutter dump.
   uint64_t tiron_copias_ = 0, tiron_borrados_ = 0, tiron_resolves_ = 0;
   uint64_t tiron_restaura_ = 0, tiron_esperas_ = 0;
+  std::map<uint32_t, uint64_t> envios_por_linea_, tiron_envios_por_linea_;  // [tiron]: submissions by source line
   // Snapshot of the waits at the previous Swap, for the "[tiron] esperas" line.
   uint64_t tiron_esperas_ns_[nfsmw::esperas::kNumTipos] = {};
   uint64_t tiron_esperas_veces_[nfsmw::esperas::kNumTipos] = {};
