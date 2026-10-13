@@ -86,7 +86,7 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_sincronizacion_gpu, true, "NFSMW",
 REXCVAR_DEFINE_INT32(nfsmw_nativo_resolver_sin_copia_alternar_s, 0, "NFSMW",
                      "Renderizador nativo (prueba, build 154): con N > 0 alterna copiar e intercambiar cada N "
                      "segundos, para comparar capturas del mismo sitio con el juego en pausa");
-REXCVAR_DEFINE_INT32(nfsmw_nativo_sombras_escala, 100, "NFSMW",
+REXCVAR_DEFINE_INT32(nfsmw_nativo_sombras_escala, 75, "NFSMW",
                      "Renderizador nativo (19/09, build 201): dibuja los dos mapas de sombras de 1600x1600 "
                      "del juego a este porcentaje y los sube de tamano al resolverlos. 100 = como la Xbox 360 "
                      "(1600, que son 2000 de sus 2048 baldosas de EDRAM); 64 = como la version de PC de este "
