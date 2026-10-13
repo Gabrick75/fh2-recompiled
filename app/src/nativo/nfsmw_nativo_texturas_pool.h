@@ -125,6 +125,7 @@ struct EstadoPoolTexturas {
   uint64_t huecos_fallados = 0;      // times it did not fit in any slab
   uint64_t slabs_en_caliente = 0;    // slabs created after prewarming
   uint64_t slabs_fallados = 0;       // times vkAllocateMemory refused a slab
+  uint64_t slabs_devueltos = 0;      // slabs returned to the system via shrink
 };
 
 /*
@@ -205,6 +206,7 @@ class PoolTexturas {
     uint32_t unidades_en_uso = 0;
     std::vector<uint64_t> ocupadas;  // bitmap, one unit per bit
     std::vector<uint32_t> largo;     // units reserved from each start (0 = not a start)
+    uint32_t fotogramas_libre = 0;   // consecutive frames completely free
   };
 
   // 8 MB of headroom: below that a new slab is requested.
@@ -233,6 +235,7 @@ class PoolTexturas {
   uint64_t huecos_fallados_ = 0;
   uint64_t slabs_en_caliente_ = 0;
   uint64_t slabs_fallados_ = 0;
+  uint64_t slabs_devueltos_ = 0;
 };
 
 }  // namespace nfsmw::nativo

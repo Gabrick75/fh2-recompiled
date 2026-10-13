@@ -379,6 +379,18 @@ Aparelhos: S23U `RQCXB01R9LM` (Adreno 740) e moto g(9) play `0074545453` (Adreno
 - **Próximo passo sugerido**: achar os PS das rochas/estrada (bisseção com `nfsmw_nativo_diag_omitir_ps`) e
   visualizar neles o que leem da máscara; verificar por que o nativo desenha um só quad de projetor.
 
+### [feito] Toast de conquista pequeno e centralizado (2026-10-12)
+- **Arquivos**: `sdk/src/ui/overlay/achievement_toast.cpp:63-99`
+- **Problema**: a notificação verde ("toast") aparecia gigante no Android e saía cortada da tela. Usava posição fixa no canto inferior direito (320×70 px) sem considerar escala de DPI/fonte do ImGui.
+- **Correção**:
+  - Posição: centro inferior da tela (`(DisplaySize.x - max_width) * 0.5f`) em vez de canto direito.
+  - Tamanho: `ImGuiWindowFlags_AlwaysAutoResize` com `SetNextWindowSizeConstraints` limitando largura a 80% da tela (máx. 400 px).
+  - Margem inferior: 3% da altura da tela (`DisplaySize.y * 0.03f`), igual ao watermark do debug overlay.
+  - Texto da conquista: `TextWrapped` com `PushTextWrapPos` para quebrar linha dentro da largura máxima.
+- **Teste**: build Linux OK (`cmake --build app/out/linux`); build Android OK (`./gradlew assembleRelease`, APK em `android/app/build/outputs/apk/release/app-release.apk`).
+- **Validação pendente**: rodar nos dois celulares (S23U Adreno 740, moto g9 play Adreno 610) e confirmar visualmente em ambos renderizadores (emulado e nativo).
+- **Commit**: `70d6fbf` ("Fix achievement toast positioning and sizing for Android")
+
 ### [feito] Biblioteca nova nos celulares com os faróis diferidos desligados (2026-10-12, noite)
 - Cvar `fh2_nativo_luces_diferidas` (padrão **false**): zera a booleana 228 em todo draw. Com ela desligada, a
   biblioteca nova (grama certa, poeira sem borrões) dá a noite escura como a de 05:46, sem o cone dos faróis no chão.
