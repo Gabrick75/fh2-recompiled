@@ -282,7 +282,7 @@ final class GameOptions {
         args.add("--render_target_path_vulkan=fbo");
         args.add("--vulkan_require_geometry_shader=false");
         args.add("--vulkan_require_fill_mode_non_solid=false");
-        args.add("--async_shader_compilation=false");
+        args.add("--async_shader_compilation=true");   // reduces stutter; brief artifacts possible while pipelines prepare
         // Forza Horizon 2 leaves vertex fetch constants with type 0 in some draws; without this the emulated GPU
         // drops them (same as tools/rodar_pc.sh on the PC).
         args.add("--gpu_allow_invalid_fetch_constants=true");
