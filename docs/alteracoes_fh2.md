@@ -404,6 +404,27 @@ Aparelhos: S23U `RQCXB01R9LM` (Adreno 740) e moto g(9) play `0074545453` (Adreno
 - **Correção**: o bloco devolvido fica no vetor sem memória (pulado por `Reservar`, `Estado` e pelo cálculo de folga) e
   a vaga é reaproveitada quando o pool cresce; o teto não muda; nunca encolhe abaixo dos blocos pré-aquecidos.
 
+### [medido] Avaliação: o FH2 no SDK do Pinyon Shift (ShiftGlue), 2026-10-13
+- **O que é**: [Pinyon Shift](https://github.com/arcanite24/pinyon-shift) recompila o FH1 (mesma engine) com o
+  [ShiftGlue](https://github.com/arcanite24/shiftglue-sdk), fork BSD-3 do ReXGlue 0.10.0 (a mesma versão do nosso).
+  O "renderizador nativo" deles é o `Fh1NativeExecutor` (`src/graphics/vulkan/fh1_native_executor.cpp`, ~3.600
+  linhas) dentro do backend Vulkan do Xenia: substitui só a EDRAM (superfícies por base/pitch/formato/MSAA, mapa de
+  posse das 2048 baldosas com transferências entre aliases, resolves direto nas texturas, clears dobrados). Os shaders
+  continuam traduzidos em tempo de execução, como no nosso emulado: **não precisa de `fh2_shaders.nfsp`**. Não há
+  nenhum endereço ou title ID do FH1 no executor (o title ID só carrega um pacote opcional de shaders do FH1).
+- **Protótipo** (fora do repositório, `referencias/fh2-shiftglue`): o nosso `fh2_manifest.toml`, os overrides, as
+  correções do FH2 (`fh2_correcoes.cpp`), a entrada e as capturas de teste, um `main` mínimo, `GPU_PLUGINS fh1`.
+  O codegen deles aceitou o manifesto sem mudança (8 min, 719 arquivos); compila com `-march=x86-64-v2`; roda com
+  `--gpu_plugin=fh1`.
+- **Resultado no PC (RADV Renoir)**: **o FH2 renderiza certo de primeira** na rota de teste noturna: noite escura,
+  faróis no chão, HUD, folhagem; com e sem `fh1_untile_predicated_tiling`; `skips={}` em todos os relatórios (nenhum
+  desenho desconhecido). O problema da máscara dos faróis (alias da EDRAM) não existe lá.
+- **Desempenho no PC**: inconclusivo. O contador de quadros do executor ficou em ~30 fps nos menus e ~27 na direção
+  mesmo com `pinyon_shift_fh1_render_fps_limit=120` e vblank a 240 Hz (o nosso nativo, na mesma rota: 46–57 fps, sem
+  MSAA e com outro custo). As transferências de EDRAM entre a profundidade 4x e 1x da base 0 pesam no FH2
+  (`0/16/4x/d1->0/16/1x/d1`, milhões de tile-passes em 600 quadros).
+- **Decisivo e ainda não feito**: o APK do protótipo no S23U (o SDK deles já tem Android, Turnip e adrenotools).
+
 ### [feito] Qualidade das sombras funcionando no FH2 (2026-10-13)
 - **Por que não funcionava**: a escala e o desligar reconheciam o mapa de sombras pelo pitch 1600, que é o do NFSMW.
   O FH2 nunca usa 1600 (o usuário testou no S23U: slider sem efeito e sombras no 0).
