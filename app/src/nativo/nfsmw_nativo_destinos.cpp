@@ -505,9 +505,15 @@ REXCVAR_DEFINE_INT32(nfsmw_nativo_diag_lectores_s, 0, "NFSMW",
  * Without the diagnostic (nfsmw_nativo_diag_lectores_s = 0) it never applies. false = always copy, as
  * before.
  */
-// false by default. Measured: 19,895 of 21,041 copies were recorded anyway because a draw reads it almost
-// every frame: 0 ms saved.
+// false by default for NFSMW. For FH2 enable by default since the composited scene
+// (098B0000, before HUD) is often not read every frame on mobile; the safety net
+// disables it on first disagreement. Measured on NFSMW: 19,895 of 21,041 copies
+// recorded anyway = 0 ms saved, but FH2 scene composition differs.
+#if defined(FH2_RECOMP)
+REXCVAR_DEFINE_BOOL(nfsmw_nativo_compuesta_perezosa, true, "NFSMW",
+#else
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_compuesta_perezosa, false, "NFSMW",
+#endif
                     "Renderizador nativo (25/09, build 184): la copia 1 a 1 de la escena compuesta a su textura "
                     "(098B0000, antes del HUD) se aplaza: se graba si un dibujo la muestrea antes de volver a escribir "
                     "su origen (las gotas de lluvia) y se tira si no. Se activa tras la vigilancia de "
