@@ -37,11 +37,14 @@ final class GameOptions {
     static final String SHADOWS = "shadows";                  // not applied yet (needs game hooks)
     static final String SHADOW_DISTANCE = "shadow_distance";  // not applied yet
     static final String CAR_REFLECTIONS = "car_reflections";  // not applied yet
+    static final String SHADOW_MAP_SCALE = "shadow_map_scale";  // nfsmw_nativo_sombras_escala: 0 (off) to 100 %
     // Performance
     static final String PIN_THREADS = "pin_threads";
     static final String ONE_PASS = "one_pass";                // fh2_uma_faixa: the scene in one pass, not 3 tiles
     static final String ADAPTIVE_VBLANK = "adaptive_vblank";  // vblank_adaptativo
     static final String RESOLVE_SHORTCUT = "resolve_shortcut";  // gpu_atalho_resolve
+    static final String ASYNC_SHADERS = "async_shaders";      // async_shader_compilation (emulated)
+    static final String LAZY_COMPOSITE = "lazy_composite";    // nfsmw_nativo_compuesta_perezosa (native)
     static final String DRIVER = "driver";                    // imported driver name, "" = system; not loaded yet
     static final String TURBO = "turbo";                      // not applied yet
     // Sound
@@ -68,7 +71,7 @@ final class GameOptions {
             case RESOLUTION: return RES_NATIVE;
             case RENDERER: return "emulated";
             case PRESENT_MODE: return "fifo";
-            case RENDER_SCALE: return "75";       // 75% default for native renderer (50-100 range); saves GPU bandwidth
+            case RENDER_SCALE: return "100";
             case FPS: return "30";  // the Xbox 360's
             // Off: the GPU cost of the game's MSAA 4x nearly halves the frame rate on a phone (event menu on the
             // S23 Ultra: 6.8 fps 4x, 13.0 off), and the image is right without it (the MSAA cap leaves the game's
@@ -77,10 +80,11 @@ final class GameOptions {
             case MSAA_SAMPLES: return "4";
             case FXAA_QUALITY: return "normal";
             case SCALING: return "bilinear";
-            case ANISOTROPIC: return "2";       // 2x instead of 4x (16x was "5"); Adreno gains little from >2x
+            case ANISOTROPIC: return "3";
             case SHADOWS: return "1";
-            case SHADOW_DISTANCE: return "medium";  // far = almost all shadow cost; medium saves GPU
-            case CAR_REFLECTIONS: return "medium";  // high redraws all cubemap faces/frame; medium = fewer
+            case SHADOW_DISTANCE: return "far";
+            case CAR_REFLECTIONS: return "high";
+            case SHADOW_MAP_SCALE: return "100";  // the Xbox 360's 1600x1600
             case DRIVER: return "";
             case VOLUME: return "100";
             // English (US), what the console settings said before this option existed.
@@ -137,6 +141,15 @@ final class GameOptions {
     /** The render scale of the native renderer: the typed percent, 50 to 100. */
     static int nativeRenderScalePercent(Context context) {
         return Math.max(50, renderScalePercent(context));
+    }
+
+    /** The native renderer's shadow map size, 0 (no shadows) to 100 percent of the game's 1600x1600. */
+    static int shadowMapScalePercent(Context context) {
+        try {
+            return Math.max(0, Math.min(100, Integer.parseInt(get(context, SHADOW_MAP_SCALE).trim())));
+        } catch (NumberFormatException e) {
+            return 100;
+        }
     }
 
     /** anisotropic_override's values (0, 2 = 2x, 3 = 4x, 5 = 16x) as nfsmw_nativo_anisotropico's (0, 2, 4, 16). */
@@ -254,6 +267,8 @@ final class GameOptions {
             // Its own FXAA on the output; it has no MSAA (the game's 4x surfaces are drawn with one sample).
             args.add("--nfsmw_antialiasing=" + ("fxaa".equals(get(context, ANTI_ALIASING)) ? "fxaa" : "apagado"));
             args.add("--nfsmw_nativo_anisotropico=" + nativeAnisotropic(get(context, ANISOTROPIC)));
+            args.add("--nfsmw_nativo_sombras_escala=" + shadowMapScalePercent(context));
+            args.add("--nfsmw_nativo_compuesta_perezosa=" + flag(context, LAZY_COMPOSITE));
         }
         switch (get(context, ANTI_ALIASING)) {
             case "off":
@@ -282,7 +297,8 @@ final class GameOptions {
         args.add("--render_target_path_vulkan=fbo");
         args.add("--vulkan_require_geometry_shader=false");
         args.add("--vulkan_require_fill_mode_non_solid=false");
-        args.add("--async_shader_compilation=true");   // reduces stutter; brief artifacts possible while pipelines prepare
+        // Off: a draw waits for its pipeline. On: it is skipped until the pipeline is ready (less stutter, brief gaps).
+        args.add("--async_shader_compilation=" + flag(context, ASYNC_SHADERS));
         // Forza Horizon 2 leaves vertex fetch constants with type 0 in some draws; without this the emulated GPU
         // drops them (same as tools/rodar_pc.sh on the PC).
         args.add("--gpu_allow_invalid_fetch_constants=true");

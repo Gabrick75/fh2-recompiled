@@ -86,12 +86,13 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_sincronizacion_gpu, true, "NFSMW",
 REXCVAR_DEFINE_INT32(nfsmw_nativo_resolver_sin_copia_alternar_s, 0, "NFSMW",
                      "Renderizador nativo (prueba, build 154): con N > 0 alterna copiar e intercambiar cada N "
                      "segundos, para comparar capturas del mismo sitio con el juego en pausa");
-REXCVAR_DEFINE_INT32(nfsmw_nativo_sombras_escala, 75, "NFSMW",
+REXCVAR_DEFINE_INT32(nfsmw_nativo_sombras_escala, 100, "NFSMW",
                      "Renderizador nativo (19/09, build 201): dibuja los dos mapas de sombras de 1600x1600 "
                      "del juego a este porcentaje y los sube de tamano al resolverlos. 100 = como la Xbox 360 "
                      "(1600, que son 2000 de sus 2048 baldosas de EDRAM); 64 = como la version de PC de este "
-                     "mismo juego (1024). El valor se toma al crear el primer mapa y no cambia en marcha")
-    .range(50, 100);
+                     "mismo juego (1024); 0 = sin sombras (no se dibuja en el mapa, que se queda en su borrado). "
+                     "El valor se toma al crear el primer mapa y no cambia en marcha")
+    .range(0, 100);
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_resolver_sin_copia, true, "NFSMW",
                     "Renderizador nativo (17/09, build 154; por defecto desde la 161, medido en consola: -2,36 ms "
                     "de los 7,41 de copias): al resolver un destino entero a una textura del mismo "
@@ -505,15 +506,9 @@ REXCVAR_DEFINE_INT32(nfsmw_nativo_diag_lectores_s, 0, "NFSMW",
  * Without the diagnostic (nfsmw_nativo_diag_lectores_s = 0) it never applies. false = always copy, as
  * before.
  */
-// false by default for NFSMW. For FH2 enable by default since the composited scene
-// (098B0000, before HUD) is often not read every frame on mobile; the safety net
-// disables it on first disagreement. Measured on NFSMW: 19,895 of 21,041 copies
-// recorded anyway = 0 ms saved, but FH2 scene composition differs.
-#if defined(FH2_RECOMP)
-REXCVAR_DEFINE_BOOL(nfsmw_nativo_compuesta_perezosa, true, "NFSMW",
-#else
+// false by default. Measured on NFSMW: 19,895 of 21,041 copies were recorded anyway because a draw reads it almost
+// every frame: 0 ms saved. Not measured on FH2; the launcher has it as an option of the native renderer.
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_compuesta_perezosa, false, "NFSMW",
-#endif
                     "Renderizador nativo (25/09, build 184): la copia 1 a 1 de la escena compuesta a su textura "
                     "(098B0000, antes del HUD) se aplaza: se graba si un dibujo la muestrea antes de volver a escribir "
                     "su origen (las gotas de lluvia) y se tira si no. Se activa tras la vigilancia de "
@@ -3313,7 +3308,19 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       Fh2RellenoEdramMascara(peticion.registros);
     }
 #endif
+    // nfsmw_nativo_sombras_escala = 0: the shadow map's draws are dropped. The map keeps the depth its clears give
+    // it, so nothing casts a shadow, and the GPU skips the whole shadow pass.
+    if (SombrasApagadas() && peticion.registros && (peticion.registros[0x2000] & 0x3FFF) == kLadoSombras) {
+      return true;
+    }
     return dibujos_ && dibujos_->Dibujar(peticion);
+  }
+
+  bool SombrasApagadas() {
+    if (sombras_apagadas_ < 0) {
+      sombras_apagadas_ = REXCVAR_GET(nfsmw_nativo_sombras_escala) <= 0 ? 1 : 0;
+    }
+    return sombras_apagadas_ == 1;
   }
 
 #if defined(FH2_RECOMP)
@@ -4704,7 +4711,8 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     uint32_t ancho_guest = 0, alto_guest = 0;
     if (pitch == kLadoSombras && alto == kLadoSombras) {
       if (escala_sombras_ == 0) {
-        escala_sombras_ = uint32_t(std::clamp(REXCVAR_GET(nfsmw_nativo_sombras_escala), 50, 100));
+        // 0 = no shadows (SombrasApagadas): the map is never drawn, so it is kept at the smallest size.
+        escala_sombras_ = uint32_t(std::clamp(REXCVAR_GET(nfsmw_nativo_sombras_escala), 10, 100));
         if (!blit_ || !profundidad_escalable_) {
           escala_sombras_ = 100;
         }
@@ -7282,6 +7290,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   static constexpr uint32_t kLadoSombras = 1600;
   bool profundidad_escalable_ = false;
   uint32_t escala_sombras_ = 0;
+  int32_t sombras_apagadas_ = -1;  // nfsmw_nativo_sombras_escala == 0, read once; -1 = not read yet
 #if defined(FH2_RECOMP)
   uint32_t fh2_escala_ = 0;  // fh2_nativo_escala, read once; 0 = not read yet
   std::vector<Imagen*> fh2_por_borrar_;  // render targets with a held clear (fh2_nativo_borrados_diferidos)

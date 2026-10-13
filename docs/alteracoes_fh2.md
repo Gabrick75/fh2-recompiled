@@ -404,6 +404,17 @@ Aparelhos: S23U `RQCXB01R9LM` (Adreno 740) e moto g(9) play `0074545453` (Adreno
 - **Correção**: o bloco devolvido fica no vetor sem memória (pulado por `Reservar`, `Estado` e pelo cálculo de folga) e
   a vaga é reaproveitada quando o pool cresce; o teto não muda; nunca encolhe abaixo dos blocos pré-aquecidos.
 
+### [feito, não testado] Opções de gráfico no menu em vez de padrões escondidos (2026-10-13)
+- Os valores iniciais que a branch `perf/ram-gpu-optimizations` tinha baixado voltaram aos de antes (escala 100 %,
+  anisotrópico 4x, distância das sombras "longe", reflexos "altos"); quem tem celular fraco baixa no menu.
+- **Qualidade das sombras** (nativo): slider de 0 a 100 % (passos de 5) → `nfsmw_nativo_sombras_escala`, padrão 100.
+  Abaixo de 10 % o mapa fica em 10 %. **0 desliga as sombras**: os desenhos no mapa de sombras (pitch 1600) são
+  descartados em `DestinosVulkan::Dibujar` e o mapa fica no valor do borrado, então nada projeta sombra.
+- **Compilar shaders em segundo plano** (emulado): `async_shader_compilation`, padrão desligado (como antes).
+- **Cópia adiada da cena** (nativo): `nfsmw_nativo_compuesta_perezosa`, padrão desligado (como antes; o padrão do C++
+  também voltou a false).
+- O usuário pediu para não testar no jogo: só compilado (PC e Java do Android).
+
 ### [removido] Troca de imagens por faixas na resolução da cena (`2ed1d29`, 2026-10-13)
 - Nunca era executada: exigia viés de expoente 0 (a cena resolve com −2) e um alvo de 1280 px com escala ativa (com
   escala o alvo é menor). Código apagado; não há ganho a medir.

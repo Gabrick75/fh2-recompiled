@@ -471,7 +471,8 @@ public final class MainActivity extends AppCompatActivity {
                     ui.stackedRow(tr("Suavização de bordas", "Anti-aliasing"),
                             tr("O FXAA tira o serrilhado com um filtro barato sobre a imagem final.",
                                "FXAA smooths jagged edges with a cheap filter over the final image."), aa),
-                    anisotropicRow()));
+                    anisotropicRow(),
+                    shadowMapRow()));
             rendererOptions.addView(ui.footer(tr("O nativo não tem MSAA: as superfícies 4x do jogo são desenhadas " +
                     "com uma amostra.", "The native renderer has no MSAA: the game's 4x surfaces are drawn with one " +
                     "sample.")));
@@ -481,7 +482,16 @@ public final class MainActivity extends AppCompatActivity {
                     tr("Sem MSAA a cena cabe inteira e é desenhada uma vez só, em vez de em 3 faixas: menos trabalho " +
                        "para a CPU (+25 %).",
                        "Without MSAA the scene fits whole and is drawn once, not in 3 tiles: less work for the CPU " +
-                       "(+25 %)."))));
+                       "(+25 %).")),
+                    ui.toggleRow(tr("Cópia adiada da cena", "Deferred scene copy"),
+                            tr("Experimental. A cópia da cena pronta (antes do HUD) só é feita se algo for usá-la, " +
+                               "como as gotas de chuva; se o jogo não a usar, a GPU economiza a cópia. Desliga " +
+                               "sozinha se notar diferença. Ganho ainda não medido.",
+                               "Experimental. The copy of the finished scene (before the HUD) is only made if " +
+                               "something will use it, like the raindrops; if the game does not, the GPU saves the " +
+                               "copy. It turns itself off if it sees a difference. Gain not measured yet."),
+                            GameOptions.flag(this, GameOptions.LAZY_COMPOSITE),
+                            v -> GameOptions.flag(this, GameOptions.LAZY_COMPOSITE, v))));
         } else {
             rendererOptions.addView(ui.header(tr("Imagem do emulado", "Emulated image")));
             LinearLayout image = ui.group();
@@ -534,7 +544,16 @@ public final class MainActivity extends AppCompatActivity {
                                "stays on the GPU, without going through the emulated console's memory. Turn it off " +
                                "if an image looks wrong."),
                             GameOptions.flag(this, GameOptions.RESOLVE_SHORTCUT),
-                            v -> GameOptions.flag(this, GameOptions.RESOLVE_SHORTCUT, v))));
+                            v -> GameOptions.flag(this, GameOptions.RESOLVE_SHORTCUT, v)),
+                    ui.toggleRow(tr("Compilar shaders em segundo plano", "Compile shaders in the background"),
+                            tr("Desligado: o jogo espera cada shader novo ficar pronto, e pode dar um tranco. " +
+                               "Ligado: segue sem esperar, com menos trancos, mas o objeto daquele shader pode " +
+                               "sumir ou piscar por um instante.",
+                               "Off: the game waits for each new shader to be ready, which can stutter. On: it goes " +
+                               "on without waiting, with less stutter, but that shader's object may vanish or " +
+                               "flicker for a moment."),
+                            GameOptions.flag(this, GameOptions.ASYNC_SHADERS),
+                            v -> GameOptions.flag(this, GameOptions.ASYNC_SHADERS, v))));
         }
         rendererOptions.addView(ui.header(tr("Ainda sem efeito", "Not applied yet")));
         rendererOptions.addView(ui.group(
@@ -587,6 +606,48 @@ public final class MainActivity extends AppCompatActivity {
                    "the cap. More frames mean more heat."),
                 new String[] {"30", "60", "90", "120", tr("Livre", "Free")},
                 new String[] {"30", "60", "90", "120", "0"});
+    }
+
+    /** The native renderer's shadow map size: 0 (no shadows) to 100 % of the game's 1600x1600, in 5 % steps. */
+    private LinearLayout shadowMapRow() {
+        LinearLayout box = ui.column();
+        LinearLayout readout = new LinearLayout(this);
+        readout.setOrientation(LinearLayout.HORIZONTAL);
+        readout.setGravity(Gravity.BOTTOM);
+        TextView percent = ui.text("", 22, Menu.PRIMARY, true);
+        TextView size = ui.text("", 13, Menu.SECONDARY, false);
+        size.setPadding(dp(10), 0, 0, dp(3));
+        readout.addView(percent);
+        readout.addView(size);
+        box.addView(readout);
+        Slider slider = ui.slider(0, 100, 5, Math.round(GameOptions.shadowMapScalePercent(this) / 5f) * 5);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(2);
+        box.addView(slider, lp);
+        Runnable show = () -> {
+            int value = GameOptions.shadowMapScalePercent(this);
+            if (value == 0) {
+                percent.setText(tr("Desligadas", "Off"));
+                size.setText("");
+                return;
+            }
+            // Same rounding as ObtenerProfundidad (nfsmw_nativo_destinos.cpp): at least 10 %, multiples of 16.
+            int side = value >= 100 ? 1600 : Math.max(64, ((1600 * Math.max(10, value) / 100) + 15) & ~15);
+            percent.setText(value + " %");
+            size.setText(side + "×" + side + (value >= 100 ? tr(" · como o Xbox 360", " · as on the Xbox 360") : ""));
+        };
+        slider.addOnChangeListener((s, value, fromUser) -> {
+            if (!fromUser) return;
+            GameOptions.set(this, GameOptions.SHADOW_MAP_SCALE, String.valueOf(Math.round(value)));
+            show.run();
+        });
+        show.run();
+        return ui.stackedRow(tr("Qualidade das sombras", "Shadow quality"),
+                tr("Tamanho do mapa de sombras (o do jogo é 1600×1600). Menor deixa as bordas das sombras mais " +
+                   "serrilhadas e alivia a GPU; 0 desliga as sombras.",
+                   "Size of the shadow map (the game's is 1600×1600). Smaller makes shadow edges more jagged and " +
+                   "eases the GPU; 0 turns shadows off."), box);
     }
 
     private LinearLayout anisotropicRow() {
