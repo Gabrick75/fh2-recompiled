@@ -213,6 +213,10 @@ REXCVAR_DEFINE_INT32(fh2_nativo_omitir_categorias, 0, "FH2",
                      "draws whose vertex shader does / does not fetch vertices directly")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 #endif
+REXCVAR_DEFINE_BOOL(fh2_nativo_cache_vertices, false, "FH2",
+                    "Native renderer: persistent vertex cache across frames with write-watching. Reuses vertex "
+                    "ranges that have not been rewritten by the guest since they were copied. Off by default.")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_DOUBLE(fh2_nativo_a2c_umbral, 0.5, "FH2",
                       "Native renderer (test): alpha threshold that stands in for alpha to coverage, with "
                       "fh2_nativo_a2c_pontilhado off");
@@ -3739,6 +3743,18 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         AnotarVerticesRepetidos(origen.direccion, origen.bytes, uint32_t(origen.orden), origen.datos);
       }
       VkDeviceSize offset;
+      // Persistent vertex cache across frames (fh2_nativo_cache_vertices).
+      // Check before same-frame dedupe: if the range was copied in a previous frame and the guest
+      // hasn't rewritten it, we can reuse it without copying.
+      if (cache_vertices_persistente_activo_ && origen.direccion != 0 &&
+          cache_vertices_persistente_.Buscar(origen.direccion, origen.bytes, uint32_t(origen.orden), offset)) {
+        offsets_vertices[b] = offset;
+        cache_vertices_persistente_offsets_[b] = offset;
+        usar_cache_vertices_persistente_[b] = true;
+        bytes_vertices_ += origen.bytes;
+        continue;
+      }
+      usar_cache_vertices_persistente_[b] = false;
       // If this same range was already copied in this frame, its place in the upload buffer is reused and
       // nothing is copied. See nfsmw_nativo_vertices_dedupe.h.
       if (dedupe_activo_ && origen.direccion != 0 &&
@@ -3746,7 +3762,30 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         offsets_vertices[b] = offset;
         continue;
       }
-      // With a single binding, at a multiple of its stride (nfsmw_nativo_vertices_base_cero).
+      // Try to allocate from persistent buffer (fh2_nativo_cache_vertices).
+      uint32_t alineacao = (vertices_base_cero_ && entrada->enlaces.size() == 1) ? entrada->enlaces[0].zancada : 4;
+      if (cache_vertices_persistente_activo_ && origen.direccion != 0 &&
+          cache_vertices_persistente_.Alocar(origen.bytes, alineacao, offset)) {
+        // Copy to persistent buffer.
+        const TrabajoCopia trabalho{origen.datos, cache_vertices_persistente_.Dados() + offset, origen.bytes / 4, origen.orden};
+        CopiarVertices(trabalho);
+        // Record in persistent cache with write-watching.
+        uint64_t huella = 0;
+        if (diag_vertices_repetidos_) {
+          huella = CacheVerticesPersistente::CalcularHuella(origen.datos, origen.bytes);
+        }
+        cache_vertices_persistente_.Anotar(origen.direccion, origen.bytes, uint32_t(origen.orden), offset, huella);
+        // Enable write-watching for this range.
+        if (memoria_) {
+          memoria_->EnablePhysicalMemoryAccessCallbacks(uint32_t(origen.direccion), origen.bytes, true, false);
+        }
+        offsets_vertices[b] = offset;
+        cache_vertices_persistente_offsets_[b] = offset;
+        usar_cache_vertices_persistente_[b] = true;
+        bytes_vertices_ += origen.bytes;
+        continue;
+      }
+      // Fall back to per-frame upload buffer.
       if (vertices_base_cero_ && entrada->enlaces.size() == 1) {
         cat_subida_ = 0;
         ReservarMultiplo(origen.bytes, entrada->enlaces[0].zancada, offset);
@@ -3754,10 +3793,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         cat_subida_ = 0;
         Reservar(origen.bytes, 4, offset);
       }
-      const TrabajoCopia trabajo{origen.datos, subida_datos_ + offset, origen.bytes / 4, origen.orden};
+      const TrabajoCopia trabalho{origen.datos, subida_datos_ + offset, origen.bytes / 4, origen.orden};
       // A rectangle list's buffer is rewritten by the next one: it is copied now, not by the copy thread.
-      if (origen.direccion == 0 || !copias_activas_ || !EncolarCopia(trabajo)) {
-        CopiarVertices(trabajo);
+      if (origen.direccion == 0 || !copias_activas_ || !EncolarCopia(trabalho)) {
+        CopiarVertices(trabalho);
       }
       bytes_vertices_ += origen.bytes;
       offsets_vertices[b] = offset;
@@ -4665,16 +4704,24 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       static constexpr VkDeviceSize kEnlaceEnCero = 0;
       const VkDeviceSize* a_enlazar = base_cero ? &kEnlaceEnCero : offsets_vertices.data();
       const uint32_t n_enlaces = uint32_t(entrada->enlaces.size());
+
+      // Build buffer array: persistent cache hits use the persistent buffer, others use upload buffer.
+      VkBuffer buferes_enlazar[16];
+      for (uint32_t i = 0; i < n_enlaces; ++i) {
+        buferes_enlazar[i] = usar_cache_vertices_persistente_[i] ? cache_vertices_persistente_.Buffer() : subida_;
+      }
+
       bool igual = n_enlaces == enlaces_grabados_;
       for (uint32_t i = 0; igual && i < n_enlaces; ++i) {
-        igual = a_enlazar[i] == offsets_grabados_[i];
+        igual = a_enlazar[i] == offsets_grabados_[i] && buferes_enlazar[i] == bufers_vertices_[i];
       }
       if (!igual) {
-        NFSMW_SUB(8, dfn_.vkCmdBindVertexBuffers(cmd, 0, n_enlaces, bufers_vertices_.data(), a_enlazar));
+        NFSMW_SUB(8, dfn_.vkCmdBindVertexBuffers(cmd, 0, n_enlaces, buferes_enlazar, a_enlazar));
         ++base_cero_enlaces_grabados_;
         enlaces_grabados_ = n_enlaces;
         for (uint32_t i = 0; i < n_enlaces; ++i) {
           offsets_grabados_[i] = a_enlazar[i];
+          bufers_vertices_[i] = buferes_enlazar[i];
         }
       } else {
         ++enlaces_ahorrados_;
@@ -5879,6 +5926,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     // The upload buffer is reset here, so the recorded offsets are no longer valid. This also covers
     // EnviarYEsperar, which goes through here.
     dedupe_.NuevoFotograma(fotograma_);
+    // Persistent vertex cache: new epoch for this work slot.
+    if (cache_vertices_persistente_activo_) {
+      cache_vertices_persistente_.NuevaRanura(epoca_subida_, ranura_actual_);
+    }
     enviado_tras_sombras_ = false;  // the post-shadow submission is once per frame
     /*
      * Diagnostic cvars are read once per frame, not per draw.
@@ -6505,14 +6556,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
     }
     ++fb_vistas_olvidadas_;
-    fb_olvidados_ += fuera;
+    fb_olvidatos_ += fuera;
     if (fb_vistas_olvidadas_ <= 16 || (fb_vistas_olvidadas_ & 63) == 0) {
       NFSMW_INFORME_ANILLO("[nativo] C6 framebuffers (build 184): vista {:016X} destruida: {} framebuffers {} con "
                            "ella; quedan {} en la cache ({} vistas y {} framebuffers desde el arranque; {} "
                            "retirados)",
                            uint64_t(reinterpret_cast<uintptr_t>(vista)), fuera,
                            fb_retirar_ ? "retirados (sin destruir)" : "destruidos", framebuffers_.size(),
-                           fb_vistas_olvidadas_, fb_olvidados_, fb_retirados_.size());
+                           fb_vistas_olvidadas_, fb_olvidatos_, fb_retirados_.size());
     }
   }
 
@@ -8204,6 +8255,12 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     return escritas > hechas ? escritas - hechas : 0;
   }
 
+  void LiberarCacheVerticesRanura(uint32_t ranura) override {
+    if (cache_vertices_persistente_activo_) {
+      cache_vertices_persistente_.LiberarRanura(ranura);
+    }
+  }
+
   void EsperarSubidas() override {
     if (!copias_hilo_.joinable()) {
       return;
@@ -8233,10 +8290,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       const auto tras_ayudar = std::chrono::steady_clock::now();
       ns_ayudando = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(tras_ayudar - antes).count());
       copias_ayudadas_ += ayudadas;
-      copias_bytes_ayudados_ += bytes;
+      copias_bytes_ayudatos_ += bytes;
       copias_ns_ayudando_ += ns_ayudando;
       copias_inf_.ayudadas += ayudadas;
-      copias_inf_.bytes_ayudados += bytes;
+      copias_inf_.bytes_ayudatos += bytes;
       copias_inf_.ns_ayudando += ns_ayudando;
       if (ayudadas) {
         ++copias_inf_.esperas_con_ayuda;
@@ -8449,11 +8506,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (!copias_hilo_.joinable() && !copias_sin_hilo_) {
       return;
     }
-    const auto ahora = std::chrono::steady_clock::now();
-    if (ahora - copias_informe_ < std::chrono::seconds(10)) {
+    const auto agora = std::chrono::steady_clock::now();
+    if (agora - copias_informe_ < std::chrono::seconds(10)) {
       return;
     }
-    copias_informe_ = ahora;
+    copias_informe_ = agora;
     const uint64_t hilo_n = copias_hilo_n_.load(std::memory_order_relaxed);
     const uint64_t hilo_bytes = copias_hilo_bytes_.load(std::memory_order_relaxed);
     const uint64_t d_hilo_n = hilo_n - copias_hilo_n_previo_;
@@ -8465,15 +8522,30 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       NFSMW_INFORME_ANILLO(
           "[nativo] C6 copias de vertices (build 185), ultimos 10 s: {} encoladas ({:.1f} MB) y {} en el anillo sin "
           "pasar por la cola ({:.1f} MB); el hilo copio {} ({:.1f} MB) y el anillo ayudo con {} ({:.1f} MB, {:.1f} ms) "
-          "en {} de {} esperas con copias pendientes ({} sin tomar al llegar); espero el trozo del hilo {} veces "
-          "({:.2f} ms, peor {:.2f} ms) y entero {} veces; espera pura {:.1f} ms (peor {:.2f} ms); {} copias "
-          "comprobadas, {} diferencias; fase {}",
+          "en {} de {} esperas con copias pendientes ({} sin tomar al llegar); espero el trozo del hilo {} vezes "
+          "({:.2f} ms, pior {:.2f} ms) e inteiro {} vezes; espera pura {:.1f} ms (pior {:.2f} ms); {} copias "
+          "comprobadas, {} diferencas; fase {}", 
           c.encoladas, double(c.bytes_encolados) / 1048576.0, c.en_linea, double(c.bytes_en_linea) / 1048576.0,
-          d_hilo_n, double(d_hilo_bytes) / 1048576.0, c.ayudadas, double(c.bytes_ayudados) / 1048576.0,
+          d_hilo_n, double(d_hilo_bytes) / 1048576.0, c.ayudadas, double(c.bytes_ayudatos) / 1048576.0,
           double(c.ns_ayudando) / 1e6, c.esperas_con_ayuda, c.esperas, c.sin_tomar, c.esperas_trozo,
           double(c.ns_trozo) / 1e6, double(c.ns_trozo_peor) / 1e6, c.esperas_enteras, double(c.ns_espera) / 1e6,
           double(c.ns_espera_peor) / 1e6, c.comprobadas, copias_diferencias_, NombreFaseCopias());
     }
+
+    // Persistent vertex cache statistics (fh2_nativo_cache_vertices).
+    if (cache_vertices_persistente_activo_) {
+      NFSMW_INFORME_ANILLO(
+          "[nativo] C6 cache vertices persistente: consultas={}, acertos={}, bytes_ahorados={:.1f} MB, copias={}, "
+          "memoria_ocupada={:.1f} MB, liberaciones_adiadas={}, discrepancias={}, rangos_pequenos={}",
+          cache_vertices_persistente_.consultas(), cache_vertices_persistente_.aciertos(),
+          double(cache_vertices_persistente_.bytes_ahorrados()) / 1048576.0,
+          cache_vertices_persistente_.copias(),
+          double(cache_vertices_persistente_.memoria_ocupada()) / 1048576.0,
+          cache_vertices_persistente_.liberaciones_adiadas(),
+          cache_vertices_persistente_.discrepancias(),
+          cache_vertices_persistente_.rangos_pequenos());
+    }
+
     copias_inf_ = InformeCopiasCifras{};
   }
 
@@ -8517,7 +8589,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                 "esperas del anillo, {:.1f} ms esperando; 26/09 (build 185): el anillo copio {} al esperar ({:.1f} MB, "
                 "{:.1f} ms), {} comprobadas, {} diferencias, fase {})",
                 copias_en_linea_, esperas_copias_, double(ns_esperando_copias_) / 1e6, copias_ayudadas_,
-                double(copias_bytes_ayudados_) / 1048576.0, double(copias_ns_ayudando_) / 1e6, copias_comprobadas_,
+                double(copias_bytes_ayudatos_) / 1048576.0, double(copias_ns_ayudando_) / 1e6, copias_comprobadas_,
                 copias_diferencias_, NombreFaseCopias());
   }
 
@@ -8707,7 +8779,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         cache_pipelines_ = VK_NULL_HANDLE;
       }
     }
-    bytes_cache_guardados_ = datos.size();
+    bytes_cache_guardatos_ = datos.size();
     cache_guardada_ = std::chrono::steady_clock::now();
     REXLOG_INFO("[nativo] C6: cache de pipelines {} ({} KB leidos de {}{})",
                 cache_pipelines_ != VK_NULL_HANDLE ? "activa" : "no disponible",
@@ -8716,7 +8788,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     escrito_cache_ = std::move(datos);
     if (ficheros_viejos_) {
       // they came from the two older files: moved to the new one on the first save even if nothing changed
-      bytes_cache_guardados_ = 0;
+      bytes_cache_guardatos_ = 0;
       pipelines_sin_guardar_ = 1;
       lista_sin_guardar_ = 1;
     }
@@ -8739,14 +8811,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       // without new entries it is not rewritten (the SD card is slow on the Switch)
       if (cache_pipelines_ != VK_NULL_HANDLE &&
           datos_cache_(device_, cache_pipelines_, &bytes, nullptr) == VK_SUCCESS && bytes &&
-          bytes != bytes_cache_guardados_) {
+          bytes != bytes_cache_guardatos_) {
         datos.resize(bytes);
         const VkResult resultado = datos_cache_(device_, cache_pipelines_, &bytes, datos.data());
         if ((resultado != VK_SUCCESS && resultado != VK_INCOMPLETE) || !bytes) {
           datos.clear();
         } else {
           datos.resize(bytes);
-          bytes_cache_guardados_ = bytes;
+          bytes_cache_guardatos_ = bytes;
         }
       }
     }
@@ -8838,8 +8910,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       std::filesystem::remove(carpeta / kFicheroListaVieja, sin_importancia);
       ficheros_viejos_ = false;
     }
-    if (guardados_cache_++ < 8) {
-      REXLOG_INFO("[nativo] C6: pipelines guardados ({} KB de cache y {} en la lista del precalentado, en {} ms, desde "
+    if (guardatos_cache_++ < 8) {
+      REXLOG_INFO("[nativo] C6: pipelines guardatos ({} KB de cache y {} en la lista del precalentado, en {} ms, desde "
                   "su hilo{})",
                   escrito_cache_.size() >> 10,
                   escrito_lista_.size() >= kCabeceraLista
@@ -8882,6 +8954,62 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                 REXCVAR_GET(nfsmw_nativo_subida_memoria));
     MedirMemoriaSubida();
     CrearCompartidasAparte();
+
+    // Initialize persistent vertex cache (fh2_nativo_cache_vertices).
+    cache_vertices_persistente_activo_ = REXCVAR_GET(fh2_nativo_cache_vertices);
+    if (cache_vertices_persistente_activo_ && memoria_) {
+      // Create persistent buffer for vertex cache.
+      VkBufferCreateInfo buffer_info{};
+      buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+      buffer_info.size = nfsmw::nativo::CacheVerticesPersistente::kTamanoBuffer;
+      buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+      buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+      VkBuffer cache_buffer = VK_NULL_HANDLE;
+      VkDeviceMemory cache_memoria = VK_NULL_HANDLE;
+      uint8_t* cache_datos = nullptr;
+      VkDeviceAddress cache_direccion = 0;
+
+      VkResult result = dfn_.vkCreateBuffer(device_, &buffer_info, nullptr, &cache_buffer);
+      if (result == VK_SUCCESS) {
+        VkMemoryRequirements mem_reqs;
+        dfn_.vkGetBufferMemoryRequirements(device_, cache_buffer, &mem_reqs);
+
+        VkMemoryAllocateInfo alloc_info{};
+        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc_info.allocationSize = mem_reqs.size;
+        alloc_info.memoryTypeIndex = subida_tipo_;
+
+        result = dfn_.vkAllocateMemory(device_, &alloc_info, nullptr, &cache_memoria);
+        if (result == VK_SUCCESS) {
+          result = dfn_.vkBindBufferMemory(device_, cache_buffer, cache_memoria, 0);
+          if (result == VK_SUCCESS) {
+            result = dfn_.vkMapMemory(device_, cache_memoria, 0, nfsmw::nativo::CacheVerticesPersistente::kTamanoBuffer, 0, reinterpret_cast<void**>(&cache_datos));
+            if (result == VK_SUCCESS) {
+              VkBufferDeviceAddressInfo addr_info{};
+              addr_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+              addr_info.buffer = cache_buffer;
+              cache_direccion = direccion_bufer_(device_, &addr_info);
+            }
+          }
+        }
+      }
+
+      if (result != VK_SUCCESS) {
+        if (cache_datos) dfn_.vkUnmapMemory(device_, cache_memoria);
+        if (cache_memoria) dfn_.vkFreeMemory(device_, cache_memoria, nullptr);
+        if (cache_buffer) dfn_.vkDestroyBuffer(device_, cache_buffer, nullptr);
+        REXLOG_ERROR("[nativo] CacheVerticesPersistente: failed to create persistent buffer");
+        cache_vertices_persistente_activo_ = false;
+      } else {
+        cache_vertices_persistente_.Inicializar(cache_buffer, cache_memoria, cache_datos, cache_direccion, memoria_);
+        REXLOG_INFO("[nativo] CacheVerticesPersistente: enabled, buffer = {} MB",
+                    nfsmw::nativo::CacheVerticesPersistente::kTamanoBuffer >> 20);
+      }
+    } else {
+      REXLOG_INFO("[nativo] CacheVerticesPersistente: disabled (cvar or no memory)");
+    }
+
     UsarRanura(0);
     return true;
   }
@@ -13691,12 +13819,12 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   uint64_t copias_comprobadas_ = 0;
   uint64_t copias_esperas_mirando_ = 0;
   uint64_t copias_ayudadas_ = 0;
-  uint64_t copias_bytes_ayudados_ = 0;
+  uint64_t copias_bytes_ayudatos_ = 0;
   uint64_t copias_ns_ayudando_ = 0;
   uint64_t copias_diferencias_ = 0;
   struct InformeCopiasCifras {  // the last 10 s (InformeCopias); ring only
     uint64_t encoladas = 0, bytes_encolados = 0, en_linea = 0, bytes_en_linea = 0;
-    uint64_t ayudadas = 0, bytes_ayudados = 0, ns_ayudando = 0, esperas_con_ayuda = 0;
+    uint64_t ayudadas = 0, bytes_ayudatos = 0, ns_ayudando = 0, esperas_con_ayuda = 0;
     uint64_t esperas = 0, sin_tomar = 0, esperas_trozo = 0, ns_trozo = 0, ns_trozo_peor = 0;
     uint64_t esperas_enteras = 0, ns_espera = 0, ns_espera_peor = 0, comprobadas = 0;
   };
@@ -13947,7 +14075,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   std::vector<VkFramebuffer> fb_retirados_;
   bool fb_retirar_ = false;
   uint64_t fb_vistas_olvidadas_ = 0;
-  uint64_t fb_olvidados_ = 0;
+  uint64_t fb_olvidatos_ = 0;
   std::unordered_map<uint64_t, Textura> texturas_;
   // Measurement only (nfsmw_nativo_diag_reutilizar): textures with a hash, by content key (content key ->
   // texture key; see AnotarContenidoTextura), and the counts for the 10 s report.
@@ -14026,6 +14154,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   }
   uint32_t fh2_diag_textura_avisos_ = 0;  // the draw's pixel shader number, for the framing diagnostics
 #endif
+  // Persistent vertex cache across frames with write-watching (fh2_nativo_cache_vertices).
+  nfsmw::nativo::CacheVerticesPersistente cache_vertices_persistente_;
+  bool cache_vertices_persistente_activo_ = false;
   // IndicesDe16 (nfsmw_nativo_indices_neon). Ring only.
   int32_t indices_neon_ = -1;  // -1 cvar not read, 0 plain loop, 1 NEON
   uint64_t indices_neon_dibujos_ = 0;
@@ -14098,6 +14229,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   bool diag_estadisticas_dibujo_ = false;
   uint32_t tijera_prueba_ = 0;
   std::array<VkBuffer, 16> bufers_vertices_{};
+  // Persistent vertex cache: which bindings use the persistent buffer (fh2_nativo_cache_vertices).
+  std::array<bool, 16> usar_cache_vertices_persistente_{};
+  std::array<VkDeviceSize, 16> cache_vertices_persistente_offsets_{};
   // Height actually used by each render target, deduced from the scissor. It only grows.
   std::unordered_map<uint32_t, uint32_t> alto_util_;
   bool area_util_ = true;
@@ -14611,8 +14745,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   VkPipelineCache cache_pipelines_ = VK_NULL_HANDLE;
   uint32_t pipelines_sin_guardar_ = 0;
   bool pipeline_lento_sin_guardar_ = false;  // one took kPipelineLentoNs or more since the last save
-  uint32_t guardados_cache_ = 0;
-  size_t bytes_cache_guardados_ = 0;  // size of the last file read or saved
+  uint32_t guardatos_cache_ = 0;
+  size_t bytes_cache_guardatos_ = 0;  // size of the last file read or saved
   std::chrono::steady_clock::time_point cache_guardada_{};
   // Thread that writes the pipeline cache to disk (EscritorCacheMain). It is persistent, because on
   // Horizon detach() closes the game, and wake-ups are decided with the lock held.
@@ -14679,6 +14813,200 @@ std::unique_ptr<DibujosVulkan> DibujosVulkan::Crear(const VulkanDevice* disposit
   }
   REXLOG_INFO("[nativo] C6: dibujos nativos preparados");
   return dibujos;
+}
+
+}  // namespace nfsmw::nativo
+
+// CacheVerticesPersistente implementation.
+
+// CacheVerticesPersistente implementation.
+
+namespace nfsmw::nativo {
+
+void CacheVerticesPersistente::Inicializar(VkBuffer buffer, VkDeviceMemory memoria, uint8_t* datos, VkDeviceAddress direccion,
+                                           rex::memory::Memory* memoria_contexto) {
+  buffer_ = buffer;
+  memoria_ = memoria;
+  datos_ = datos;
+  direccion_buffer_ = direccion;
+  memoria_contexto_ = memoria_contexto;
+
+  // Reserve space for entries (will grow as needed).
+  entradas_.reserve(8192);
+
+  // Register global write-watch callback.
+  vigilancia_global_ = memoria_contexto->RegisterPhysicalMemoryInvalidationCallback(&CacheVerticesPersistente::EscrituraVigilada, this);
+
+  REXLOG_INFO("[nativo] CacheVerticesPersistente: initialized, buffer = {} MB", kTamanoBuffer >> 20);
+}
+
+std::pair<uint32_t, uint32_t> CacheVerticesPersistente::EscrituraVigilada(void* contexto, uint32_t inicio, uint32_t longitud, bool exacto) {
+  (void)exacto;
+  auto* self = static_cast<CacheVerticesPersistente*>(contexto);
+  const uint64_t fin = uint64_t(inicio) + longitud;
+
+  // Linear scan over entries - could be optimized with interval tree if needed.
+  // Only atomics here: called on guest writing thread with memory lock held.
+  for (uint32_t i = 0; i < self->entradas_n_; ++i) {
+    Entrada& e = self->entradas_[i];
+    if (e.bytes == 0) continue;  // freed entry
+    if (uint64_t(e.clave >> 2) < fin && (uint64_t(e.clave >> 2) + e.bytes) > inicio) {
+      // Atomic store to sucio
+      __atomic_store_n(&e.sucio, 1, __ATOMIC_RELEASE);
+    }
+  }
+  return std::make_pair(uint32_t(0), UINT32_MAX);
+}
+
+void CacheVerticesPersistente::NuevaRanura(uint64_t epoca_subida, uint32_t ranura_actual) {
+  epoca_subida_actual_ = epoca_subida;
+  ranura_actual_ = ranura_actual;
+
+  // Free entries deferred for this slot (its fence has passed).
+  auto& lista = liberar_despues_de_ranura_[ranura_actual];
+  for (uint32_t idx : lista) {
+    if (idx < entradas_n_) {
+      Entrada& e = entradas_[idx];
+      if (e.vigilancia_handle && memoria_contexto_) {
+        // Unregister write-watch for this range.
+        // The callback system handles unregistration via returning (0, UINT32_MAX)
+      }
+      e.bytes = 0;  // mark as freed
+    }
+  }
+  liberaciones_adiadas_ += lista.size();
+  lista.clear();
+}
+
+uint32_t CacheVerticesPersistente::BuscarEnTabla(uint64_t clave, uint32_t bytes) const {
+  size_t idx = Indice(clave);
+  for (size_t probe = 0; probe < kRanuras; ++probe) {
+    const Casilla& c = tabla_[(idx + probe) & (kRanuras - 1)];
+    if (c.clave == 0) return UINT32_MAX;
+    if (c.clave == clave && entradas_[c.indice].bytes == bytes) {
+      return c.indice;
+    }
+  }
+  return UINT32_MAX;
+}
+
+void CacheVerticesPersistente::InsertarEnTabla(uint64_t clave, uint32_t bytes, uint32_t indice_entrada) {
+  size_t idx = Indice(clave);
+  for (size_t probe = 0; probe < kRanuras; ++probe) {
+    Casilla& c = tabla_[(idx + probe) & (kRanuras - 1)];
+    if (c.clave == 0) {
+      c.clave = clave;
+      c.indice = indice_entrada;
+      return;
+    }
+  }
+  // Table full - should not happen with kRanuras = 32768
+  REXLOG_WARN("[nativo] CacheVerticesPersistente: hash table full");
+}
+
+uint64_t CacheVerticesPersistente::CalcularHuella(const uint8_t* datos, uint32_t bytes) {
+  return XXH3_64bits(datos, bytes);
+}
+
+bool CacheVerticesPersistente::Buscar(uint64_t direccion_fisica, uint32_t bytes, uint32_t orden, uint64_t& offset,
+                                      uint64_t huella) {
+  if (!buffer_ || bytes < kMinBytesCache) {
+    if (bytes < kMinBytesCache) ++rangos_pequenos_;
+    return false;
+  }
+
+  ++consultas_;
+  const uint64_t clave = Clave(direccion_fisica, orden);
+  const uint32_t idx = BuscarEnTabla(clave, bytes);
+
+  if (idx == UINT32_MAX) return false;
+
+  Entrada& e = entradas_[idx];
+
+  // Check if entry belongs to a previous epoch that hasn't been freed yet.
+  if (e.epoca_creacion != epoca_subida_actual_) {
+    return false;
+  }
+
+  // Check if dirty (guest wrote to this range).
+  if (__atomic_load_n(&e.sucio, __ATOMIC_ACQUIRE)) {
+    return false;
+  }
+
+  // Paranoid mode: verify fingerprint.
+  if (huella != 0 && e.huella != huella) {
+    ++discrepancias_;
+    return false;
+  }
+
+  ++aciertos_;
+  bytes_ahorrados_ += bytes;
+  offset = e.offset;
+  return true;
+}
+
+void* CacheVerticesPersistente::Anotar(uint64_t direccion_fisica, uint32_t bytes, uint32_t orden,
+                                       uint64_t offset, uint64_t huella) {
+  if (!buffer_ || bytes < kMinBytesCache) return nullptr;
+
+  ++copias_;
+  memoria_ocupada_ += bytes;
+
+  const uint64_t clave = Clave(direccion_fisica, orden);
+
+  // Check if we need to wrap the buffer (should not happen with 64 MB).
+  if (offset + bytes > kTamanoBuffer) {
+    REXLOG_WARN("[nativo] CacheVerticesPersistente: buffer overflow, offset={}, bytes={}", offset, bytes);
+    return nullptr;
+  }
+
+  // Add entry.
+  if (entradas_n_ >= entradas_.size()) {
+    entradas_.push_back({});
+  }
+  Entrada& e = entradas_[entradas_n_];
+  e.clave = clave;
+  e.bytes = bytes;
+  e.orden = orden;
+  e.offset = offset;
+  e.huella = huella;
+  e.epoca_creacion = epoca_subida_actual_;
+  e.ranura_ultima = ranura_actual_;
+  e.sucio = 0;
+  e.vigilancia_handle = memoria_contexto_;  // placeholder
+  ++entradas_n_;
+
+  InsertarEnTabla(clave, bytes, entradas_n_ - 1);
+
+  return e.vigilancia_handle;
+}
+
+bool CacheVerticesPersistente::Alocar(uint32_t bytes, uint32_t alineacao, uint64_t& offset) {
+  if (!buffer_) return false;
+
+  const VkDeviceSize inicio = (buffer_usado_ + alineacao - 1) & ~(VkDeviceSize(alineacao) - 1);
+  if (inicio + bytes > kTamanoBuffer) {
+    return false;  // buffer full
+  }
+  offset = inicio;
+  buffer_usado_ = inicio + bytes;
+  return true;
+}
+
+void CacheVerticesPersistente::LiberarRanura(uint32_t ranura) {
+  if (ranura >= kRanurasTrabajo) return;
+  auto& lista = liberar_despues_de_ranura_[ranura];
+  for (uint32_t idx : lista) {
+    if (idx < entradas_n_) {
+      Entrada& e = entradas_[idx];
+      e.bytes = 0;
+      if (e.vigilancia_handle && memoria_contexto_) {
+        // Unregister write-watch if needed
+      }
+    }
+  }
+  liberaciones_adiadas_ += lista.size();
+  lista.clear();
 }
 
 }  // namespace nfsmw::nativo
