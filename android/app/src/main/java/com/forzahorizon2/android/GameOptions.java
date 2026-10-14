@@ -44,7 +44,7 @@ final class GameOptions {
     // The ADPF toggle is out of the menu: the hints are always on (the 2026-10-14 A/B on the S23 Ultra showed no
     // loss). Set to true to bring the row back (MainActivity.performancePage) and honor the saved choice again.
     static final boolean PERFORMANCE_HINTS_IN_MENU = false;
-    static final String VERTEX_CACHE = "vertex_cache";  // fh2_nativo_cache_vertices (native, experimental)
+    static final String VERTEX_CACHE = "vertex_cache";  // fh2_nativo_cache_vertices (native), on by default
     // Diagnostics (About page)
     static final String GPU_MEASUREMENTS = "gpu_measurements";  // fh2_nativo_medir_gpu: GPU times in the logs
     static final String ONE_PASS = "one_pass";                // fh2_uma_faixa: the scene in one pass, not 3 tiles
@@ -112,7 +112,7 @@ final class GameOptions {
 
     static boolean flag(Context context, String key) {
         boolean byDefault = PIN_THREADS.equals(key) || PERFORMANCE_HINTS.equals(key) || ONE_PASS.equals(key) ||
-                ADAPTIVE_VBLANK.equals(key) || RESOLVE_SHORTCUT.equals(key);
+                ADAPTIVE_VBLANK.equals(key) || RESOLVE_SHORTCUT.equals(key) || VERTEX_CACHE.equals(key);
         return prefs(context).getBoolean(key, byDefault);
     }
 

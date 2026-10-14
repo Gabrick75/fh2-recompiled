@@ -217,9 +217,10 @@ REXCVAR_DEFINE_INT32(fh2_nativo_omitir_categorias, 0, "FH2",
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 #endif
 // Vertex ranges of 4 KB or more equal to an earlier frame are kept in a persistent buffer and reused while the guest
-// has not written their pages (CacheVerticesEntreFotogramas, nfsmw_nativo_vertices_dedupe.h). Off by default: under
-// test (launcher, Performance).
-REXCVAR_DEFINE_BOOL(fh2_nativo_cache_vertices, false, "FH2",
+// has not written their pages (CacheVerticesEntreFotogramas, nfsmw_nativo_vertices_dedupe.h). On by default since
+// 2026-10-14. S23 Ultra, car stopped, unlimited FPS: 27.0 -> 36.5 fps, vertex uploads 12.5 GB -> 1.0 GB per 10 s,
+// uploads stage 4.9 -> 2.0 us per draw; a vegetation-heavy landscape ~30 -> ~40 fps. No visible difference.
+REXCVAR_DEFINE_BOOL(fh2_nativo_cache_vertices, true, "FH2",
                     "Native renderer: vertex cache across frames, kept valid by the write watch")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_BOOL(fh2_nativo_cache_vertices_comprobar, false, "FH2",

@@ -853,12 +853,13 @@ public final class MainActivity extends AppCompatActivity {
                    "emulated or the native one) alone on the fastest (+16 %)."),
                 GameOptions.flag(this, GameOptions.PIN_THREADS),
                 v -> GameOptions.flag(this, GameOptions.PIN_THREADS, v)));
-        rows.add(ui.toggleRow(tr("Cache de vértices entre quadros (experimental)",
-                        "Vertex cache across frames (experimental)"),
+        rows.add(ui.toggleRow(tr("Cache de vértices entre quadros", "Vertex cache across frames"),
                 tr("Reaproveita os vértices que o jogo não mudou desde o quadro anterior, em vez de copiá-los de " +
-                   "novo. Em teste: desligue se a imagem ficar errada ou o jogo ficar mais lento.",
+                   "novo: 87 % menos dados enviados à GPU. No S23 Ultra, parado, +35 % de fps (27 → 36,5); " +
+                   "numa paisagem com muita vegetação, de ~30 para ~40 fps.",
                    "Reuses the vertices the game has not changed since the previous frame instead of copying them " +
-                   "again. Under test: turn it off if the image looks wrong or the game gets slower."),
+                   "again: 87 % less data sent to the GPU. On the S23 Ultra, standing still, +35 % fps (27 → 36.5); " +
+                   "in a landscape with a lot of vegetation, from ~30 to ~40 fps."),
                 GameOptions.flag(this, GameOptions.VERTEX_CACHE),
                 v -> GameOptions.flag(this, GameOptions.VERTEX_CACHE, v)));
         if (GameOptions.PERFORMANCE_HINTS_IN_MENU) {
