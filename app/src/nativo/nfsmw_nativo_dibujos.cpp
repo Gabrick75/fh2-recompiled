@@ -224,7 +224,18 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_cache_vertices, true, "FH2",
                     "Native renderer: vertex cache across frames, kept valid by the write watch")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_BOOL(fh2_nativo_cache_vertices_comprobar, false, "FH2",
-                    "Native renderer (measurement): fingerprint each vertex cache hit against the guest data and count "
+                     "Native renderer (measurement): fingerprint each vertex cache hit against the guest data and count "
+                     "the mismatches (they miss and copy as usual)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// Converted index ranges of 4 KB or more equal to an earlier frame are kept in their own persistent buffer and
+// reused while the guest has not written their pages (CacheIndicesEntreFotogramas, nfsmw_nativo_vertices_dedupe.h).
+// Same model as the vertex cache above, for the DMA path only (rectangle lists and quads generate their indices
+// and stay out). A hit skips the byte-swap conversion (IndicesDe16, NEON) and the upload copy.
+REXCVAR_DEFINE_BOOL(fh2_nativo_cache_indices, true, "FH2",
+                    "Native renderer: index cache across frames, kept valid by the write watch")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_BOOL(fh2_nativo_cache_indices_comprobar, false, "FH2",
+                    "Native renderer (measurement): fingerprint each index cache hit against the guest data and count "
                     "the mismatches (they miss and copy as usual)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_DOUBLE(fh2_nativo_a2c_umbral, 0.5, "FH2",
@@ -2953,6 +2964,12 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     uint32_t vmax = 0;
     bool con_indices = false;
     bool indices_de_16 = false;  // in indices16_ instead of indices_
+    bool indices_en_cache = false;  // fh2_nativo_cache_indices: converted copy reused, skip conversion and upload
+    uint64_t offset_indices_cache = 0;
+    CacheIndicesEntreFotogramas::Clave clave_indices_cache;
+    uint32_t tick_indices_cache = 0;
+    uint64_t huella_indices_cache = 0;
+    bool reserva_indices_cache = false;  // a miss with room reserved: the converted copy goes to the cache
     indices_.clear();
     if (fuente == uint32_t(xenos::SourceSelect::kDMA)) {
       const uint32_t tamano = r[gr::XE_GPU_REG_VGT_DMA_SIZE];
@@ -2972,7 +2989,32 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
       const uint8_t* datos = memoria_->TranslatePhysical(base & 0x1FFFFFFF);
       const uint32_t indice_reinicio = r[gr::XE_GPU_REG_VGT_MULTI_PRIM_IB_RESET_INDX] & 0xFFFFFF;
-      if (!indices32 && !reinicio && !desplazamiento && !cuadrilateros &&
+      // fh2_nativo_cache_indices: a converted copy of this DMA range from an earlier submission that the guest
+      // has not rewritten (see CacheIndicesEntreFotogramas). Quad lists rewrite theirs below and stay out;
+      // rectangle lists never come through DMA. Everything that changes the converted result is in the key.
+      const uint32_t bytes_por_indice = indices32 ? 4 : 2;
+      const CacheIndicesEntreFotogramas::Clave clave_indices{
+          uint64_t(base & 0x1FFFFFFF), cuenta, indice_reinicio, desplazamiento,
+          uint8_t(bytes_por_indice), uint8_t(uint32_t(orden)), uint8_t(reinicio ? 1 : 0)};
+      if (cache_indices_activo_ && !cuadrilateros && cache_indices_.Admite(clave_indices)) {
+        const uint64_t bytes_cache = uint64_t(cuenta) * bytes_por_indice;
+        const uint64_t huella = cache_indices_comprobar_ ? XXH3_64bits(datos, size_t(bytes_cache)) : 0;
+        uint64_t offset_cache = 0;
+        if (cache_indices_.Buscar(clave_indices, offset_cache, vmin, vmax, indices_de_16, huella)) {
+          indices_en_cache = true;
+          offset_indices_cache = offset_cache;
+        } else if (cache_indices_.Reservar(uint32_t(bytes_cache), offset_cache, tick_indices_cache)) {
+          // A miss with room: the watch is enabled before the conversion reads the guest range below (a
+          // write from here on makes this copy stale), like the vertex cache before its copy.
+          memoria_->EnablePhysicalMemoryAccessCallbacks(uint32_t(base & 0x1FFFFFFF), uint32_t(bytes_cache),
+                                                        true, false);
+          clave_indices_cache = clave_indices;
+          huella_indices_cache = huella;
+          offset_indices_cache = offset_cache;
+          reserva_indices_cache = true;
+        }
+      }
+      if (!indices_en_cache && !indices32 && !reinicio && !desplazamiento && !cuadrilateros &&
           (orden == xenos::Endian::k8in16 || orden == xenos::Endian::kNone)) {
         // The normal case in NFSMW: 16 bits without restart or offset. They are uploaded as 16 bits, with a
         // branch-free loop the compiler can vectorize.
@@ -2985,7 +3027,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         vmin = minimo;
         vmax = maximo;
         indices_de_16 = true;
-      } else {
+      } else if (!indices_en_cache) {
         indices_.resize(cuenta);
         uint32_t* salida = indices_.data();
         for (uint32_t i = 0; i < cuenta; ++i) {
@@ -3958,13 +4000,32 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 #endif
     VkDeviceSize offset_indices = 0;
     if (con_indices) {
-      cat_subida_ = 2;
-      Reservar(bytes_indices, 4, offset_indices);
-      bytes_indices_subidos_ += bytes_indices;
-      std::memcpy(subida_datos_ + offset_indices,
-                  indices_de_16 ? static_cast<const void*>(indices16_.data())
-                                : static_cast<const void*>(indices_.data()),
-                  size_t(bytes_indices));
+      if (indices_en_cache) {
+        offset_indices = VkDeviceSize(offset_indices_cache);
+      } else if (reserva_indices_cache) {
+        // fh2_nativo_cache_indices: the miss reserved room above; the converted copy goes to the persistent
+        // buffer (already swapped, plain copy like the upload one) instead of the upload buffer.
+        std::memcpy(cache_indices_datos_ + offset_indices_cache,
+                    indices_de_16 ? static_cast<const void*>(indices16_.data())
+                                  : static_cast<const void*>(indices_.data()),
+                    size_t(bytes_indices));
+        cache_indices_.Anotar(clave_indices_cache, offset_indices_cache, tick_indices_cache,
+                              huella_indices_cache, vmin, vmax, indices_de_16);
+        cache_indices_escrito_min_ =
+            std::min<VkDeviceSize>(cache_indices_escrito_min_, VkDeviceSize(offset_indices_cache));
+        cache_indices_escrito_max_ = std::max<VkDeviceSize>(
+            cache_indices_escrito_max_, VkDeviceSize(offset_indices_cache) + bytes_indices);
+        offset_indices = VkDeviceSize(offset_indices_cache);
+        indices_en_cache = true;
+      } else {
+        cat_subida_ = 2;
+        Reservar(bytes_indices, 4, offset_indices);
+        bytes_indices_subidos_ += bytes_indices;
+        std::memcpy(subida_datos_ + offset_indices,
+                    indices_de_16 ? static_cast<const void*>(indices16_.data())
+                                  : static_cast<const void*>(indices_.data()),
+                    size_t(bytes_indices));
+      }
     }
     // Only the registers each shader reads (EntradaShader::constantes_bytes). With the same generation, the
     // copy is reused if it already covers what this shader needs.
@@ -4472,7 +4533,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
        * more than one per frame, nothing is deferred: there is a guard below.
        */
       const uint32_t indices_dibujo =
-          uint32_t(indices_de_16 ? indices16_.size() : indices_.size());
+          indices_en_cache ? cuenta : uint32_t(indices_de_16 ? indices16_.size() : indices_.size());
       const bool geometria_de_domo = indices_dibujo == kIndicesDomoCielo;
       const bool primero_del_pase = dibujos_en_pase_ == 0;
       /* The full criterion, without the cvar or the guard: what is measured during the test. */
@@ -4532,7 +4593,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       // point to the same data.
       CieloAplazado& c = cielo_;
       c.pipeline = pipeline;
-      c.bufer = subida_;
+      c.bufer = indices_en_cache ? cache_indices_bufer_ : subida_;
       c.usa_ubo = usar_ubo_;
       c.push[0] = subida_direccion_ + constantes_vs_offset_;
       c.push[1] = subida_direccion_ + constantes_ps_offset_;
@@ -4556,7 +4617,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
       c.con_indices = con_indices;
       c.indices_de_16 = indices_de_16;
-      c.indices = uint32_t(indices_de_16 ? indices16_.size() : indices_.size());
+      c.indices = indices_en_cache ? cuenta : uint32_t(indices_de_16 ? indices16_.size() : indices_.size());
       c.primer_indice = uint32_t(offset_indices / (indices_de_16 ? 2 : 4));
       c.vmin = vmin;
       c.cuenta = cuenta;
@@ -4675,6 +4736,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (!grabado) {
       stencil_grabado_valido_ = false;
       tipo_indices_grabado_ = VK_INDEX_TYPE_MAX_ENUM;
+      bufer_indices_grabado_ = VK_NULL_HANDLE;
     }
     if (claves[4]) {
       const uint32_t frente = stencil_frente;  // computed before the recording block
@@ -4802,8 +4864,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     // Draws and triangles per render target type (same classification as the GPU time).
     {
       const uint32_t categoria = CategoriaDeDestino(pitch, claves);
-      const uint32_t vertices_dibujo = con_indices ? uint32_t(indices_de_16 ? indices16_.size() : indices_.size())
-                                                   : cuenta;
+      const uint32_t vertices_dibujo =
+          con_indices ? (indices_en_cache ? cuenta
+                                          : uint32_t(indices_de_16 ? indices16_.size() : indices_.size()))
+                      : cuenta;
       ++dibujos_por_categoria_[categoria];
       triangulos_por_categoria_[categoria] += vertices_dibujo / 3;
     }
@@ -4842,16 +4906,20 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
     }
     if (con_indices) {
-      // The upload buffer is bound once per index type and each draw uses firstIndex.
+      // The upload buffer is bound once per index type and each draw uses firstIndex; the index cache's
+      // buffer likewise (fh2_nativo_cache_indices), so the buffer is tracked too.
       const VkIndexType tipo_indices = indices_de_16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
-      if (tipo_indices != tipo_indices_grabado_) {
-        NFSMW_SUB(9, dfn_.vkCmdBindIndexBuffer(cmd, subida_, 0, tipo_indices));
+      VkBuffer bufer_indices = indices_en_cache ? cache_indices_bufer_ : subida_;
+      if (tipo_indices != tipo_indices_grabado_ || bufer_indices != bufer_indices_grabado_) {
+        NFSMW_SUB(9, dfn_.vkCmdBindIndexBuffer(cmd, bufer_indices, 0, tipo_indices));
         tipo_indices_grabado_ = tipo_indices;
+        bufer_indices_grabado_ = bufer_indices;
       }
       // On the base-zero path, vertexOffset also carries where the copy starts (in vertices).
       const int32_t desplazamiento_vertices =
           base_cero ? int32_t(int64_t(primer_vertice) - int64_t(vmin)) : -int32_t(vmin);
-      uint32_t cuenta_indices = uint32_t(indices_de_16 ? indices16_.size() : indices_.size());
+      uint32_t cuenta_indices =
+          indices_en_cache ? cuenta : uint32_t(indices_de_16 ? indices16_.size() : indices_.size());
 #if defined(FH2_RECOMP)
       if (fh2_tres_indices_) {
         cuenta_indices = std::min(cuenta_indices, 3u);  // fh2_nativo_omitir_categorias 8192 (FPS test)
@@ -4958,6 +5026,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     enlaces_grabados_ = 0;
     stencil_grabado_valido_ = false;
     tipo_indices_grabado_ = VK_INDEX_TYPE_MAX_ENUM;
+    bufer_indices_grabado_ = VK_NULL_HANDLE;
   }
 
   // Adds the time since the mark to the stage and moves the mark to now.
@@ -5896,6 +5965,15 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       cache_escrito_min_ = ~VkDeviceSize(0);
       cache_escrito_max_ = 0;
     }
+    if (cache_indices_escrito_max_ > cache_indices_escrito_min_) {
+      if (!subida_coherente_) {  // same memory type as the upload buffer
+        rex::ui::vulkan::util::FlushMappedMemoryRange(dispositivo_, cache_indices_memoria_, subida_tipo_,
+                                                      cache_indices_escrito_min_, cache_indices_tamano_real_,
+                                                      cache_indices_escrito_max_ - cache_indices_escrito_min_);
+      }
+      cache_indices_escrito_min_ = ~VkDeviceSize(0);
+      cache_indices_escrito_max_ = 0;
+    }
     if (compartidas_aparte_ && compartidas_usado_ && !compartidas_coherente_) {
       rex::ui::vulkan::util::FlushMappedMemoryRange(dispositivo_, compartidas_memoria_, compartidas_tipo_, 0,
                                                     compartidas_tamano_real_, compartidas_usado_);
@@ -5947,6 +6025,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     // The vertex cache numbers this submission and learns what the GPU has finished (this slot's fence was waited).
     if (cache_activo_) {
       cache_vertices_.NuevaRanura(ranura);
+    }
+    // Same for the index cache (fh2_nativo_cache_indices).
+    if (cache_indices_activo_) {
+      cache_indices_.NuevaRanura(ranura);
     }
     enviado_tras_sombras_ = false;  // the post-shadow submission is once per frame
     /*
@@ -8556,6 +8638,18 @@ class DibujosVulkanImpl final : public DibujosVulkan {
           c.avisos(), c.discrepancias(), cache_comprobar_ ? " (comprobando)" : "");
     }
 
+    // fh2_nativo_cache_indices: totals since the start.
+    if (cache_indices_activo_) {
+      const CacheIndicesEntreFotogramas& ci = cache_indices_;
+      NFSMW_INFORME_ANILLO(
+          "[fh2 nativo] cache de indices: {} consultas, {} aciertos ({:.1f} MB sin copiar), {} copias ({:.1f} MB), "
+          "{} sucias, {} volatiles, {} entradas, {} segmentos reciclados, {} veces lleno, {} avisos de escritura, "
+          "{} discrepancias{}",
+          ci.consultas(), ci.aciertos(), double(ci.bytes_ahorrados()) / 1048576.0, ci.copias(),
+          double(ci.bytes_copiados()) / 1048576.0, ci.sucias(), ci.volatiles(), ci.entradas(), ci.reciclados(),
+          ci.llenos(), ci.avisos(), ci.discrepancias(), cache_indices_comprobar_ ? " (comprobando)" : "");
+    }
+
     copias_inf_ = InformeCopiasCifras{};
   }
 
@@ -8966,6 +9060,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     CrearCompartidasAparte();
 
     CrearCacheVertices();
+    CrearCacheIndices();
 
     UsarRanura(0);
     return true;
@@ -9043,6 +9138,82 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (cache_memoria_ != VK_NULL_HANDLE) {
       dfn_.vkFreeMemory(device_, cache_memoria_, nullptr);
       cache_memoria_ = VK_NULL_HANDLE;
+    }
+  }
+
+  // fh2_nativo_cache_indices: its own buffer of the upload buffer's memory type, mapped for good, and the write
+  // watch's callback. A buffer of its own rather than sharing the vertex cache's: index copies are small and
+  // frequent, and mixing them would evict vertex copies. If anything fails the cache stays off and nothing else
+  // changes.
+  void CrearCacheIndices() {
+    if (!REXCVAR_GET(fh2_nativo_cache_indices)) {
+      return;
+    }
+    // 32 MB on phones with 8 GB of RAM or more, 16 MB on the others (the Moto G9 Play has 4 GB): index traffic
+    // is about a tenth of the vertex one.
+#if defined(__linux__)
+    const uint64_t ram = uint64_t(sysconf(_SC_PHYS_PAGES)) * uint64_t(sysconf(_SC_PAGESIZE));
+#else
+    const uint64_t ram = 0;
+#endif
+    cache_indices_.Configurar(ram >= (uint64_t(7) << 30) ? 8 : 4);
+    VkBufferCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    info.size = cache_indices_.Tamano();
+    info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    bool bien = memoria_ != nullptr &&
+                dfn_.vkCreateBuffer(device_, &info, nullptr, &cache_indices_bufer_) == VK_SUCCESS;
+    if (bien) {
+      VkMemoryRequirements requisitos{};
+      dfn_.vkGetBufferMemoryRequirements(device_, cache_indices_bufer_, &requisitos);
+      VkMemoryAllocateInfo reserva{};
+      reserva.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+      reserva.allocationSize = requisitos.size;
+      reserva.memoryTypeIndex = subida_tipo_;
+      cache_indices_tamano_real_ = requisitos.size;
+      bien = ((requisitos.memoryTypeBits >> subida_tipo_) & 1) &&
+             dfn_.vkAllocateMemory(device_, &reserva, nullptr, &cache_indices_memoria_) == VK_SUCCESS &&
+             dfn_.vkBindBufferMemory(device_, cache_indices_bufer_, cache_indices_memoria_, 0) == VK_SUCCESS &&
+             dfn_.vkMapMemory(device_, cache_indices_memoria_, 0, VK_WHOLE_SIZE, 0,
+                              reinterpret_cast<void**>(&cache_indices_datos_)) == VK_SUCCESS;
+    }
+    if (bien) {
+      cache_indices_vigilancia_ = memoria_->RegisterPhysicalMemoryInvalidationCallback(
+          &CacheIndicesEntreFotogramas::EscrituraVigilada, &cache_indices_);
+      bien = cache_indices_vigilancia_ != nullptr;
+    }
+    if (!bien) {
+      DestruirCacheIndices();
+      REXLOG_ERROR("[fh2 nativo] cache de indices: no se pudo crear su bufer de {} MB; queda apagada",
+                   cache_indices_.Tamano() >> 20);
+      return;
+    }
+    cache_indices_activo_ = true;
+    cache_indices_comprobar_ = REXCVAR_GET(fh2_nativo_cache_indices_comprobar);
+    REXLOG_INFO("[fh2 nativo] cache de indices: ENCENDIDA, {} MB en el tipo de memoria {} ({}){}",
+                cache_indices_.Tamano() >> 20, subida_tipo_,
+                subida_coherente_ ? "coherente" : "se publica antes de enviar",
+                cache_indices_comprobar_ ? "; comprobando cada acierto con XXH3" : "");
+  }
+
+  void DestruirCacheIndices() {
+    cache_indices_activo_ = false;
+    if (cache_indices_vigilancia_ && memoria_) {
+      memoria_->UnregisterPhysicalMemoryInvalidationCallback(cache_indices_vigilancia_);
+      cache_indices_vigilancia_ = nullptr;
+    }
+    if (cache_indices_datos_) {
+      dfn_.vkUnmapMemory(device_, cache_indices_memoria_);
+      cache_indices_datos_ = nullptr;
+    }
+    if (cache_indices_bufer_ != VK_NULL_HANDLE) {
+      dfn_.vkDestroyBuffer(device_, cache_indices_bufer_, nullptr);
+      cache_indices_bufer_ = VK_NULL_HANDLE;
+    }
+    if (cache_indices_memoria_ != VK_NULL_HANDLE) {
+      dfn_.vkFreeMemory(device_, cache_indices_memoria_, nullptr);
+      cache_indices_memoria_ = VK_NULL_HANDLE;
     }
   }
 
@@ -14195,6 +14366,17 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   void* cache_vigilancia_ = nullptr;
   // What was written to it since the last submission, to publish it on non-coherent memory (AntesDeEnviar).
   VkDeviceSize cache_escrito_min_ = ~VkDeviceSize(0), cache_escrito_max_ = 0;
+  // fh2_nativo_cache_indices (CrearCacheIndices): its own persistent buffer. Same model as above.
+  CacheIndicesEntreFotogramas cache_indices_;
+  bool cache_indices_activo_ = false;
+  bool cache_indices_comprobar_ = false;
+  VkBuffer cache_indices_bufer_ = VK_NULL_HANDLE;
+  VkDeviceMemory cache_indices_memoria_ = VK_NULL_HANDLE;
+  VkDeviceSize cache_indices_tamano_real_ = 0;
+  uint8_t* cache_indices_datos_ = nullptr;
+  void* cache_indices_vigilancia_ = nullptr;
+  // What was written to it since the last submission, to publish it on non-coherent memory (AntesDeEnviar).
+  VkDeviceSize cache_indices_escrito_min_ = ~VkDeviceSize(0), cache_indices_escrito_max_ = 0;
   VkBuffer subida_enlazada_ = VK_NULL_HANDLE;  // the upload buffer bufers_vertices_ was filled with
   // IndicesDe16 (nfsmw_nativo_indices_neon). Ring only.
   int32_t indices_neon_ = -1;  // -1 cvar not read, 0 plain loop, 1 NEON
@@ -14215,6 +14397,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   uint32_t stencil_grabado_[2] = {};  // RB_STENCILREFMASK for front and back
   bool stencil_grabado_valido_ = false;
   VkIndexType tipo_indices_grabado_ = VK_INDEX_TYPE_MAX_ENUM;
+  VkBuffer bufer_indices_grabado_ = VK_NULL_HANDLE;  // the buffer the index binding above came from
   // Shared constants of the previous draw and where they were uploaded.
   uint32_t compartidas_previas_[kPalabrasCompartidas] = {};
   uint64_t compartidas_miradas_ = 0;    // C6 report, to decide how to make the block cheaper
