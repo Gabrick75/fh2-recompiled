@@ -143,10 +143,20 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_resolver_sin_copia, true, "NFSMW",
  * would see the previous frame's content. It is added here.
  */
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_intercambiar_color, false, "NFSMW",
-                    "Renderizador nativo (20/09): al resolver el destino de color entero a una textura del "
-                    "mismo tamano, intercambiar las imagenes en vez de copiar 1280x720 pixeles. Son 4 copias "
-                    "por fotograma, el 78 % del trafico de copias. La imagen no cambia; si el juego dibuja "
-                    "encima sin borrar, se restaura");
+                     "Renderizador nativo (20/09): al resolver el destino de color entero a una textura del "
+                     "mismo tamano, intercambiar las imagenes en vez de copiar 1280x720 pixeles. Son 4 copias "
+                     "por fotograma, el 78 % del trafico de copias. La imagen no cambia; si el juego dibuja "
+                     "encima sin borrar, se restaura");
+#if defined(FH2_RECOMP)
+// Small color targets (the reflection cube's faces and reduction chain, pitch < 320) at their exact height
+// instead of max(720, pitch) rows: the ~40 tiny passes per frame open smaller framebuffers and move fewer
+// tiles. The image does not change; if the game ever resolves below the image, Copiar grows it back to full
+// height (self-healing, logged).
+REXCVAR_DEFINE_BOOL(fh2_nativo_destinos_exactos, false, "FH2",
+                    "Native renderer: small color render targets (pitch under 320) at their exact height "
+                    "instead of 720 rows")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+#endif
 
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_intercambiar_sin_borrado, true, "NFSMW",
                     "Renderizador nativo (20/09): intercambiar la imagen tambien cuando la orden de resolve no "
@@ -1506,6 +1516,45 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     return pipeline;
   }
 
+#if defined(FH2_RECOMP)
+  // Self-healing for fh2_nativo_destinos_exactos: recreates an exact-size target at full height in place (the
+  // map node stays, so estado_destino_ and the deferred-clear list stay valid). Carries over the held clear
+  // and resuelta_base so the recreation is invisible. Fires at most once per target: full height is what the
+  // old formula always made.
+  bool RecrearDestinoAlto(Imagen& destino, uint32_t base, uint32_t formato, uint32_t pitch) {
+    const uint32_t alto = std::min(kAltoMaximoDestino, std::max<uint32_t>(720, (pitch + 15) & ~15u));
+    if (alto <= destino.alto) {
+      return true;
+    }
+    REXLOG_WARN("[nativo] C2: destino {:03X} pitch {} resolvio por debajo de la altura {}: vuelve a {}",
+                base, formato, pitch, destino.alto, alto);
+    const bool borraba = destino.fh2_borrar;
+    const VkClearValue valor = destino.fh2_valor_borrar;
+    const uint32_t resuelta_base = destino.resuelta_base;
+    Destruir(destino);
+    uint32_t ancho_imagen = pitch, alto_imagen = alto;
+    Fh2Escalar(pitch, alto, ancho_imagen, alto_imagen);
+    const VkFormat formato_host = FormatoHostDestinoColor(formato);
+    if (formato_host == VK_FORMAT_UNDEFINED ||
+        !Crear(destino, ancho_imagen, alto_imagen,
+               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+               formato_host)) {
+      Rechazar(8, "no se pudo recrear un destino de render");
+      return false;
+    }
+    if (ancho_imagen != pitch) {
+      destino.ancho_guest = pitch;
+      destino.alto_guest = alto;
+    }
+    if (borraba) {
+      Fh2DiferirBorrado(destino, valor);
+    }
+    destino.resuelta_base = resuelta_base;
+    return true;
+  }
+#endif
+
   bool Copiar(const RegistrosCopia& reg) override {
     // Draws since the previous copy: those of the render target being resolved now (rear-view mirror
     // diagnostic).
@@ -1774,6 +1823,15 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if (!Grabar()) {
       return false;
     }
+#if defined(FH2_RECOMP)
+    // Self-healing for fh2_nativo_destinos_exactos: a resolve below the exact-size image grows it back to
+    // full height instead of clipping pixels (y1 is already in image pixels here).
+    if (resuelta && y1 > int32_t(destino_render->alto)) {
+      if (!RecrearDestinoAlto(*destino_render, info_color & 0xFFF, formato_color, pitch)) {
+        return false;
+      }
+    }
+#endif
     Preparar(*destino_render);
 #if defined(FH2_RECOMP)
     // fh2_nativo_prueba_magenta (debug): the render target is painted magenta right before a copy to that address,
@@ -4721,7 +4779,14 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
      * matches the resolved texture and the images can be swapped instead of copied, was tried: it breaks
      * the scene (the screen fills with a yellow smear). Reverted.
      */
-    const uint32_t alto = std::min(kAltoMaximoDestino, std::max<uint32_t>(720, (pitch + 15) & ~15u));
+    uint32_t alto = std::min(kAltoMaximoDestino, std::max<uint32_t>(720, (pitch + 15) & ~15u));
+#if defined(FH2_RECOMP)
+    // fh2_nativo_destinos_exactos: small targets at their exact height (the game resolves at most their pitch
+    // rows; Copiar grows the image back if it ever resolves below it).
+    if (REXCVAR_GET(fh2_nativo_destinos_exactos) && pitch > 0 && pitch < 320) {
+      alto = std::min(kAltoMaximoDestino, (pitch + 15) & ~15u);
+    }
+#endif
     Imagen imagen;
     const VkFormat formato_host = FormatoHostDestinoColor(formato);
     if (formato_host == VK_FORMAT_UNDEFINED) {

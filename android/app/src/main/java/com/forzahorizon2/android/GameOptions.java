@@ -46,6 +46,7 @@ final class GameOptions {
     // loss). Set to true to bring the row back (MainActivity.performancePage) and honor the saved choice again.
     static final boolean PERFORMANCE_HINTS_IN_MENU = false;
     static final String VERTEX_CACHE = "vertex_cache";  // fh2_nativo_cache_vertices (native), on by default
+    static final String EXACT_TARGETS = "exact_targets";  // fh2_nativo_destinos_exactos (native), off by default
     // Diagnostics (About page)
     static final String GPU_MEASUREMENTS = "gpu_measurements";  // fh2_nativo_medir_gpu: GPU times in the logs
     static final String ONE_PASS = "one_pass";                // fh2_uma_faixa: the scene in one pass, not 3 tiles
@@ -280,6 +281,7 @@ final class GameOptions {
             // Off by default: each GPU timestamp makes a phone's GPU wait for the work in flight.
             args.add("--fh2_nativo_medir_gpu=" + flag(context, GPU_MEASUREMENTS));
             args.add("--fh2_nativo_cache_vertices=" + flag(context, VERTEX_CACHE));
+            args.add("--fh2_nativo_destinos_exactos=" + flag(context, EXACT_TARGETS));
         }
         switch (get(context, ANTI_ALIASING)) {
             case "off":
