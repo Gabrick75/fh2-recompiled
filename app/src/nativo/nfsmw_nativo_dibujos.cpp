@@ -90,6 +90,9 @@ static const uint32_t kSpirvResplandorSuave[1] = {0};
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#if defined(__linux__)
+#include <unistd.h>  // sysconf: the phone's RAM, for the vertex cache's size
+#endif
 
 /*
  * xxHash reads with memcpy (XXH_FORCE_MEMORY_ACCESS 0). The method it picks for GCC (1) reads through
@@ -8975,9 +8978,16 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (!REXCVAR_GET(fh2_nativo_cache_vertices)) {
       return;
     }
+    // 192 MB on phones with 8 GB of RAM or more, 64 MB on the others (the Moto G9 Play has 4 GB).
+#if defined(__linux__)
+    const uint64_t ram = uint64_t(sysconf(_SC_PHYS_PAGES)) * uint64_t(sysconf(_SC_PAGESIZE));
+#else
+    const uint64_t ram = 0;
+#endif
+    cache_vertices_.Configurar(ram >= (uint64_t(7) << 30) ? 48 : 16);
     VkBufferCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    info.size = CacheVerticesEntreFotogramas::kTamano;
+    info.size = cache_vertices_.Tamano();
     info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     bool bien = memoria_ != nullptr && dfn_.vkCreateBuffer(device_, &info, nullptr, &cache_bufer_) == VK_SUCCESS;
@@ -9004,13 +9014,13 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (!bien) {
       DestruirCacheVertices();
       REXLOG_ERROR("[fh2 nativo] cache de vertices: no se pudo crear su bufer de {} MB; queda apagada",
-                   CacheVerticesEntreFotogramas::kTamano >> 20);
+                   cache_vertices_.Tamano() >> 20);
       return;
     }
     cache_activo_ = true;
     cache_comprobar_ = REXCVAR_GET(fh2_nativo_cache_vertices_comprobar);
     REXLOG_INFO("[fh2 nativo] cache de vertices: ENCENDIDA, {} MB en el tipo de memoria {} ({}){}",
-                CacheVerticesEntreFotogramas::kTamano >> 20, subida_tipo_,
+                cache_vertices_.Tamano() >> 20, subida_tipo_,
                 subida_coherente_ ? "coherente" : "se publica antes de enviar",
                 cache_comprobar_ ? "; comprobando cada acierto con XXH3" : "");
   }

@@ -224,9 +224,11 @@ class DedupeVertices {
  */
 class CacheVerticesEntreFotogramas {
  public:
-  static constexpr uint32_t kSegmentos = 16;
+  // 4 MB segments: 16 (64 MB) by default, up to 48 (192 MB) with Configurar. On the S23 Ultra in daylight 64 MB were
+  // not enough: every segment held copies used in the last submission, and 135,000-577,000 reservations per session
+  // fell back to the upload buffer.
+  static constexpr uint32_t kMaxSegmentos = 48;
   static constexpr uint64_t kTamanoSegmento = uint64_t(4) << 20;
-  static constexpr uint64_t kTamano = kSegmentos * kTamanoSegmento;  // 64 MB
   static constexpr uint32_t kMinBytes = 4096;                          // smaller ranges share pages with other data
   static constexpr uint32_t kMaxBytes = uint32_t(kTamanoSegmento / 4);
   static constexpr uint32_t kSuciasParaVolatil = 3;
@@ -235,6 +237,10 @@ class CacheVerticesEntreFotogramas {
   CacheVerticesEntreFotogramas() : ticks_pagina_(new std::atomic<uint32_t>[kPaginas]) {
     for (uint32_t i = 0; i < kPaginas; ++i) ticks_pagina_[i].store(0, std::memory_order_relaxed);
   }
+
+  // Before the buffer is created: how many segments it has.
+  void Configurar(uint32_t segmentos) { segmentos_ = std::clamp<uint32_t>(segmentos, 2, kMaxSegmentos); }
+  uint64_t Tamano() const { return uint64_t(segmentos_) * kTamanoSegmento; }
 
   // Each work slot used (UsarRanura): the submission number of what is recorded now, and what the GPU has finished.
   void NuevaRanura(uint32_t ranura) {
@@ -298,7 +304,7 @@ class CacheVerticesEntreFotogramas {
   bool Reservar(uint32_t bytes, uint32_t paso, uint64_t& offset, uint32_t& tick) {
     paso = std::max<uint32_t>(paso, 4);
     for (int intento = 0; intento < 2; ++intento) {
-      if (segmento_actual_ < kSegmentos) {
+      if (segmento_actual_ < segmentos_) {
         const uint64_t base = uint64_t(segmento_actual_) * kTamanoSegmento;
         const uint64_t inicio = (base + cursor_ + paso - 1) / paso * paso;
         if (inicio + bytes <= base + kTamanoSegmento) {
@@ -362,14 +368,14 @@ class CacheVerticesEntreFotogramas {
 
   // The least recently used segment the GPU has finished with; its copies are dropped.
   bool SiguienteSegmento() {
-    uint32_t elegido = kSegmentos;
-    for (uint32_t s = 0; s < kSegmentos; ++s) {
+    uint32_t elegido = segmentos_;
+    for (uint32_t s = 0; s < segmentos_; ++s) {
       if (s != segmento_actual_ && ultimo_uso_[s] <= completado_ &&
-          (elegido == kSegmentos || ultimo_uso_[s] < ultimo_uso_[elegido])) {
+          (elegido == segmentos_ || ultimo_uso_[s] < ultimo_uso_[elegido])) {
         elegido = s;
       }
     }
-    if (elegido == kSegmentos) {
+    if (elegido == segmentos_) {
       return false;
     }
     for (uint64_t clave : claves_segmento_[elegido]) {
@@ -391,10 +397,11 @@ class CacheVerticesEntreFotogramas {
   std::atomic<uint64_t> avisos_{0};
   std::unordered_map<uint64_t, Entrada> entradas_;
   std::unordered_set<uint64_t> volatiles_;
-  std::array<std::vector<uint64_t>, kSegmentos> claves_segmento_{};
-  std::array<uint64_t, kSegmentos> ultimo_uso_{};  // submission number that last used each segment
+  std::array<std::vector<uint64_t>, kMaxSegmentos> claves_segmento_{};
+  std::array<uint64_t, kMaxSegmentos> ultimo_uso_{};  // submission number that last used each segment
   std::array<uint64_t, kMaxRanuras> serie_de_ranura_{};
   uint64_t serie_ = 0, completado_ = 0;
+  uint32_t segmentos_ = 16;
   uint32_t segmento_actual_ = 0;
   uint64_t cursor_ = 0;
 
