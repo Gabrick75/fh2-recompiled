@@ -1351,7 +1351,14 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
         return pageScroll(ui.pageTitle(pageName(ABOUT), null),
                 ui.group(hero),
                 ui.header(tr("Diagnóstico", "Diagnostics")),
-                ui.group(saveReport),
+                ui.group(saveReport,
+                        ui.toggleRow(tr("Medir a GPU nos logs", "Measure the GPU in the logs"),
+                        tr("Grava no log quanto tempo a GPU gasta em cada parte do quadro. Só para investigar: " +
+                           "deixa o jogo mais lento, porque cada medição faz a GPU esperar.",
+                           "Writes to the log how long the GPU spends on each part of the frame. For " +
+                           "investigating only: it slows the game down, since each measurement makes the GPU wait."),
+                        GameOptions.flag(this, GameOptions.GPU_MEASUREMENTS),
+                        v -> GameOptions.flag(this, GameOptions.GPU_MEASUREMENTS, v))),
                 ui.footer(tr("Logs e informações do aparelho num .zip, para investigar um problema. Nada é enviado.",
                         "Logs and device information in a .zip, to look into a problem. Nothing is sent.")),
                 ui.header(tr("Projeto", "Project")),
