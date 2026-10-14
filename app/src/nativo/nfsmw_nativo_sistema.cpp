@@ -4631,6 +4631,19 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
                     double(delta(4)) / 1048576.0, delta(5), delta(6), double(delta(7)) / 1e6,
                     delta(0) ? double(delta(7)) / 1e3 / double(delta(0)) : 0.0,
                     cronometrados ? double(delta(8)) / 1e6 * double(grabados) / double(cronometrados) : 0.0);
+        {
+          // Which buffer filled up: the 4-16 MB of shared constants or the 64 MB upload buffer, and how much of the
+          // latter went to FH2's fetch buffers 88-95 (instances, bones), which "vertices" does not count.
+          static uint64_t llenos_previos = 0, compartidas_previas = 0, buscas_previas = 0;
+          const uint64_t por_compartidas = d.envios_llenos_compartidas - compartidas_previas;
+          NFSMW_INFORME_SEGUN(diferir_informe, "[nativo] C6 subida llena: {} por constantes compartidas, {} por el bufer "
+                      "de subida; buscas de FH2 (fetch 88-95) {:.1f} MB",
+                      por_compartidas, d.envios_llenos - llenos_previos - por_compartidas,
+                      double(d.bytes_buscas_fh2 - buscas_previas) / 1048576.0);
+          llenos_previos = d.envios_llenos;
+          compartidas_previas = d.envios_llenos_compartidas;
+          buscas_previas = d.bytes_buscas_fh2;
+        }
         if (presentados_intervalo) {
           NFSMW_INFORME_SEGUN(diferir_informe, "[nativo] C6 vertices sin repetir: {} enlaces reaprovechados, {:.2f} MB que "
                       "NO se han copiado ({:.2f} MB por fotograma, {:.0f} % de los subidos){}",
