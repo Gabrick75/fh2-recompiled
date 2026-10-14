@@ -192,38 +192,6 @@ static bool FindEntryForAddress(void* address, LinuxMapEntry& out_entry) {
   return false;
 }
 
-// Check if [base, base+length) is fully covered by existing mappings (no gaps)
-static bool IsRangeFullyMapped(void* base_address, size_t length) {
-  if (!base_address || length == 0)
-    return false;
-
-  const uintptr_t begin = reinterpret_cast<uintptr_t>(base_address);
-  const uintptr_t end = begin + length;
-  if (end < begin) {  // overflow check
-    return false;
-  }
-
-  std::ifstream maps("/proc/self/maps");
-  if (!maps.is_open())
-    return false;
-
-  uintptr_t cursor = begin;
-  std::string line;
-  while (std::getline(maps, line)) {
-    LinuxMapEntry e;
-    if (!ParseProcMapsLine(line, e))
-      continue;
-    if (e.end <= cursor)
-      continue;
-    if (e.start > cursor)
-      return false;  // gap found
-    cursor = e.end;
-    if (cursor >= end)
-      return true;
-  }
-  return cursor >= end;
-}
-
 // Convert /proc/self/maps permission chars to PageAccess
 static PageAccess PermsToPageAccess(const char perms[5]) {
   const bool r = perms[0] == 'r';
@@ -428,12 +396,12 @@ void* AllocFixed(void* base_address, size_t length, AllocationType allocation_ty
   if (errno == EEXIST && base_address &&
       (allocation_type == AllocationType::kCommit ||
        allocation_type == AllocationType::kReserveCommit)) {
-    // Verify the entire range is mapped before using mprotect
-    if (IsRangeFullyMapped(base_address, length)) {
-      if (mprotect(base_address, length, static_cast<int>(prot_requested)) == 0) {
-        Protections().Set(base_address, length, ProtectionValue(access));
-        return base_address;
-      }
+    // mprotect fails with ENOMEM if any page of the range is unmapped, so it is the check itself. The range used
+    // to be verified first by reading the whole /proc/self/maps (thousands of lines on Android) on every commit:
+    // 11 % of FH2's main thread on a Moto G9 Play in a race (MmAllocatePhysicalMemoryEx -> AllocRange -> here).
+    if (length != 0 && mprotect(base_address, length, static_cast<int>(prot_requested)) == 0) {
+      Protections().Set(base_address, length, ProtectionValue(access));
+      return base_address;
     }
   }
 #endif
