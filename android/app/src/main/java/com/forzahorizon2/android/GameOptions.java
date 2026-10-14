@@ -41,6 +41,9 @@ final class GameOptions {
     // Performance
     static final String PIN_THREADS = "pin_threads";
     static final String PERFORMANCE_HINTS = "performance_hints";  // fh2_android_adpf (Android's ADPF)
+    // The ADPF toggle is out of the menu: the hints are always on (the 2026-10-14 A/B on the S23 Ultra showed no
+    // loss). Set to true to bring the row back (MainActivity.performancePage) and honor the saved choice again.
+    static final boolean PERFORMANCE_HINTS_IN_MENU = false;
     static final String ONE_PASS = "one_pass";                // fh2_uma_faixa: the scene in one pass, not 3 tiles
     static final String ADAPTIVE_VBLANK = "adaptive_vblank";  // vblank_adaptativo
     static final String RESOLVE_SHORTCUT = "resolve_shortcut";  // gpu_atalho_resolve
@@ -291,7 +294,7 @@ final class GameOptions {
         args.add("--fh2_android_nucleos_grandes=" + flag(context, PIN_THREADS));
         // 'auto': the command processor alone on the fastest core (+16 % on the S23 Ultra), see android_rendimiento.cpp.
         args.add("--fh2_android_afinidade=" + (flag(context, PIN_THREADS) ? "auto" : "off"));  // never empty: the cvar parser aborts on it
-        args.add("--fh2_android_adpf=" + flag(context, PERFORMANCE_HINTS));
+        args.add("--fh2_android_adpf=" + (!PERFORMANCE_HINTS_IN_MENU || flag(context, PERFORMANCE_HINTS)));
         // Emulated Xenos GPU on Android drivers (from nfsmw-android's "xenos" mode): ordinary descriptor sets,
         // host framebuffers, no geometry shader or non-solid fill required, shaders compiled before drawing.
         args.add("--gpu_plugin=xenos");
