@@ -853,6 +853,14 @@ public final class MainActivity extends AppCompatActivity {
                    "emulated or the native one) alone on the fastest (+16 %)."),
                 GameOptions.flag(this, GameOptions.PIN_THREADS),
                 v -> GameOptions.flag(this, GameOptions.PIN_THREADS, v)));
+        rows.add(ui.toggleRow(tr("Cache de vértices entre quadros (experimental)",
+                        "Vertex cache across frames (experimental)"),
+                tr("Reaproveita os vértices que o jogo não mudou desde o quadro anterior, em vez de copiá-los de " +
+                   "novo. Em teste: desligue se a imagem ficar errada ou o jogo ficar mais lento.",
+                   "Reuses the vertices the game has not changed since the previous frame instead of copying them " +
+                   "again. Under test: turn it off if the image looks wrong or the game gets slower."),
+                GameOptions.flag(this, GameOptions.VERTEX_CACHE),
+                v -> GameOptions.flag(this, GameOptions.VERTEX_CACHE, v)));
         if (GameOptions.PERFORMANCE_HINTS_IN_MENU) {
             rows.add(ui.toggleRow(tr("Dicas de desempenho (ADPF)", "Performance hints (ADPF)"),
                     tr("Diz ao Android quanto cada quadro trabalhou e a meta do limite de FPS, para ele subir " +

@@ -44,6 +44,7 @@ final class GameOptions {
     // The ADPF toggle is out of the menu: the hints are always on (the 2026-10-14 A/B on the S23 Ultra showed no
     // loss). Set to true to bring the row back (MainActivity.performancePage) and honor the saved choice again.
     static final boolean PERFORMANCE_HINTS_IN_MENU = false;
+    static final String VERTEX_CACHE = "vertex_cache";  // fh2_nativo_cache_vertices (native, experimental)
     // Diagnostics (About page)
     static final String GPU_MEASUREMENTS = "gpu_measurements";  // fh2_nativo_medir_gpu: GPU times in the logs
     static final String ONE_PASS = "one_pass";                // fh2_uma_faixa: the scene in one pass, not 3 tiles
@@ -277,6 +278,7 @@ final class GameOptions {
             args.add("--nfsmw_nativo_compuesta_perezosa=" + flag(context, LAZY_COMPOSITE));
             // Off by default: each GPU timestamp makes a phone's GPU wait for the work in flight.
             args.add("--fh2_nativo_medir_gpu=" + flag(context, GPU_MEASUREMENTS));
+            args.add("--fh2_nativo_cache_vertices=" + flag(context, VERTEX_CACHE));
         }
         switch (get(context, ANTI_ALIASING)) {
             case "off":
