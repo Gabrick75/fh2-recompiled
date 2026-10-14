@@ -645,7 +645,17 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_salida_sin_espera, true, "NFSMW",
 // The GPU measurements of the reports: timestamps between pass categories and pipeline statistics per pass. Only
 // measurements (the image does not change), but on a tiled GPU each timestamp at the bottom of the pipe and each
 // statistics query makes the GPU wait for what is in flight.
-REXCVAR_DEFINE_BOOL(fh2_nativo_medir_gpu, true, "FH2",
+//
+// Off on Android: nothing but the C2 reports reads them, and the phones are GPU-bound. On the S23 Ultra in daylight
+// (2026-10-14) the GPU took 32.4 ms per Swap at 30 FPS, 17 ms of it in the ~45 small passes of the reflection
+// cubemap chain (one draw each), where the category changes put a timestamp between almost every pass. The GPU
+// breakdown of the reports needs --fh2_nativo_medir_gpu=true.
+#if REX_PLATFORM_ANDROID
+#define FH2_MEDIR_GPU_POR_DEFECTO false
+#else
+#define FH2_MEDIR_GPU_POR_DEFECTO true
+#endif
+REXCVAR_DEFINE_BOOL(fh2_nativo_medir_gpu, FH2_MEDIR_GPU_POR_DEFECTO, "FH2",
                     "Native renderer: GPU timestamps and pipeline statistics for the reports (measurement only)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_marcas_precisas, true, "NFSMW",
