@@ -5361,8 +5361,68 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     fh2_escala_sets_.clear();
     if (fh2_escala_pool_ != VK_NULL_HANDLE) {
       dfn_.vkResetDescriptorPool(device_, fh2_escala_pool_, 0);
-      fh2_escala_sets_libres_ = 256;
+      fh2_escala_sets_libres_ = kFh2SetsEscalaPorPool;
     }
+  }
+
+  /*
+   * The full pool used to cost a whole GPU wait, half of the stutters on the S23.
+   *
+   * The graveyard (fh2_nativo_cementerio) gives a resolved address a new image, so a new view, and every one
+   * of those makes a new (render target, texture) pair: the 256 sets ran out every few frames. Each time
+   * Fh2CopiarConEscala submitted, waited for the GPU and reset the pool: the [tiron] frames through that line
+   * (destinos.cpp 5393 in the 2026-10-13 21:00 session at 160x90) waited 45 ms on the fence against 3.9 ms
+   * for the others. Now the full pool is set aside with the submission that last uses it, like the graveyard's
+   * images, and a free one (finished, reset) or a new one takes its place. Nobody waits.
+   */
+  static constexpr uint32_t kFh2SetsEscalaPorPool = 1024;
+
+  // A new pool for the scaled copies' descriptor sets, or VK_NULL_HANDLE.
+  VkDescriptorPool Fh2CrearPoolEscala() {
+    const VkDescriptorPoolSize tamanos[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kFh2SetsEscalaPorPool},
+                                             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kFh2SetsEscalaPorPool}};
+    VkDescriptorPoolCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    info.maxSets = kFh2SetsEscalaPorPool;
+    info.poolSizeCount = 2;
+    info.pPoolSizes = tamanos;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (dfn_.vkCreateDescriptorPool(device_, &info, nullptr, &pool) != VK_SUCCESS) return VK_NULL_HANDLE;
+    ++fh2_escala_pools_creados_;
+    return pool;
+  }
+
+  // The current pool is full: it waits aside for the submission being recorded, and a finished pool (reset) or a
+  // new one becomes current. False if no pool could be made.
+  bool Fh2TrocarPoolEscala() {
+    fh2_escala_retirados_.push_back({fh2_escala_pool_, envios_ + 1});
+    fh2_escala_pool_ = VK_NULL_HANDLE;
+    fh2_escala_sets_.clear();
+    ++fh2_escala_trocas_;
+    uint64_t pendiente_minima = UINT64_MAX;
+    for (RanuraTrabajo& r : ranuras_) {
+      if (r.pendiente && dfn_.vkGetFenceStatus(device_, r.fence) != VK_SUCCESS) {
+        pendiente_minima = std::min(pendiente_minima, r.orden);
+      }
+    }
+    for (auto it = fh2_escala_retirados_.begin(); it != fh2_escala_retirados_.end(); ++it) {
+      if (it->orden <= envios_ && it->orden < pendiente_minima) {
+        fh2_escala_pool_ = it->pool;
+        fh2_escala_retirados_.erase(it);
+        dfn_.vkResetDescriptorPool(device_, fh2_escala_pool_, 0);
+        break;
+      }
+    }
+    if (fh2_escala_pool_ == VK_NULL_HANDLE) {
+      fh2_escala_pool_ = Fh2CrearPoolEscala();
+      if (fh2_escala_pool_ == VK_NULL_HANDLE) return false;
+    }
+    fh2_escala_sets_libres_ = kFh2SetsEscalaPorPool;
+    if (fh2_escala_trocas_ == 1 || fh2_escala_trocas_ % 200 == 0) {
+      REXLOG_INFO("[fh2 nativo] copias con sesgo de exponente: pool de descriptores lleno {} veces, cambiado sin "
+                  "esperar a la GPU ({} pools creados, {} esperando)",
+                  fh2_escala_trocas_, fh2_escala_pools_creados_, fh2_escala_retirados_.size());
+    }
+    return true;
   }
 
   // origen: the render target; destino: the resolved texture (created with STORAGE usage). Copies w x h from
@@ -5374,25 +5434,30 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     const VkPipeline pipeline = Fh2PipelineEscala(destino.formato);
     if (pipeline == VK_NULL_HANDLE) return false;
     if (fh2_escala_pool_ == VK_NULL_HANDLE) {
-      const VkDescriptorPoolSize tamanos[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 256}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 256}};
-      VkDescriptorPoolCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-      info.maxSets = 256;
-      info.poolSizeCount = 2;
-      info.pPoolSizes = tamanos;
-      if (dfn_.vkCreateDescriptorPool(device_, &info, nullptr, &fh2_escala_pool_) != VK_SUCCESS) {
+      fh2_escala_pool_ = Fh2CrearPoolEscala();
+      if (fh2_escala_pool_ == VK_NULL_HANDLE) {
         fh2_escala_fallo_ = true;
         return false;
       }
-      fh2_escala_sets_libres_ = 256;
+      fh2_escala_sets_libres_ = kFh2SetsEscalaPorPool;
     }
     const auto clave = std::make_pair(origen.vista, destino.vista);
     auto it = fh2_escala_sets_.find(clave);
     if (it == fh2_escala_sets_.end()) {
-      if (!fh2_escala_sets_libres_) {
-        // Full: everything recorded is submitted and waited for, then the pool starts over.
+      if (!fh2_escala_sets_libres_ && !Fh2TrocarPoolEscala()) {
+        // Full and no other pool: everything recorded is submitted and waited for, then a pool starts over.
         EnviarTrabajo(true);
         EsperarGpu();
-        Fh2OlvidarSetsEscala();
+        for (const Fh2PoolRetirado& r : fh2_escala_retirados_) {
+          dfn_.vkDestroyDescriptorPool(device_, r.pool, nullptr);
+        }
+        fh2_escala_retirados_.clear();
+        fh2_escala_pool_ = Fh2CrearPoolEscala();
+        if (fh2_escala_pool_ == VK_NULL_HANDLE) {
+          fh2_escala_fallo_ = true;
+          return false;
+        }
+        fh2_escala_sets_libres_ = kFh2SetsEscalaPorPool;
         if (!Grabar()) return false;
       }
       VkDescriptorSetAllocateInfo reserva{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -7358,6 +7423,13 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   std::map<VkFormat, VkPipeline> fh2_escala_pipelines_;
   std::map<std::pair<VkImageView, VkImageView>, VkDescriptorSet> fh2_escala_sets_;
   uint32_t fh2_escala_sets_libres_ = 0;
+  // Full pools waiting for the last submission that may use their sets (Fh2TrocarPoolEscala).
+  struct Fh2PoolRetirado {
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    uint64_t orden = 0;
+  };
+  std::vector<Fh2PoolRetirado> fh2_escala_retirados_;
+  uint64_t fh2_escala_trocas_ = 0, fh2_escala_pools_creados_ = 0;
   bool fh2_escala_fallo_ = false;
   uint64_t fh2_copias_escaladas_ = 0;
   // Depth resolves read as 8_8_8_8 (Fh2EmpaquetarProfundidad): the packed texture per address, the depth and

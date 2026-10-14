@@ -1210,7 +1210,10 @@ constexpr size_t kRanurasDeTrabajo = 3;
 constexpr VkDeviceSize kTamanoSubida = VkDeviceSize(64) << 20;
 // Separate buffer for the shared constants, per slot. ~1,400 draws x 512 bytes = 0.7 MB per frame; if it
 // fills up, the work is submitted just as with the upload buffer.
-constexpr VkDeviceSize kTamanoCompartidas = VkDeviceSize(4) << 20;  // per work slot (there are three)
+// FH2 writes 1408 bytes per draw (+ the UBO alignment): 4 MB held only ~2,850 draws, and the festival and the
+// busy stretches of a race draw 2,600-2,900 per frame. Those "envios por subida llena" (1459 in 20 s at the
+// festival, 341 ms) came from here, with vertex uploads far below the 64 MB. 16 MB holds ~11,000.
+constexpr VkDeviceSize kTamanoCompartidas = VkDeviceSize(16) << 20;  // per work slot (there are three)
 // The pipeline cache and the prewarm list go in a single file in <NRO folder>/cache/ (nothing loose next to
 // the NRO, and a single pipelines .bin). Header "NFPC", version, list bytes and cache bytes (two uint32
 // and two uint64), then both parts: the list as is (its "NFPL" header and the records) and the
@@ -3617,6 +3620,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (necesarios > kTamanoSubida) {
       return Rechazar(13, "dibujo mayor que el bufer de subida");
     }
+    bytes_buscas_fh2_total_ += bytes_buscas_fh2;
     const bool compartidas_llenas =
         compartidas_aparte_ && usar_ubo_ &&
         compartidas_usado_ + kUboBytesCompartidas + alineacion_ubo_ > kTamanoCompartidas;
@@ -3624,6 +3628,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       const auto antes_envio = std::chrono::steady_clock::now();
       const bool enviado = contexto_->EnviarYEsperar();
       ++envios_llenos_;
+      if (compartidas_llenas && subida_usado_ + necesarios <= kTamanoSubida) {
+        ++envios_llenos_compartidas_;
+      }
       ns_envios_llenos_ += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                         std::chrono::steady_clock::now() - antes_envio)
                                         .count());
@@ -6514,6 +6521,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     e.pases = pases_empezados_;
     e.envios_llenos = envios_llenos_;
     e.ns_envios_llenos = ns_envios_llenos_;
+    e.envios_llenos_compartidas = envios_llenos_compartidas_;
+    e.bytes_buscas_fh2 = bytes_buscas_fh2_total_;
     e.bytes_vertices = bytes_vertices_;
     e.dedupe_aciertos = dedupe_.aciertos();
     e.dedupe_bytes = dedupe_.bytes_ahorrados();
@@ -14433,6 +14442,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   uint64_t pases_empezados_ = 0;
   uint64_t envios_llenos_ = 0;
   uint64_t ns_envios_llenos_ = 0;
+  uint64_t envios_llenos_compartidas_ = 0;
+  uint64_t bytes_buscas_fh2_total_ = 0;
   uint64_t bytes_vertices_ = 0;
   uint64_t bytes_indices_subidos_ = 0;
   uint64_t samplers_preparados_ = 0;

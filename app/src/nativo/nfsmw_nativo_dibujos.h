@@ -268,6 +268,8 @@ struct EstadisticasDibujos {
   uint64_t pases = 0;             // render passes empezados
   uint64_t envios_llenos = 0;     // submissions due to a full upload buffer
   uint64_t ns_envios_llenos = 0;  // inside those submissions, including the wait for the GPU
+  uint64_t envios_llenos_compartidas = 0;  // of those, because the shared constants buffer was full
+  uint64_t bytes_buscas_fh2 = 0;  // FH2 vertex fetch buffers 88-95 copied into the upload buffer
   uint64_t bytes_vertices = 0;
   // Deduplication of vertex uploads within the frame.
   uint64_t dedupe_aciertos = 0;
