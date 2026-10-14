@@ -814,7 +814,14 @@ public final class MainActivity extends AppCompatActivity {
                            "Keeps the game on the processor's fast cores only, and the GPU command processor (the " +
                            "emulated or the native one) alone on the fastest (+16 %)."),
                         GameOptions.flag(this, GameOptions.PIN_THREADS),
-                        v -> GameOptions.flag(this, GameOptions.PIN_THREADS, v))),
+                        v -> GameOptions.flag(this, GameOptions.PIN_THREADS, v)),
+                        ui.toggleRow(tr("Dicas de desempenho (ADPF)", "Performance hints (ADPF)"),
+                        tr("Diz ao Android quanto cada quadro trabalhou e a meta do limite de FPS, para ele subir " +
+                           "o clock do processador quando o quadro não cabe na meta.",
+                           "Tells Android how long each frame worked and the FPS limit's target, so it raises the " +
+                           "processor's clock when a frame does not fit the target."),
+                        GameOptions.flag(this, GameOptions.PERFORMANCE_HINTS),
+                        v -> GameOptions.flag(this, GameOptions.PERFORMANCE_HINTS, v))),
                 ui.header(tr("Driver da GPU", "GPU driver")),
                 driverGroup(),
                 ui.footer(adreno

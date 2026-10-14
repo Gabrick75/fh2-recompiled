@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -271,15 +272,25 @@ extern "C" void fh2_android_afinidade_iniciar() {
 }
 
 // ADPF: Android's performance hints (APerformanceHint, NDK, API 33+). The system is told the frame time we aim for
-// (33.3 ms) and how long each frame really took, for the threads that make it: the native ring thread and the game's
+// and how long each frame's work really took, for the threads that make it: the native ring thread and the game's
 // busiest threads. On the S23 Ultra the native renderer's work comes in bursts (threads at 30-50 %, GPU 59 % busy),
 // so the governors kept the big cores at 0.9-2.2 GHz of 3.36 and the GPU at 220 of 719 MHz; with the hints the
-// system raises the clocks for a frame that misses its target. From API 35 the report also carries the GPU time
-// (AWorkDuration), which the system may use for the GPU's clock. Looked up with dlsym: the app runs from API 26.
+// system raises the clocks for a frame whose work misses its target. Looked up with dlsym: the app runs from API 26.
+//
+// The work reported is the CPU time the session's busiest thread used since the previous Swap, not the time between
+// Swaps: with the FPS limit on, that period includes the wait for the vblank, so it never fell below the target and
+// the system never saw that the clocks were too low. S23 Ultra logs of 2026-10-14: with the 30 FPS limit the ring
+// took 20-29 us per draw against 11-15 us without it (the clock dropped), and the Swaps snapped to the 33/50/66 ms
+// vblank grid. No GPU time is reported: what the renderer measures (submit to fence) is latency with overlapping
+// submits (80-100 ms per 30 ms frame), not the GPU's busy time.
+//
+// The target is 85 % of the FPS limit's frame time (video_mode_refresh_rate is twice the limit,
+// GameOptions.vblankRate), so a frame's work fits before its vblank; with the limit off (480 Hz) it aims at 60 FPS.
 //
 //   --fh2_android_adpf=false   turns it off
 REXCVAR_DEFINE_BOOL(fh2_android_adpf, true, "FH2",
-                    "Android: performance hints (ADPF) for the ring and the game's busiest threads, 33.3 ms target")
+                    "Android: performance hints (ADPF) for the ring and the game's busiest threads, target from the "
+                    "FPS limit")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 namespace {
@@ -290,21 +301,15 @@ struct Adpf {
   using ReportActual = int (*)(void*, int64_t);
   using SetThreads = int (*)(void*, const pid_t*, size_t);
   using SetPreferPowerEfficiency = int (*)(void*, bool);
-  using ReportActual2 = int (*)(void*, void*);
-  using WorkCreate = void* (*)();
-  using WorkRelease = void (*)(void*);
-  using WorkSetI64 = void (*)(void*, int64_t);
   GetManager get_manager = nullptr;
   CreateSession create_session = nullptr;
   ReportActual report_actual = nullptr;
   SetThreads set_threads = nullptr;
   SetPreferPowerEfficiency prefer_efficiency = nullptr;
-  ReportActual2 report_actual2 = nullptr;
-  WorkCreate work_create = nullptr;
-  WorkRelease work_release = nullptr;
-  WorkSetI64 work_start = nullptr, work_total = nullptr, work_cpu = nullptr, work_gpu = nullptr;
   void* session = nullptr;
+  int64_t target_ns = 0;
   std::vector<pid_t> tids;
+  std::map<pid_t, int64_t> cpu_ns;  // each session thread's CPU time at the previous Swap
   std::mutex mutex;
   bool tried = false;
   uint64_t reports = 0;
@@ -315,7 +320,20 @@ Adpf& AdpfState() {
   return adpf;
 }
 
-constexpr int64_t kAdpfTargetNs = 33333333;
+// 85 % of the FPS limit's frame time, at most 60 FPS (the limit off is a 480 Hz vblank).
+int64_t AdpfTargetNs() {
+  double refresh_hz = std::atof(rex::cvar::GetFlagByName("video_mode_refresh_rate").c_str());
+  if (!(refresh_hz > 0.0)) refresh_hz = 60.0;
+  return int64_t(0.85e9 / std::min(60.0, refresh_hz / 2.0));
+}
+
+// A thread's CPU time; any thread of this process (the kernel's MAKE_THREAD_CPUCLOCK with CPUCLOCK_SCHED).
+int64_t ThreadCpuNs(pid_t tid) {
+  const clockid_t clock = clockid_t((~unsigned(tid) << 3) | 6);
+  timespec ts{};
+  if (clock_gettime(clock, &ts) != 0) return -1;
+  return int64_t(ts.tv_sec) * 1000000000 + ts.tv_nsec;
+}
 
 // CPU ticks of every thread, by name.
 std::map<pid_t, std::pair<std::string, unsigned long long>> ThreadTicks() {
@@ -366,10 +384,11 @@ void AdpfThreadLoop() {
     std::lock_guard<std::mutex> lock(a.mutex);
     if (chosen.empty() || chosen == a.tids) continue;
     if (!a.session) {
-      a.session = a.create_session(a.get_manager(), chosen.data(), chosen.size(), kAdpfTargetNs);
+      a.target_ns = AdpfTargetNs();
+      a.session = a.create_session(a.get_manager(), chosen.data(), chosen.size(), a.target_ns);
       if (a.session && a.prefer_efficiency) a.prefer_efficiency(a.session, false);
-      REXLOG_INFO("[adpf] sessao {} com {} threads (alvo 33,3 ms; GPU no relatorio: {})",
-                  a.session ? "criada" : "NAO criada", chosen.size(), a.report_actual2 ? "sim" : "nao");
+      REXLOG_INFO("[adpf] sessao {} com {} threads (alvo {:.1f} ms; trabalho = CPU da thread mais ocupada)",
+                  a.session ? "criada" : "NAO criada", chosen.size(), double(a.target_ns) / 1e6);
     } else if (a.set_threads) {
       a.set_threads(a.session, chosen.data(), chosen.size());
     }
@@ -380,12 +399,15 @@ void AdpfThreadLoop() {
 }  // namespace
 
 // Called by the native renderer at each Swap (app/src/nativo/nfsmw_nativo_destinos.cpp): the time since the previous
-// Swap and the GPU time of that frame (0 if unknown).
-extern "C" void fh2_android_fotograma(int64_t periodo_ns, int64_t gpu_ns) {
+// Swap. The work reported is the CPU time of the session's busiest thread since the previous Swap.
+extern "C" void fh2_android_fotograma(int64_t periodo_ns) {
   Adpf& a = AdpfState();
   if (!a.tried) {
     a.tried = true;
-    if (!REXCVAR_GET(fh2_android_adpf)) return;
+    if (!REXCVAR_GET(fh2_android_adpf)) {
+      REXLOG_INFO("[adpf] desligado");
+      return;
+    }
     void* lib = dlopen("libandroid.so", RTLD_NOW);
     if (!lib) return;
     a.get_manager = reinterpret_cast<Adpf::GetManager>(dlsym(lib, "APerformanceHint_getManager"));
@@ -394,16 +416,6 @@ extern "C" void fh2_android_fotograma(int64_t periodo_ns, int64_t gpu_ns) {
     a.set_threads = reinterpret_cast<Adpf::SetThreads>(dlsym(lib, "APerformanceHint_setThreads"));
     a.prefer_efficiency =
         reinterpret_cast<Adpf::SetPreferPowerEfficiency>(dlsym(lib, "APerformanceHint_setPreferPowerEfficiency"));
-    a.report_actual2 = reinterpret_cast<Adpf::ReportActual2>(dlsym(lib, "APerformanceHint_reportActualWorkDuration2"));
-    a.work_create = reinterpret_cast<Adpf::WorkCreate>(dlsym(lib, "AWorkDuration_create"));
-    a.work_release = reinterpret_cast<Adpf::WorkRelease>(dlsym(lib, "AWorkDuration_release"));
-    a.work_start = reinterpret_cast<Adpf::WorkSetI64>(dlsym(lib, "AWorkDuration_setWorkPeriodStartTimestampNanos"));
-    a.work_total = reinterpret_cast<Adpf::WorkSetI64>(dlsym(lib, "AWorkDuration_setActualTotalDurationNanos"));
-    a.work_cpu = reinterpret_cast<Adpf::WorkSetI64>(dlsym(lib, "AWorkDuration_setActualCpuDurationNanos"));
-    a.work_gpu = reinterpret_cast<Adpf::WorkSetI64>(dlsym(lib, "AWorkDuration_setActualGpuDurationNanos"));
-    if (!a.work_create || !a.work_release || !a.work_start || !a.work_total || !a.work_cpu || !a.work_gpu) {
-      a.report_actual2 = nullptr;
-    }
     if (!a.get_manager || !a.create_session || !a.report_actual || !a.get_manager()) {
       REXLOG_INFO("[adpf] dicas de desempenho indisponiveis neste Android");
       a.get_manager = nullptr;
@@ -414,21 +426,22 @@ extern "C" void fh2_android_fotograma(int64_t periodo_ns, int64_t gpu_ns) {
   if (!a.get_manager || periodo_ns <= 0) return;
   std::lock_guard<std::mutex> lock(a.mutex);
   if (!a.session) return;
-  if (a.report_actual2 && gpu_ns > 0) {
-    void* work = a.work_create();
-    const int64_t now = int64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                    std::chrono::steady_clock::now().time_since_epoch()).count());
-    a.work_start(work, now - periodo_ns);
-    a.work_total(work, periodo_ns);
-    a.work_cpu(work, periodo_ns);
-    a.work_gpu(work, gpu_ns);
-    a.report_actual2(a.session, work);
-    a.work_release(work);
-  } else {
-    a.report_actual(a.session, periodo_ns);
+  int64_t trabalho = 0;
+  for (pid_t tid : a.tids) {
+    const int64_t agora = ThreadCpuNs(tid);
+    if (agora < 0) continue;
+    const auto anterior = a.cpu_ns.find(tid);
+    if (anterior != a.cpu_ns.end()) trabalho = std::max(trabalho, agora - anterior->second);
+    a.cpu_ns[tid] = agora;
   }
+  for (auto it = a.cpu_ns.begin(); it != a.cpu_ns.end();) {  // threads that left the session
+    it = std::find(a.tids.begin(), a.tids.end(), it->first) == a.tids.end() ? a.cpu_ns.erase(it) : std::next(it);
+  }
+  if (trabalho <= 0) return;  // the first Swap after the session's threads changed
+  trabalho = std::min(trabalho, periodo_ns);
+  a.report_actual(a.session, trabalho);
   if (++a.reports == 300) {
-    REXLOG_INFO("[adpf] 300 quadros relatados (ultimo {:.1f} ms, GPU {:.1f} ms)", double(periodo_ns) / 1e6,
-                double(gpu_ns) / 1e6);
+    REXLOG_INFO("[adpf] 300 quadros relatados (ultimo: trabalho {:.1f} ms em {:.1f} ms, alvo {:.1f} ms)",
+                double(trabalho) / 1e6, double(periodo_ns) / 1e6, double(a.target_ns) / 1e6);
   }
 }

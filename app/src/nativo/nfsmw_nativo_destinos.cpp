@@ -72,7 +72,7 @@ extern "C" void RexSwitchPerfTiron(uint64_t inicio, uint64_t fin);
 // overlay; -1 until the first half second.
 std::atomic<float> g_fh2_nativo_fps{-1.0f};
 // Android's performance hints (android/app/src/main/cpp/android_rendimiento.cpp); absent on the PC.
-extern "C" void fh2_android_fotograma(int64_t periodo_ns, int64_t gpu_ns) __attribute__((weak));
+extern "C" void fh2_android_fotograma(int64_t periodo_ns) __attribute__((weak));
 std::atomic<float> g_fh2_nativo_ms{-1.0f};
 #endif
 
@@ -2607,16 +2607,13 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       ++swaps;
       const auto ahora_fps = std::chrono::steady_clock::now();
       const double segundos = std::chrono::duration<double>(ahora_fps - inicio).count();
-      // ADPF on Android (android_rendimiento.cpp): this frame's time and its GPU work time.
+      // ADPF on Android (android_rendimiento.cpp): this frame's time; the work in it is measured there.
       {
         static auto anterior = ahora_fps;
-        static uint64_t gpu_anterior = 0;
         const int64_t periodo = int64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(ahora_fps - anterior).count());
         anterior = ahora_fps;
-        const int64_t gpu = int64_t(ns_trabajo_gpu_ - gpu_anterior);
-        gpu_anterior = ns_trabajo_gpu_;
         if (fh2_android_fotograma) {
-          fh2_android_fotograma(periodo, gpu);
+          fh2_android_fotograma(periodo);
         }
       }
       if (segundos >= 0.5) {
