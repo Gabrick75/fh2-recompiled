@@ -871,6 +871,13 @@ public final class MainActivity extends AppCompatActivity {
                    "in a landscape with a lot of vegetation, from ~30 to ~40 fps."),
                 GameOptions.flag(this, GameOptions.VERTEX_CACHE),
                 v -> GameOptions.flag(this, GameOptions.VERTEX_CACHE, v)));
+        rows.add(ui.toggleRow(tr("Cache de índices entre quadros", "Index cache across frames"),
+                tr("Reaproveita os índices já convertidos que o jogo não mudou desde o quadro anterior, em vez de " +
+                   "convertê-los e copiá-los de novo.",
+                   "Reuses the already converted indices the game has not changed since the previous frame, " +
+                   "instead of converting and copying them again."),
+                GameOptions.flag(this, GameOptions.INDICES_CACHE),
+                v -> GameOptions.flag(this, GameOptions.INDICES_CACHE, v)));
         if (GameOptions.PERFORMANCE_HINTS_IN_MENU) {
             rows.add(ui.toggleRow(tr("Dicas de desempenho (ADPF)", "Performance hints (ADPF)"),
                     tr("Diz ao Android quanto cada quadro trabalhou e a meta do limite de FPS, para ele subir " +
