@@ -44,11 +44,14 @@ REXCVAR_DECLARE(bool, audio_diag_prioridad_critica);  // definida en audio_syste
  * Validated on the PC: the game thread goes from 167-302 ms to 10.7-16.1 ms per 10 s, without decoding
  * a single context, and the data is ready in 14-16 us on average (0.51 ms worst case), far below the
  * 5.3 ms of an audio block. 0 differences from the recompiled code.
+ *
+ * Android, from 2 to 1 (FH2). In mode 2 the kick thread takes the contexts back before the worker wakes up:
+ * on the S23 Ultra it decoded 19,339 of 20,141 per 10 s itself (900 ms, ~9 % of a core) and the worker 802;
+ * on the Moto G9 Play the game's audio thread was at 89 % with the decoding ~11 % of it. The worker's
+ * latency there was 88 us on average (1.24 ms worst), within the audio block.
  */
-#if REX_PLATFORM_SWITCH
+#if REX_PLATFORM_SWITCH || REX_PLATFORM_ANDROID
 #define REX_XMA_EN_TRABAJADOR_POR_DEFECTO 1
-#elif REX_PLATFORM_ANDROID
-#define REX_XMA_EN_TRABAJADOR_POR_DEFECTO 2
 #else
 #define REX_XMA_EN_TRABAJADOR_POR_DEFECTO 0
 #endif
