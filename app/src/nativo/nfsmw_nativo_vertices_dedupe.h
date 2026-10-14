@@ -68,15 +68,14 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
-#include <cstdint>
-#include <vector>
 #include <atomic>
-#include <cstring>
-
-#include <vulkan/vulkan.h>
-#include <rex/logging.h>
-#include <xxhash.h>
+#include <cstdint>
+#include <memory>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace nfsmw::nativo {
 
@@ -204,153 +203,203 @@ class DedupeVertices {
   uint64_t discrepancias_ = 0;
 };
 
-// Persistent vertex cache across frames with write-watching.
-// Keyed by (physical address, bytes, byte order). Validity comes from the write-watch callback:
-// if the guest has not written to the pages since the copy, the range is reused without copying.
-// Never writes in place: if a range becomes dirty, a new spot is allocated and the old one is
-// freed after the work slot that last used it has passed its fence. A bump allocator with
-// deferred freeing per work slot handles this.
-//
-// The cache uses a persistent upload buffer that is not reset in UsarRanura. It is separate
-// from the per-frame upload buffer to avoid rebinding vertex buffers (which has a cost).
-// Small ranges (< 4 KB) are not cached because they share pages with other data and would
-// be marked dirty constantly (the FH2 lookups already copy them every time).
-class CacheVerticesPersistente {
+/*
+ * The other half: vertex ranges equal to an earlier frame (fh2_nativo_cache_vertices).
+ *
+ * A persistent buffer that UsarRanura does not reset holds copies of vertex ranges of 4 KB or more. A copy is reused
+ * in later frames while the guest has not written its pages since it was made. That is known from the write watch
+ * (Memory::EnablePhysicalMemoryAccessCallbacks): every write the guest makes to a watched page reaches
+ * EscrituraVigilada, which stamps the page with a new tick. A copy remembers the tick from before its watch was
+ * enabled; if any of its pages has a newer one, it is stale and the range is copied again, to a new place.
+ *
+ * Nothing is ever written where the GPU may still read. The buffer is split into segments; a segment is only reused
+ * (and its copies dropped) once the GPU has finished the last submission that used it. Submissions are numbered at
+ * UsarRanura: a work slot is only reused after its fence (DestinosVulkan::Grabar -> Completar), and the queue runs in
+ * order, so when slot r comes round again everything up to its previous number is done.
+ *
+ * Ranges the guest rewrites every frame would cost a write fault per frame on the game's thread and never be reused:
+ * after kSuciasParaVolatil stale finds a range stops being cached.
+ *
+ * Ring thread only, except EscrituraVigilada (guest threads, with the memory lock held: atomics only).
+ */
+class CacheVerticesEntreFotogramas {
  public:
-  // Called once at startup to initialize with a pre-created persistent buffer.
-  void Inicializar(VkBuffer buffer, VkDeviceMemory memoria, uint8_t* datos, VkDeviceAddress direccion,
-                   rex::memory::Memory* memoria_contexto);
+  static constexpr uint32_t kSegmentos = 16;
+  static constexpr uint64_t kTamanoSegmento = uint64_t(4) << 20;
+  static constexpr uint64_t kTamano = kSegmentos * kTamanoSegmento;  // 64 MB
+  static constexpr uint32_t kMinBytes = 4096;                          // smaller ranges share pages with other data
+  static constexpr uint32_t kMaxBytes = uint32_t(kTamanoSegmento / 4);
+  static constexpr uint32_t kSuciasParaVolatil = 3;
+  static constexpr uint32_t kMaxRanuras = 8;
 
-  // Called when a new work slot is activated (UsarRanura). The frame epoch is bumped so
-  // that entries from previous slots are not reused until their slot's fence has passed.
-  void NuevaRanura(uint64_t epoca_subida, uint32_t ranura_actual);
+  CacheVerticesEntreFotogramas() : ticks_pagina_(new std::atomic<uint32_t>[kPaginas]) {
+    for (uint32_t i = 0; i < kPaginas; ++i) ticks_pagina_[i].store(0, std::memory_order_relaxed);
+  }
 
-  // Called by the write-watch callback when the guest writes to a watched range.
-  // Only atomics here: called on the guest writing thread with the memory lock held.
-  static std::pair<uint32_t, uint32_t> EscrituraVigilada(void* contexto, uint32_t inicio, uint32_t longitud, bool exacto);
+  // Each work slot used (UsarRanura): the submission number of what is recorded now, and what the GPU has finished.
+  void NuevaRanura(uint32_t ranura) {
+    ranura %= kMaxRanuras;
+    completado_ = std::max(completado_, serie_de_ranura_[ranura]);
+    serie_de_ranura_[ranura] = ++serie_;
+  }
 
-  // Tries to find a cached copy of the vertex range. If found and clean, returns true
-  // and sets 'offset' to the location in the persistent buffer. If paranoid mode is
-  // enabled (huella != 0), also verifies the content fingerprint.
-  bool Buscar(uint64_t direccion_fisica, uint32_t bytes, uint32_t orden, uint64_t& offset,
-              uint64_t huella = 0);
+  // Guest thread, memory lock held: stamps the written pages.
+  static std::pair<uint32_t, uint32_t> EscrituraVigilada(void* contexto, uint32_t inicio, uint32_t longitud, bool) {
+    auto* self = static_cast<CacheVerticesEntreFotogramas*>(contexto);
+    const uint32_t tick = self->tick_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const uint64_t fin = std::min<uint64_t>(uint64_t(inicio) + longitud, kMemoriaFisica);
+    for (uint64_t p = inicio >> kBitsPagina; (p << kBitsPagina) < fin; ++p) {
+      self->ticks_pagina_[p].store(tick, std::memory_order_release);
+    }
+    self->avisos_.fetch_add(1, std::memory_order_relaxed);
+    return {0u, UINT32_MAX};  // which part to unwatch does not matter here
+  }
 
-  // Records a new copy in the persistent buffer. 'offset' is the location in the
-  // persistent buffer where the data was copied. Returns the watch handle for the range.
-  void* Anotar(uint64_t direccion_fisica, uint32_t bytes, uint32_t orden, uint64_t offset,
-               uint64_t huella = 0);
+  // Whether the range can go through the cache at all.
+  bool Admite(uint64_t direccion, uint32_t bytes) const {
+    return bytes >= kMinBytes && bytes <= kMaxBytes && direccion + bytes <= kMemoriaFisica &&
+           !volatiles_.count(Clave(direccion, bytes, 0) >> 2);
+  }
 
-  // Allocates space in the persistent buffer for a new vertex range.
-  // Returns true and sets 'offset' on success, false if buffer is full.
-  bool Alocar(uint32_t bytes, uint32_t alineacao, uint64_t& offset);
+  // A clean copy of the range made in an earlier submission or this one: its offset in the buffer. 'huella' != 0
+  // compares contents too (fh2_nativo_cache_vertices_comprobar); a mismatch counts and misses.
+  bool Buscar(uint64_t direccion, uint32_t bytes, uint32_t orden, uint64_t& offset, uint64_t huella) {
+    ++consultas_;
+    const auto it = entradas_.find(Clave(direccion, bytes, orden));
+    if (it == entradas_.end()) {
+      return false;
+    }
+    Entrada& e = it->second;
+    const uint64_t ultima = (direccion + bytes - 1) >> kBitsPagina;
+    for (uint64_t p = direccion >> kBitsPagina; p <= ultima; ++p) {
+      if (int32_t(ticks_pagina_[p].load(std::memory_order_acquire) - e.tick) > 0) {
+        ++sucias_;
+        if (++e.sucias >= kSuciasParaVolatil) {
+          volatiles_.insert(Clave(direccion, bytes, 0) >> 2);
+          ++volatiles_n_;
+        }
+        return false;
+      }
+    }
+    if (huella != 0 && huella != e.huella) {
+      ++discrepancias_;
+      return false;
+    }
+    e.sucias = 0;
+    ultimo_uso_[e.segmento] = serie_;
+    ++aciertos_;
+    bytes_ahorrados_ += bytes;
+    offset = e.offset;
+    return true;
+  }
 
-  // Called when a work slot's fence has signaled. Frees all entries that were
-  // deferred for that slot.
-  void LiberarRanura(uint32_t ranura);
+  // Room for a new copy, at a multiple of 'paso' (the vertex stride on the base-zero path). The returned 'tick'
+  // must be taken before the range's write watch is enabled.
+  bool Reservar(uint32_t bytes, uint32_t paso, uint64_t& offset, uint32_t& tick) {
+    paso = std::max<uint32_t>(paso, 4);
+    for (int intento = 0; intento < 2; ++intento) {
+      if (segmento_actual_ < kSegmentos) {
+        const uint64_t base = uint64_t(segmento_actual_) * kTamanoSegmento;
+        const uint64_t inicio = (base + cursor_ + paso - 1) / paso * paso;
+        if (inicio + bytes <= base + kTamanoSegmento) {
+          cursor_ = inicio + bytes - base;
+          offset = inicio;
+          tick = tick_.load(std::memory_order_acquire);
+          ultimo_uso_[segmento_actual_] = serie_;
+          return true;
+        }
+      }
+      if (!SiguienteSegmento()) {
+        ++llenos_;
+        return false;
+      }
+    }
+    return false;
+  }
 
-  // Returns the persistent buffer handle for binding.
-  VkBuffer Buffer() const { return buffer_; }
+  // Records the copy just queued at 'offset'. Replaces a stale copy of the same range (its old place is dropped
+  // with its segment).
+  void Anotar(uint64_t direccion, uint32_t bytes, uint32_t orden, uint64_t offset, uint32_t tick, uint64_t huella) {
+    const uint64_t clave = Clave(direccion, bytes, orden);
+    Entrada& e = entradas_[clave];
+    const uint32_t sucias = e.sucias;
+    e = Entrada{offset, huella, tick, sucias, uint8_t(offset / kTamanoSegmento)};
+    claves_segmento_[e.segmento].push_back(clave);
+    ++copias_;
+    bytes_copiados_ += bytes;
+  }
 
-  // Returns the mapped persistent buffer data pointer.
-  uint8_t* Dados() const { return datos_; }
-
-  // Computes XXH3 fingerprint of guest memory.
-  static uint64_t CalcularHuella(const uint8_t* datos, uint32_t bytes);
-
-  // Persistent buffer size: 64 MB (same as per-frame upload buffer).
-  static constexpr VkDeviceSize kTamanoBuffer = VkDeviceSize(64) << 20;
-
-  // Statistics for the C6 report.
   uint64_t consultas() const { return consultas_; }
   uint64_t aciertos() const { return aciertos_; }
   uint64_t bytes_ahorrados() const { return bytes_ahorrados_; }
   uint64_t copias() const { return copias_; }
-  uint64_t memoria_ocupada() const { return memoria_ocupada_; }
-  uint64_t liberaciones_adiadas() const { return liberaciones_adiadas_; }
+  uint64_t bytes_copiados() const { return bytes_copiados_; }
+  uint64_t sucias() const { return sucias_; }
   uint64_t discrepancias() const { return discrepancias_; }
-  uint64_t rangos_pequenos() const { return rangos_pequenos_; }
+  uint64_t llenos() const { return llenos_; }
+  uint64_t reciclados() const { return reciclados_; }
+  uint64_t volatiles() const { return volatiles_n_; }
+  uint64_t avisos() const { return avisos_.load(std::memory_order_relaxed); }
+  size_t entradas() const { return entradas_.size(); }
 
  private:
-  // Minimum size to cache: 4 KB (page size). Smaller ranges share pages and get dirty constantly.
-  static constexpr uint32_t kMinBytesCache = 4 << 10;
-
-  // Max entries in the hash table.
-  static constexpr size_t kRanuras = 32768;
-
-  // Work slots (matches kRanurasDeTrabajo = 3).
-  static constexpr uint32_t kRanurasTrabajo = 3;
+  static constexpr uint64_t kMemoriaFisica = uint64_t(512) << 20;
+  static constexpr uint32_t kBitsPagina = 12;
+  static constexpr uint32_t kPaginas = uint32_t(kMemoriaFisica >> kBitsPagina);
 
   struct Entrada {
-    uint64_t clave = 0;           // (direccion_fisica << 2) | orden
-    uint32_t bytes = 0;
-    uint32_t orden = 0;
-    VkDeviceSize offset = 0;      // offset in persistent buffer
-    uint64_t huella = 0;          // XXH3 fingerprint (paranoid mode)
-    uint64_t epoca_creacion = 0;  // epoca_subida_ when this entry was created
-    uint32_t ranura_ultima = 0;   // work slot that last used this entry
-    uint32_t sucio = 0;           // 1 = guest has written to this range (atomic access via pointer)
-    void* vigilancia_handle = nullptr;  // handle from RegisterPhysicalMemoryInvalidationCallback
-    uint64_t padding = 0;         // pad to 64 bytes
+    uint64_t offset = 0;
+    uint64_t huella = 0;
+    uint32_t tick = 0;    // tick_ before the watch of its copy was enabled
+    uint32_t sucias = 0;  // stale finds in a row
+    uint8_t segmento = 0;
   };
-  static_assert(sizeof(Entrada) == 64, "entry size");
 
-  // Hash table entry (open addressing with linear probing).
-  struct Casilla {
-    uint64_t clave = 0;   // 0 = empty
-    uint32_t indice = 0;  // index into entradas_
-  };
-  static_assert(sizeof(Casilla) == 16, "casilla size");
-
-  static uint64_t Clave(uint64_t direccion, uint32_t orden) {
-    return (direccion << 2) | (uint64_t(orden) & 0x3);
+  // Address (29 bits), bytes (up to kMaxBytes, 20 bits) and byte order (2 bits).
+  static uint64_t Clave(uint64_t direccion, uint32_t bytes, uint32_t orden) {
+    return (direccion << 22) ^ (uint64_t(bytes) << 2) ^ (uint64_t(orden) & 3);
   }
 
-  static size_t Indice(uint64_t clave) {
-    uint64_t x = clave ^ 0x9E3779B97F4A7C15ull;
-    x ^= x >> 30;
-    x *= 0xBF58476D1CE4E5B9ull;
-    x ^= x >> 27;
-    return size_t(x) & (kRanuras - 1);
+  // The least recently used segment the GPU has finished with; its copies are dropped.
+  bool SiguienteSegmento() {
+    uint32_t elegido = kSegmentos;
+    for (uint32_t s = 0; s < kSegmentos; ++s) {
+      if (s != segmento_actual_ && ultimo_uso_[s] <= completado_ &&
+          (elegido == kSegmentos || ultimo_uso_[s] < ultimo_uso_[elegido])) {
+        elegido = s;
+      }
+    }
+    if (elegido == kSegmentos) {
+      return false;
+    }
+    for (uint64_t clave : claves_segmento_[elegido]) {
+      const auto it = entradas_.find(clave);
+      if (it != entradas_.end() && it->second.segmento == elegido) {
+        entradas_.erase(it);
+      }
+    }
+    claves_segmento_[elegido].clear();
+    segmento_actual_ = elegido;
+    cursor_ = 0;
+    ultimo_uso_[elegido] = serie_;
+    ++reciclados_;
+    return true;
   }
 
-  std::array<Casilla, kRanuras> tabla_{};
-  std::vector<Entrada> entradas_;
-  uint32_t entradas_n_ = 0;
+  std::unique_ptr<std::atomic<uint32_t>[]> ticks_pagina_;
+  std::atomic<uint32_t> tick_{0};
+  std::atomic<uint64_t> avisos_{0};
+  std::unordered_map<uint64_t, Entrada> entradas_;
+  std::unordered_set<uint64_t> volatiles_;
+  std::array<std::vector<uint64_t>, kSegmentos> claves_segmento_{};
+  std::array<uint64_t, kSegmentos> ultimo_uso_{};  // submission number that last used each segment
+  std::array<uint64_t, kMaxRanuras> serie_de_ranura_{};
+  uint64_t serie_ = 0, completado_ = 0;
+  uint32_t segmento_actual_ = 0;
+  uint64_t cursor_ = 0;
 
-  // Bump allocator for the persistent buffer.
-  VkDeviceSize buffer_usado_ = 0;
-  VkDevice dispositivo_ = VK_NULL_HANDLE;
-  VkBuffer buffer_ = VK_NULL_HANDLE;
-  VkDeviceMemory memoria_ = VK_NULL_HANDLE;
-  uint8_t* datos_ = nullptr;
-  VkDeviceAddress direccion_buffer_ = 0;
-
-  // Per-work-slot deferred freeing: each slot has a list of entries to free when its fence passes.
-  std::array<std::vector<uint32_t>, kRanurasTrabajo> liberar_despues_de_ranura_;
-
-  uint64_t epoca_subida_actual_ = 0;
-  uint32_t ranura_actual_ = 0;
-
-  // Write-watch callback registration.
-  void* vigilancia_global_ = nullptr;
-  void* memoria_contexto_ = nullptr;
-  void (*callback_escritura_)(void*, uint32_t, uint32_t, bool) = nullptr;
-
-  // Statistics.
-  uint64_t consultas_ = 0;
-  uint64_t aciertos_ = 0;
-  uint64_t bytes_ahorrados_ = 0;
-  uint64_t copias_ = 0;
-  uint64_t memoria_ocupada_ = 0;
-  uint64_t liberaciones_adiadas_ = 0;
-  uint64_t discrepancias_ = 0;
-  uint64_t rangos_pequenos_ = 0;
-
-  // Finds an entry in the hash table. Returns index into entradas_ or UINT32_MAX.
-  uint32_t BuscarEnTabla(uint64_t clave, uint32_t bytes) const;
-
-  // Inserts an entry into the hash table.
-  void InsertarEnTabla(uint64_t clave, uint32_t bytes, uint32_t indice_entrada);
+  uint64_t consultas_ = 0, aciertos_ = 0, bytes_ahorrados_ = 0, copias_ = 0, bytes_copiados_ = 0, sucias_ = 0;
+  uint64_t discrepancias_ = 0, llenos_ = 0, reciclados_ = 0, volatiles_n_ = 0;
 };
 
 }  // namespace nfsmw::nativo

@@ -389,8 +389,6 @@ class DibujosVulkan {
   virtual void EsperarSubidas() = 0;
   // Vertex copies queued and not done yet (only to measure the fences).
   virtual size_t CopiasPendientes() const { return 0; }
-  // Called when a work slot's fence has signaled: frees persistent vertex cache entries for that slot.
-  virtual void LiberarCacheVerticesRanura(uint32_t ranura) { (void)ranura; }
   // With a game occlusion query open, each span of draws inside a pass is counted with a host query
   // (ContextoDestinos::EmpezarConsultaOclusion), which closes with the pass or when the game query closes.
   virtual void OclusionAbierta(bool abierta) = 0;

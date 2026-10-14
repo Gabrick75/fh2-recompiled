@@ -6342,11 +6342,6 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     dfn_.vkResetFences(device_, 1, &ranura.fence);
     ranura.pendiente = false;
     const uint32_t marcadas = uint32_t(ranura.categorias.size());
-    const uint32_t indice = uint32_t(&ranura - ranuras_.data());
-    // Persistent vertex cache: free entries deferred for this slot.
-    if (dibujos_) {
-      dibujos_->LiberarCacheVerticesRanura(indice);
-    }
     if (consultas_ != VK_NULL_HANDLE && marcadas >= 2) {
       std::array<uint64_t, kMarcasPorRanura> marcas{};
       const uint32_t indice = uint32_t(&ranura - ranuras_.data());
