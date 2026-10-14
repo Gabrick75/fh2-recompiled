@@ -143,9 +143,12 @@ extern "C" JNIEXPORT jfloat JNICALL Java_com_forzahorizon2_android_GameActivity_
 // Rules "name prefix=cores", first match wins, "*" for the rest; cores as "7", "3-6" or "3+5+6". A thread
 // ("fh2 afinidade") walks /proc/self/task every 2 s and sets each thread's mask, so threads created later, and masks
 // Android resets after a pause, are covered too. 'off' leaves everything to fh2_android_nucleos_grandes.
+// 'jogo-rapido' is the dynamic mode below (busiest game thread alone on the fastest core).
 REXCVAR_DEFINE_STRING(fh2_android_afinidade, "auto", "FH2",
                       "Android: pin threads to cores by name, 'GPU Commands=7;*=3-6'; 'auto' = the command "
-                      "processor alone on the fastest core, the rest on the other fast cores; 'off' = no pinning")
+                      "processor alone on the fastest core, the rest on the other fast cores; 'jogo-rapido' = "
+                      "the busiest game thread alone on the fastest core, the ring on its own big core; 'off' = "
+                      "no pinning")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 namespace {
@@ -258,8 +261,19 @@ std::string AutoAffinityRules() {
   return "GPU Commands=" + rapido + ";GPU anillo=" + rapido + ";*=" + others;
 }
 
+namespace fh2_jogo_rapido {
+
+// Starts the dynamic affinity loop; true when the loop took over (the cvar is consumed).
+bool Iniciar();
+
+}  // namespace fh2_jogo_rapido
+
 extern "C" void fh2_android_afinidade_iniciar() {
   std::string text = REXCVAR_GET(fh2_android_afinidade);
+  if (text == "jogo-rapido" || text == "jogo_rapido") {
+    if (fh2_jogo_rapido::Iniciar()) return;
+    return;  // already logged why there is nothing to pin (e.g. no slow cluster)
+  }
   if (text == "auto") text = AutoAffinityRules();
   if (text.empty() || text == "off") return;
   auto rules = ParseRules(text);
@@ -445,3 +459,160 @@ extern "C" void fh2_android_fotograma(int64_t periodo_ns) {
                 double(trabalho) / 1e6, double(periodo_ns) / 1e6, double(a.target_ns) / 1e6);
   }
 }
+
+// 'jogo-rapido': the busiest game thread alone on the fastest core, the ring on its own big core.
+//
+// 'auto' pins the command processor (GPU Commands / GPU anillo nativo) on the fastest core, from when the ring
+// was the bottleneck (+16 %). With the vertex cache the ring is ~20 % cheaper per draw and the game's own thread
+// saturates first in heavy scenery (S23 Ultra: game thread at 90-97 %, GPU at 78-85 % with room on the ring), so
+// the fastest core (X3) should go to whoever limits the frame rate instead. The busiest XThread changes between
+// loads, so it is re-evaluated every 2 s (same cadence as AffinityLoop and the ADPF loop) with hysteresis: the
+// pinned thread only moves when another game thread used clearly more CPU in the window, or when the pinned one
+// stopped being the busiest twice in a row. Static thread names cannot be used: the main thread's name changes
+// every run (XThreadXXXXXXXX), so busy-ness comes from /proc/self/task deltas, like AdpfThreadLoop does.
+namespace fh2_jogo_rapido {
+
+bool IsGameThread(const std::string& name) {
+  // Kernel thread names (comm) are truncated to 15 chars: "Main XThread" stays readable, "XThreadABCD
+  // (12345678)" becomes "XThreadABCD (12". Both are the game's threads (sdk/src/system/kernel_state.cpp and
+  // xthread.cpp); the ring ("GPU anillo nat", "GPU Commands", "GPU VSync nativ") never matches these prefixes.
+  return name.rfind("XThread", 0) == 0 || name.rfind("Main XThread", 0) == 0;
+}
+
+bool IsRingThread(const std::string& name) {
+  return name.rfind("GPU Commands", 0) == 0 || name.rfind("GPU anillo", 0) == 0 ||
+         name.rfind("GPU VSync", 0) == 0;
+}
+
+void SetMask(pid_t tid, const cpu_set_t& mask) {
+  cpu_set_t current;
+  if (sched_getaffinity(tid, sizeof(current), &current) == 0 && !CPU_EQUAL(&current, &mask)) {
+    sched_setaffinity(tid, sizeof(mask), &mask);
+  }
+}
+
+void Loop(int fastest, cpu_set_t mask_fastest, cpu_set_t mask_ring, cpu_set_t mask_rest) {
+  pthread_setname_np(pthread_self(), "fh2 jogo-rapido");
+  auto before = ThreadTicks();
+  pid_t elegido = -1;
+  std::string elegido_nombre;
+  int racha = 0;  // windows in a row where the pinned thread was not the busiest (below the margin)
+  while (true) {
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    const auto now = ThreadTicks();
+    // CPU ticks used in this window, by tid.
+    pid_t ocupado = -1;
+    std::string ocupado_nombre;
+    unsigned long long ocupado_uso = 0;
+    unsigned long long elegido_uso = 0;
+    bool elegido_vive = false;
+    for (const auto& [tid, info] : now) {
+      if (!IsGameThread(info.first)) continue;
+      const auto b = before.find(tid);
+      const unsigned long long uso = b == before.end() ? 0 : info.second - b->second.second;
+      if (tid == elegido) {
+        elegido_vive = true;
+        elegido_uso = uso;
+      }
+      if (uso > ocupado_uso) {
+        ocupado_uso = uso;
+        ocupado = tid;
+        ocupado_nombre = info.first;
+      }
+    }
+    before = now;
+    if (ocupado >= 0 && ocupado_uso > 0) {
+      if (elegido < 0 || !elegido_vive) {
+        elegido = ocupado;
+        elegido_nombre = ocupado_nombre;
+        racha = 0;
+        REXLOG_INFO("[afinidade] juego-rapido: '{}' (tid {}) al nucleo mas rapido ({}; +{} ticks)",
+                    elegido_nombre, elegido, fastest, ocupado_uso);
+      } else if (ocupado != elegido) {
+        // Hysteresis: move right away on a clear win (+20 %), otherwise only after two windows behind, so
+        // loads (where the busiest thread changes) settle instead of flapping every 2 s.
+        if (ocupado_uso >= elegido_uso + elegido_uso / 5) {
+          elegido = ocupado;
+          elegido_nombre = ocupado_nombre;
+          racha = 0;
+          REXLOG_INFO("[afinidade] juego-rapido: '{}' (tid {}) al nucleo mas rapido ({}; +{} ticks contra {})",
+                      elegido_nombre, elegido, fastest, ocupado_uso, elegido_uso);
+        } else if (++racha >= 2) {
+          elegido = ocupado;
+          elegido_nombre = ocupado_nombre;
+          racha = 0;
+          REXLOG_INFO("[afinidade] juego-rapido: '{}' (tid {}) al nucleo mas rapido ({}; dos ventanas sin liderar)",
+                      elegido_nombre, elegido, fastest);
+        }
+      } else {
+        racha = 0;
+      }
+    }
+    // Reapply every window: covers threads created later and masks Android resets after a pause.
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task", ec)) {
+      const pid_t tid = pid_t(std::atoi(entry.path().filename().c_str()));
+      if (tid <= 0) continue;
+      if (tid == elegido) {
+        SetMask(tid, mask_fastest);
+        continue;
+      }
+      std::ifstream comm(entry.path() / "comm");
+      std::string name;
+      std::getline(comm, name);
+      SetMask(tid, IsRingThread(name) ? mask_ring : mask_rest);
+    }
+  }
+}
+
+bool Iniciar() {
+  const int total = int(sysconf(_SC_NPROCESSORS_CONF));
+  if (total <= 1 || total > CPU_SETSIZE) return false;
+  int fastest = -1;
+  long fastest_khz = 0;
+  std::vector<long> khz(size_t(std::max(total, 0)), 0);
+  for (int cpu = 0; cpu < total; ++cpu) {
+    khz[size_t(cpu)] = RelojMaximoKhz(cpu);
+    if (khz[size_t(cpu)] > fastest_khz) {
+      fastest_khz = khz[size_t(cpu)];
+      fastest = cpu;
+    }
+  }
+  // The ring gets its own big core (the highest-numbered other fast core); the rest share the remaining fast
+  // cores. On the Moto G9 Play every core is within 70 % of the fastest, so the "big" set is all the others.
+  int ring = -1;
+  cpu_set_t mask_fastest, mask_ring, mask_rest;
+  CPU_ZERO(&mask_fastest);
+  CPU_ZERO(&mask_ring);
+  CPU_ZERO(&mask_rest);
+  bool any_slower = false;
+  std::string resto;
+  for (int cpu = 0; cpu < total; ++cpu) {
+    if (khz[size_t(cpu)] < fastest_khz) any_slower = true;
+    if (cpu != fastest && khz[size_t(cpu)] * 10 >= fastest_khz * 7) {
+      if (cpu > ring) ring = cpu;
+    }
+  }
+  if (fastest < 0 || !any_slower || ring < 0) {
+    REXLOG_INFO("[afinidade] juego-rapido sin grupo lento: afinidad sin cambios");
+    return false;
+  }
+  CPU_SET(fastest, &mask_fastest);
+  CPU_SET(ring, &mask_ring);
+  for (int cpu = 0; cpu < total; ++cpu) {
+    if (cpu != fastest && cpu != ring && khz[size_t(cpu)] * 10 >= fastest_khz * 7) {
+      CPU_SET(cpu, &mask_rest);
+      resto += (resto.empty() ? "" : "+") + std::to_string(cpu);
+    }
+  }
+  if (resto.empty()) {  // only two fast cores: the rest shares the ring's core
+    mask_rest = mask_ring;
+    resto = std::to_string(ring);
+  }
+  REXLOG_INFO("[afinidade] juego-rapido: hilo del juego en {}, anillo en {}, resto en {}", fastest, ring,
+              resto.c_str());
+  std::thread(Loop, fastest, mask_fastest, mask_ring, mask_rest).detach();
+  return true;
+}
+
+}  // namespace fh2_jogo_rapido
