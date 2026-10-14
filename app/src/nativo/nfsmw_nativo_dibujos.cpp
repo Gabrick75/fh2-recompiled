@@ -3767,8 +3767,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       if (cache_vertices_persistente_activo_ && origen.direccion != 0 &&
           cache_vertices_persistente_.Alocar(origen.bytes, alineacao, offset)) {
         // Copy to persistent buffer.
-        const TrabajoCopia trabalho{origen.datos, cache_vertices_persistente_.Dados() + offset, origen.bytes / 4, origen.orden};
-        CopiarVertices(trabalho);
+        const TrabajoCopia trabajo{origen.datos, cache_vertices_persistente_.Dados() + offset, origen.bytes / 4, origen.orden};
+        CopiarVertices(trabajo);
         // Record in persistent cache with write-watching.
         uint64_t huella = 0;
         if (diag_vertices_repetidos_) {
@@ -3793,10 +3793,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         cat_subida_ = 0;
         Reservar(origen.bytes, 4, offset);
       }
-      const TrabajoCopia trabalho{origen.datos, subida_datos_ + offset, origen.bytes / 4, origen.orden};
+      const TrabajoCopia trabajo{origen.datos, subida_datos_ + offset, origen.bytes / 4, origen.orden};
       // A rectangle list's buffer is rewritten by the next one: it is copied now, not by the copy thread.
-      if (origen.direccion == 0 || !copias_activas_ || !EncolarCopia(trabalho)) {
-        CopiarVertices(trabalho);
+      if (origen.direccion == 0 || !copias_activas_ || !EncolarCopia(trabajo)) {
+        CopiarVertices(trabajo);
       }
       bytes_vertices_ += origen.bytes;
       offsets_vertices[b] = offset;
@@ -6556,14 +6556,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
     }
     ++fb_vistas_olvidadas_;
-    fb_olvidatos_ += fuera;
+    fb_olvidados_ += fuera;
     if (fb_vistas_olvidadas_ <= 16 || (fb_vistas_olvidadas_ & 63) == 0) {
       NFSMW_INFORME_ANILLO("[nativo] C6 framebuffers (build 184): vista {:016X} destruida: {} framebuffers {} con "
                            "ella; quedan {} en la cache ({} vistas y {} framebuffers desde el arranque; {} "
                            "retirados)",
                            uint64_t(reinterpret_cast<uintptr_t>(vista)), fuera,
                            fb_retirar_ ? "retirados (sin destruir)" : "destruidos", framebuffers_.size(),
-                           fb_vistas_olvidadas_, fb_olvidatos_, fb_retirados_.size());
+                           fb_vistas_olvidadas_, fb_olvidados_, fb_retirados_.size());
     }
   }
 
@@ -8290,10 +8290,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       const auto tras_ayudar = std::chrono::steady_clock::now();
       ns_ayudando = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(tras_ayudar - antes).count());
       copias_ayudadas_ += ayudadas;
-      copias_bytes_ayudatos_ += bytes;
+      copias_bytes_ayudados_ += bytes;
       copias_ns_ayudando_ += ns_ayudando;
       copias_inf_.ayudadas += ayudadas;
-      copias_inf_.bytes_ayudatos += bytes;
+      copias_inf_.bytes_ayudados += bytes;
       copias_inf_.ns_ayudando += ns_ayudando;
       if (ayudadas) {
         ++copias_inf_.esperas_con_ayuda;
@@ -8506,11 +8506,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (!copias_hilo_.joinable() && !copias_sin_hilo_) {
       return;
     }
-    const auto agora = std::chrono::steady_clock::now();
-    if (agora - copias_informe_ < std::chrono::seconds(10)) {
+    const auto ahora = std::chrono::steady_clock::now();
+    if (ahora - copias_informe_ < std::chrono::seconds(10)) {
       return;
     }
-    copias_informe_ = agora;
+    copias_informe_ = ahora;
     const uint64_t hilo_n = copias_hilo_n_.load(std::memory_order_relaxed);
     const uint64_t hilo_bytes = copias_hilo_bytes_.load(std::memory_order_relaxed);
     const uint64_t d_hilo_n = hilo_n - copias_hilo_n_previo_;
@@ -8522,11 +8522,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       NFSMW_INFORME_ANILLO(
           "[nativo] C6 copias de vertices (build 185), ultimos 10 s: {} encoladas ({:.1f} MB) y {} en el anillo sin "
           "pasar por la cola ({:.1f} MB); el hilo copio {} ({:.1f} MB) y el anillo ayudo con {} ({:.1f} MB, {:.1f} ms) "
-          "en {} de {} esperas con copias pendientes ({} sin tomar al llegar); espero el trozo del hilo {} vezes "
-          "({:.2f} ms, pior {:.2f} ms) e inteiro {} vezes; espera pura {:.1f} ms (pior {:.2f} ms); {} copias "
-          "comprobadas, {} diferencas; fase {}", 
+          "en {} de {} esperas con copias pendientes ({} sin tomar al llegar); espero el trozo del hilo {} veces "
+          "({:.2f} ms, peor {:.2f} ms) y entero {} veces; espera pura {:.1f} ms (peor {:.2f} ms); {} copias "
+          "comprobadas, {} diferencias; fase {}",
           c.encoladas, double(c.bytes_encolados) / 1048576.0, c.en_linea, double(c.bytes_en_linea) / 1048576.0,
-          d_hilo_n, double(d_hilo_bytes) / 1048576.0, c.ayudadas, double(c.bytes_ayudatos) / 1048576.0,
+          d_hilo_n, double(d_hilo_bytes) / 1048576.0, c.ayudadas, double(c.bytes_ayudados) / 1048576.0,
           double(c.ns_ayudando) / 1e6, c.esperas_con_ayuda, c.esperas, c.sin_tomar, c.esperas_trozo,
           double(c.ns_trozo) / 1e6, double(c.ns_trozo_peor) / 1e6, c.esperas_enteras, double(c.ns_espera) / 1e6,
           double(c.ns_espera_peor) / 1e6, c.comprobadas, copias_diferencias_, NombreFaseCopias());
@@ -8589,7 +8589,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                 "esperas del anillo, {:.1f} ms esperando; 26/09 (build 185): el anillo copio {} al esperar ({:.1f} MB, "
                 "{:.1f} ms), {} comprobadas, {} diferencias, fase {})",
                 copias_en_linea_, esperas_copias_, double(ns_esperando_copias_) / 1e6, copias_ayudadas_,
-                double(copias_bytes_ayudatos_) / 1048576.0, double(copias_ns_ayudando_) / 1e6, copias_comprobadas_,
+                double(copias_bytes_ayudados_) / 1048576.0, double(copias_ns_ayudando_) / 1e6, copias_comprobadas_,
                 copias_diferencias_, NombreFaseCopias());
   }
 
@@ -8779,7 +8779,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         cache_pipelines_ = VK_NULL_HANDLE;
       }
     }
-    bytes_cache_guardatos_ = datos.size();
+    bytes_cache_guardados_ = datos.size();
     cache_guardada_ = std::chrono::steady_clock::now();
     REXLOG_INFO("[nativo] C6: cache de pipelines {} ({} KB leidos de {}{})",
                 cache_pipelines_ != VK_NULL_HANDLE ? "activa" : "no disponible",
@@ -8788,7 +8788,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     escrito_cache_ = std::move(datos);
     if (ficheros_viejos_) {
       // they came from the two older files: moved to the new one on the first save even if nothing changed
-      bytes_cache_guardatos_ = 0;
+      bytes_cache_guardados_ = 0;
       pipelines_sin_guardar_ = 1;
       lista_sin_guardar_ = 1;
     }
@@ -8811,14 +8811,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       // without new entries it is not rewritten (the SD card is slow on the Switch)
       if (cache_pipelines_ != VK_NULL_HANDLE &&
           datos_cache_(device_, cache_pipelines_, &bytes, nullptr) == VK_SUCCESS && bytes &&
-          bytes != bytes_cache_guardatos_) {
+          bytes != bytes_cache_guardados_) {
         datos.resize(bytes);
         const VkResult resultado = datos_cache_(device_, cache_pipelines_, &bytes, datos.data());
         if ((resultado != VK_SUCCESS && resultado != VK_INCOMPLETE) || !bytes) {
           datos.clear();
         } else {
           datos.resize(bytes);
-          bytes_cache_guardatos_ = bytes;
+          bytes_cache_guardados_ = bytes;
         }
       }
     }
@@ -8910,8 +8910,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       std::filesystem::remove(carpeta / kFicheroListaVieja, sin_importancia);
       ficheros_viejos_ = false;
     }
-    if (guardatos_cache_++ < 8) {
-      REXLOG_INFO("[nativo] C6: pipelines guardatos ({} KB de cache y {} en la lista del precalentado, en {} ms, desde "
+    if (guardados_cache_++ < 8) {
+      REXLOG_INFO("[nativo] C6: pipelines guardados ({} KB de cache y {} en la lista del precalentado, en {} ms, desde "
                   "su hilo{})",
                   escrito_cache_.size() >> 10,
                   escrito_lista_.size() >= kCabeceraLista
@@ -13819,12 +13819,12 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   uint64_t copias_comprobadas_ = 0;
   uint64_t copias_esperas_mirando_ = 0;
   uint64_t copias_ayudadas_ = 0;
-  uint64_t copias_bytes_ayudatos_ = 0;
+  uint64_t copias_bytes_ayudados_ = 0;
   uint64_t copias_ns_ayudando_ = 0;
   uint64_t copias_diferencias_ = 0;
   struct InformeCopiasCifras {  // the last 10 s (InformeCopias); ring only
     uint64_t encoladas = 0, bytes_encolados = 0, en_linea = 0, bytes_en_linea = 0;
-    uint64_t ayudadas = 0, bytes_ayudatos = 0, ns_ayudando = 0, esperas_con_ayuda = 0;
+    uint64_t ayudadas = 0, bytes_ayudados = 0, ns_ayudando = 0, esperas_con_ayuda = 0;
     uint64_t esperas = 0, sin_tomar = 0, esperas_trozo = 0, ns_trozo = 0, ns_trozo_peor = 0;
     uint64_t esperas_enteras = 0, ns_espera = 0, ns_espera_peor = 0, comprobadas = 0;
   };
@@ -14075,7 +14075,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   std::vector<VkFramebuffer> fb_retirados_;
   bool fb_retirar_ = false;
   uint64_t fb_vistas_olvidadas_ = 0;
-  uint64_t fb_olvidatos_ = 0;
+  uint64_t fb_olvidados_ = 0;
   std::unordered_map<uint64_t, Textura> texturas_;
   // Measurement only (nfsmw_nativo_diag_reutilizar): textures with a hash, by content key (content key ->
   // texture key; see AnotarContenidoTextura), and the counts for the 10 s report.
@@ -14745,8 +14745,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   VkPipelineCache cache_pipelines_ = VK_NULL_HANDLE;
   uint32_t pipelines_sin_guardar_ = 0;
   bool pipeline_lento_sin_guardar_ = false;  // one took kPipelineLentoNs or more since the last save
-  uint32_t guardatos_cache_ = 0;
-  size_t bytes_cache_guardatos_ = 0;  // size of the last file read or saved
+  uint32_t guardados_cache_ = 0;
+  size_t bytes_cache_guardados_ = 0;  // size of the last file read or saved
   std::chrono::steady_clock::time_point cache_guardada_{};
   // Thread that writes the pipeline cache to disk (EscritorCacheMain). It is persistent, because on
   // Horizon detach() closes the game, and wake-ups are decided with the lock held.
@@ -14984,7 +14984,10 @@ void* CacheVerticesPersistente::Anotar(uint64_t direccion_fisica, uint32_t bytes
 bool CacheVerticesPersistente::Alocar(uint32_t bytes, uint32_t alineacao, uint64_t& offset) {
   if (!buffer_) return false;
 
-  const VkDeviceSize inicio = (buffer_usado_ + alineacao - 1) & ~(VkDeviceSize(alineacao) - 1);
+  // A multiple of the alignment, which is the vertex stride on the base-zero path (12, 20, 36... bytes): a power-of-2
+  // mask would leave the offset off the stride and the draw would read shifted vertices.
+  const VkDeviceSize paso = std::max<VkDeviceSize>(alineacao, 1);
+  const VkDeviceSize inicio = (buffer_usado_ + paso - 1) / paso * paso;
   if (inicio + bytes > kTamanoBuffer) {
     return false;  // buffer full
   }
