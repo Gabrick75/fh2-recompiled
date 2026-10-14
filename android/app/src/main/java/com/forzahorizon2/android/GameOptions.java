@@ -138,9 +138,9 @@ final class GameOptions {
         }
     }
 
-    /** The render scale of the native renderer: the typed percent, 50 to 100. */
+    /** The render scale of the native renderer: the typed percent, 12 (160x90) to 100. */
     static int nativeRenderScalePercent(Context context) {
-        return Math.max(50, renderScalePercent(context));
+        return Math.max(12, renderScalePercent(context));
     }
 
     /** The native renderer's shadow map size, 0 (no shadows) to 100 percent of the game's 1600x1600. */
@@ -262,7 +262,7 @@ final class GameOptions {
             // NFSMW Android Evolved's renderer built for FH2 (app/src/nativo): the ring is drawn with translated
             // shaders, no EDRAM emulation. The emulated GPU's arguments below are then ignored; these are its own.
             args.add("--nfsmw_renderizador=nativo");
-            // The scene and post-processing render targets drawn smaller (50 to 100 %, any step).
+            // The scene and post-processing render targets drawn smaller (12 to 100 %, any step; 12 is 160x90).
             args.add("--fh2_nativo_escala=" + nativeRenderScalePercent(context));
             // Its own FXAA on the output; it has no MSAA (the game's 4x surfaces are drawn with one sample).
             args.add("--nfsmw_antialiasing=" + ("fxaa".equals(get(context, ANTI_ALIASING)) ? "fxaa" : "apagado"));

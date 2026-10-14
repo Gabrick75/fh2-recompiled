@@ -670,7 +670,7 @@ public final class MainActivity extends AppCompatActivity {
 
     /**
      * Render resolution, as a percentage of the Xbox 360's 1280x720, with the size it really becomes. Emulated: in
-     * eighths (12.5 % steps, quarters with MSAA 4x); native: 50 to 100, any value. refreshOut gets the refresh, for
+     * eighths (12.5 % steps, quarters with MSAA 4x); native: 12 (160x90) to 100, any value. refreshOut gets the refresh, for
      * the anti-aliasing choice that changes the emulated rounding.
      */
     private LinearLayout renderScaleRow(boolean nativeRenderer, Runnable[] refreshOut) {
@@ -686,7 +686,7 @@ public final class MainActivity extends AppCompatActivity {
         box.addView(readout);
         Slider slider;
         if (nativeRenderer) {
-            slider = ui.slider(50, 100, 1, GameOptions.nativeRenderScalePercent(this));
+            slider = ui.slider(12, 100, 1, GameOptions.nativeRenderScalePercent(this));
         } else {
             slider = ui.slider(1, 8, 1, GameOptions.renderScaleEighths(GameOptions.renderScalePercent(this), false));
         }
