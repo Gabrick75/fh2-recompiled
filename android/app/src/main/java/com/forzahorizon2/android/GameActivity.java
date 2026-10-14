@@ -351,6 +351,7 @@ public final class GameActivity extends SDLActivity
             int tick = 0;
             while (!isFinishing() && !isDestroyed()) {
                 String text = monitor.sample();
+                monitor.sampleClocks();  // the clocks and their caps go to the log only, not the overlay
                 if (usageLabel != null) {
                     clock.post(() -> usageLabel.setText(text));
                 }
@@ -363,7 +364,8 @@ public final class GameActivity extends SDLActivity
                     }
                     String line = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT)
                             .format(new java.util.Date()) +
-                            String.format(java.util.Locale.ROOT, "  %.1f fps  ", fps) + text + "\n";
+                            String.format(java.util.Locale.ROOT, "  %.1f fps  ", fps) + text +
+                            monitor.clocksLine() + "\n";
                     try (java.io.FileWriter writer = new java.io.FileWriter(usageLog, true)) {
                         writer.write(line);
                     } catch (IOException ignored) {
