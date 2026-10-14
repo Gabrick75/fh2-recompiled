@@ -514,7 +514,21 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_compuesta_perezosa, false, "NFSMW",
                     "(098B0000, antes del HUD) se aplaza: se graba si un dibujo la muestrea antes de volver a escribir "
                     "su origen (las gotas de lluvia) y se tira si no. Se activa tras la vigilancia de "
                     "nfsmw_nativo_diag_lectores_s y se apaga sola al primer desacuerdo. false = se copia siempre");
+/*
+ * FH2: off by default. The read-backs made the CPU and the GPU take turns.
+ *
+ * FH2 resolves 18-27 different 64x64 textures (none of them cube faces), about 3 per frame, and all of them were
+ * read back. With read-backs pending the ring holds the game's fences (fh2_nativo_lecturas_diferidas), about 2
+ * per frame: the game stops sending commands, the ring runs out of work and waits for the GPU. S23 Ultra at
+ * 160x90 with the car stopped (2026-10-13): 38 fps, the ring waiting 8.6 ms per frame for the GPU and the GPU
+ * idle 22 % of the time; with 0, 55 fps, no wait, the GPU 99 % busy. The exposure looked normal at 160x90; at full
+ * resolution it still has to be confirmed (the CPU reads one of them for its auto exposure: 4096 restores it).
+ */
+#if defined(FH2_RECOMP)
+REXCVAR_DEFINE_INT32(nfsmw_nativo_leer_resueltas_texels, 0, "NFSMW",
+#else
 REXCVAR_DEFINE_INT32(nfsmw_nativo_leer_resueltas_texels, 4096, "NFSMW",
+#endif
                      "Renderizador nativo: las texturas resueltas de hasta estos texels se copian "
                      "tambien a la memoria del invitado, que el juego lee para su exposicion (0 = "
                      "ninguna; 4096 = 64x64, las que usa la exposicion; 57600 = 320x180)");
