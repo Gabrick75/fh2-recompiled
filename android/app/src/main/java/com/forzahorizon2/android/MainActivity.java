@@ -871,6 +871,15 @@ public final class MainActivity extends AppCompatActivity {
                    "in a landscape with a lot of vegetation, from ~30 to ~40 fps."),
                 GameOptions.flag(this, GameOptions.VERTEX_CACHE),
                 v -> GameOptions.flag(this, GameOptions.VERTEX_CACHE, v)));
+        rows.add(ui.toggleRow(tr("Alvos pequenos em tamanho exato", "Small targets at exact size"),
+                tr("Cria os alvos de render pequenos (cubo de reflexo) na altura exata em vez de 720 linhas: " +
+                   "passes menores e menos tráfego de blocos. Se o jogo resolver abaixo da imagem, ela volta " +
+                   "sozinha ao tamanho cheio.",
+                   "Creates the small render targets (reflection cube) at their exact height instead of 720 " +
+                   "rows: smaller passes and less tile traffic. If the game ever resolves below the image, " +
+                   "it grows back to full height on its own."),
+                GameOptions.flag(this, GameOptions.EXACT_TARGETS),
+                v -> GameOptions.flag(this, GameOptions.EXACT_TARGETS, v)));
         if (GameOptions.PERFORMANCE_HINTS_IN_MENU) {
             rows.add(ui.toggleRow(tr("Dicas de desempenho (ADPF)", "Performance hints (ADPF)"),
                     tr("Diz ao Android quanto cada quadro trabalhou e a meta do limite de FPS, para ele subir " +
