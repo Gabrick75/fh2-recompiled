@@ -1424,6 +1424,12 @@ constexpr uint32_t kMemoriaFisica = 0x20000000;
  * fewer samples (~600-1,400 per second in a race).
  */
 constexpr uint32_t kCronometroCada = 64;  // draws per stage-timed draw (power of 2)
+// Pass changes per timed one (power of 2), with the time scaled up. Each pass change read the clock 7 times
+// (the change, vkCmdBeginRenderPass and vkCmdEndRenderPass), ~8,000 changes per second on the S23 Ultra; in the
+// Moto G9 Play profile the clock reads were 3.7 % of the ring. "C6 pases" keeps its scale.
+constexpr uint32_t kCronometroPaseCada = 8;
+// A pipeline compiled on the ring that took this long is saved to the disk cache soon (AntesDeEnviar).
+constexpr uint64_t kPipelineLentoNs = 50000000;
 constexpr size_t kCopiasPorAviso = 64;   // copies queued between wake-ups of the copy thread (power of 2)
 // Copies taken in one batch (nfsmw_nativo_subidas_ayuda). In a race they are ~2 KB each: a batch is
 // ~30 KB, about 20 us. That is how long the ring may have to wait for the thread, already with its
@@ -3655,7 +3661,13 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     }
     if (!pase_activo_ || clave_pase != pase_clave_ ||
         pase_generacion_ != contexto_->GeneracionComandos()) {
-      const auto antes_pase = std::chrono::steady_clock::now();
+      // 1 in kCronometroPaseCada pass changes is timed for "C6 pases" (scaled up); the stage stopwatch of the
+      // current draw times it too. TerminarPase closes the previous pass with that pass's own flag, so the new
+      // one is set only after it, for EmpezarPase.
+      const bool cambio_cronometrado = (++cronometro_pases_ & (kCronometroPaseCada - 1)) == 0;
+      const bool medir_cambio = cronometrar_ || cambio_cronometrado;
+      const auto antes_pase =
+          medir_cambio ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
       if (pase_generacion_ != contexto_->GeneracionComandos()) {
         ++pases_por_generacion_;
       } else if (!pase_activo_ && clave_pase == pase_clave_) {
@@ -3669,15 +3681,18 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       // The pass change is split. TerminarPase closes the previous pass; EmpezarPase finds or creates the
       // render targets (it may create images, record barriers and clear them), builds the render pass and
       // the framebuffer, and opens the pass.
-      const auto tras_terminar = std::chrono::steady_clock::now();
       if (cronometrar_) {
         etapas_ns_[8] += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
-            tras_terminar - antes_pase).count());
+            std::chrono::steady_clock::now() - antes_pase).count());
       }
+      cronometrar_pase_ = cambio_cronometrado;
       const bool empezado = EmpezarPase(r, claves, pitch, clave_pase);
-      const auto tras_pase = std::chrono::steady_clock::now();
-      ns_pases_ += uint64_t(
-          std::chrono::duration_cast<std::chrono::nanoseconds>(tras_pase - antes_pase).count());
+      const auto tras_pase =
+          medir_cambio ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+      if (cambio_cronometrado) {
+        ns_pases_ += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(tras_pase - antes_pase).count()) *
+                     kCronometroPaseCada;
+      }
       // The pass change, separate from what the stage costs on each draw.
       if (cronometrar_) {
         etapas_ns_[7] += uint64_t(
@@ -3834,8 +3849,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
             vigilado->offset = offset;
             ++fh2_vigilados_copiados_;
           }
+          // The 10 s report looks at the clock once every 1024 copied fetches, not on each (~160,000 per second).
           static auto ultimo = std::chrono::steady_clock::now();
-          if (std::chrono::steady_clock::now() - ultimo > std::chrono::seconds(10)) {
+          static uint32_t copias_desde_reloj = 0;
+          if ((++copias_desde_reloj & 1023) == 0 && std::chrono::steady_clock::now() - ultimo > std::chrono::seconds(10)) {
             ultimo = std::chrono::steady_clock::now();
             REXLOG_INFO("[fh2 nativo] buscas vigiladas: {} rangos, {} reusadas, {} copiadas, {} avisos de escritura, "
                         "tabla reiniciada {} veces",
@@ -5762,14 +5779,18 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         contexto_->TerminarConsultaOclusion(consulta_oclusion_);
         consulta_oclusion_ = UINT32_MAX;
       }
-      const auto antes_fin = std::chrono::steady_clock::now();
+      const auto antes_fin =
+          cronometrar_pase_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
       dfn_.vkCmdEndRenderPass(pase_comandos_);
       if (estadisticas_pase_ != UINT32_MAX) {
         contexto_->TerminarEstadisticas(estadisticas_pase_);
         estadisticas_pase_ = UINT32_MAX;
       }
-      ns_render_pass_ += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now() - antes_fin).count());
+      if (cronometrar_pase_) {  // 1 in kCronometroPaseCada passes, scaled up
+        ns_render_pass_ += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now() - antes_fin).count()) *
+                           kCronometroPaseCada;
+      }
       const uint32_t categoria_cerrada = categoria_pase_;
       pase_activo_ = false;
       // Just in case. A pending sky with the pass already closed cannot be recorded; it is counted so it
@@ -6063,11 +6084,17 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       precalentado_contados_ = compilados;
     }
     // The pipeline cache is saved after 64 new pipelines, or after a minute with any new one: on the
-    // Switch, exiting does not always reach the destructor.
-    if (pipelines_sin_guardar_ &&
-        (pipelines_sin_guardar_ >= 64 ||
-         std::chrono::steady_clock::now() - cache_guardada_ >= std::chrono::seconds(60))) {
-      GuardarCachePipelines();
+    // Switch, exiting does not always reach the destructor. On Android the game is usually closed from the
+    // recents screen, which kills the process: a pipeline that took long to compile (Turnip took 1.9 s on one
+    // on the Moto G9 Play) is saved soon, 5 s after the previous save at the earliest, so a burst of them is
+    // one save.
+    if (pipelines_sin_guardar_) {
+      const auto desde_guardado = std::chrono::steady_clock::now() - cache_guardada_;
+      if (pipelines_sin_guardar_ >= 64 || desde_guardado >= std::chrono::seconds(60) ||
+          (pipeline_lento_sin_guardar_ && desde_guardado >= std::chrono::seconds(5))) {
+        pipeline_lento_sin_guardar_ = false;
+        GuardarCachePipelines();
+      }
     }
   }
 
@@ -11540,10 +11567,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     }
     // The statistics cover the whole pass, from here to after EndRenderPass.
     estadisticas_pase_ = contexto_->EmpezarEstadisticas(categoria_pase_);
-    const auto antes_inicio = std::chrono::steady_clock::now();
+    const auto antes_inicio =
+        cronometrar_pase_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     dfn_.vkCmdBeginRenderPass(cmd, &inicio, VK_SUBPASS_CONTENTS_INLINE);
-    ns_render_pass_ += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now() - antes_inicio).count());
+    if (cronometrar_pase_) {  // 1 in kCronometroPaseCada passes, scaled up
+      ns_render_pass_ += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                             std::chrono::steady_clock::now() - antes_inicio).count()) *
+                         kCronometroPaseCada;
+    }
 #if defined(FH2_RECOMP)
     for (uint32_t i = 0; i < 5; ++i) {
       if (mascara_borrar & (1u << i)) {
@@ -13047,6 +13078,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                                               std::chrono::steady_clock::now() - inicio_creacion)
                                               .count());
     ns_pipelines_ += ns_creacion;
+    if (pipeline != VK_NULL_HANDLE && ns_creacion >= kPipelineLentoNs) {
+      pipeline_lento_sin_guardar_ = true;  // saved at the next submit (AntesDeEnviar)
+    }
     AnotarPipelineCreado(clave, entrada, p, pipeline, ns_creacion);  // List and measurement
     pipelines_.emplace(huella, std::make_pair(clave, pipeline));
     ++pipelines_por_modo_[clave.relleno2 & 3];  // Dynamic state report
@@ -14248,6 +14282,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   uint64_t dibujados_cronometrados_ = 0;  // of those, with the stage stopwatch
   uint32_t cronometro_contador_ = 0;
   bool cronometrar_ = false;  // the current draw carries the stage stopwatch
+  uint32_t cronometro_pases_ = 0;
+  bool cronometrar_pase_ = false;  // the current pass change (and its Begin/EndRenderPass) is timed
   // Rear-view mirror diagnostic: cubemap refreshes from their resolved faces (report every 10 s).
   uint64_t cubos_refrescados_ = 0;
   uint64_t cubos_refrescados_previos_ = 0;
@@ -14574,6 +14610,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   FnDestruirCachePipelines destruir_cache_ = nullptr;
   VkPipelineCache cache_pipelines_ = VK_NULL_HANDLE;
   uint32_t pipelines_sin_guardar_ = 0;
+  bool pipeline_lento_sin_guardar_ = false;  // one took kPipelineLentoNs or more since the last save
   uint32_t guardados_cache_ = 0;
   size_t bytes_cache_guardados_ = 0;  // size of the last file read or saved
   std::chrono::steady_clock::time_point cache_guardada_{};

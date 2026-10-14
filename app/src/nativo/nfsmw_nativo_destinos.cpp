@@ -6813,6 +6813,10 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     ++d.copias;
     d.dibujos += dibujos;
     d.con_dibujos += dibujos != 0 ? 1 : 0;
+    // The 10 s report looks at the clock once every 64 copies, not on each.
+    if ((++copias_desde_reloj_ & 63) != 0) {
+      return;
+    }
     const auto ahora = std::chrono::steady_clock::now();
     if (ahora - informe_copias_ < std::chrono::seconds(10)) {
       return;
@@ -7483,6 +7487,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   uint64_t dibujados_ultima_copia_ = 0;
   std::unordered_map<uint32_t, CopiaDestino> copias_por_destino_;
   std::chrono::steady_clock::time_point informe_copias_{};
+  uint32_t copias_desde_reloj_ = 0;
   VkFormat formato_profundidad_ = VK_FORMAT_UNDEFINED;
   // Parts C3-C6: draws with the library shaders (nullptr without the required capabilities).
   std::unique_ptr<DibujosVulkan> dibujos_;

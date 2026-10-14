@@ -482,8 +482,11 @@ constexpr uint32_t kBaseMmio = 0x7FC80000;
  *
  * With 128 there are 648 samples per frame, still plenty for a mean: the relative error of a sample of 648 is
  * 4 %, and these times are read to split percentages, not for exact figures.
+ *
+ * From 128 to 1024: in the Moto G9 Play profile the clock reads were still 3.7 % of the ring, the packet timer
+ * the largest share (~1 %). 81 samples per frame are ~30,000 per 20 s report.
  */
-constexpr uint64_t kCronometroPaquetesCada = 128;  // packets per timed one (power of 2)
+constexpr uint64_t kCronometroPaquetesCada = 1024;  // packets per timed one (power of 2)
 /*
  * From 8 to 64. At 1 in 8, this timer and above all the stage timer in nfsmw_nativo_dibujos.cpp (about 20 clock
  * reads per timed draw) added up to thousands of clock reads per frame in the alley, with 2,500-4,000 draws.
