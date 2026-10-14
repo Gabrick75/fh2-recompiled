@@ -40,6 +40,7 @@ final class GameOptions {
     static final String SHADOW_MAP_SCALE = "shadow_map_scale";  // nfsmw_nativo_sombras_escala: 0 (off) to 100 %
     // Performance
     static final String PIN_THREADS = "pin_threads";
+    static final String JOGO_RAPIDO = "jogo_rapido";  // fh2_android_afinidade=jogo-rapido (off = auto)
     static final String PERFORMANCE_HINTS = "performance_hints";  // fh2_android_adpf (Android's ADPF)
     // The ADPF toggle is out of the menu: the hints are always on (the 2026-10-14 A/B on the S23 Ultra showed no
     // loss). Set to true to bring the row back (MainActivity.performancePage) and honor the saved choice again.
@@ -299,7 +300,10 @@ final class GameOptions {
         args.add("--gpu_atalho_resolve=" + flag(context, RESOLVE_SHORTCUT));
         args.add("--fh2_android_nucleos_grandes=" + flag(context, PIN_THREADS));
         // 'auto': the command processor alone on the fastest core (+16 % on the S23 Ultra), see android_rendimiento.cpp.
-        args.add("--fh2_android_afinidade=" + (flag(context, PIN_THREADS) ? "auto" : "off"));  // never empty: the cvar parser aborts on it
+        // 'jogo-rapido': the busiest game thread alone on the fastest core instead (for heavy scenery, where the
+        // game thread saturates first); off unless PIN_THREADS and JOGO_RAPIDO are both on.
+        args.add("--fh2_android_afinidade=" + (!flag(context, PIN_THREADS) ? "off"
+                : flag(context, JOGO_RAPIDO) ? "jogo-rapido" : "auto"));  // never empty: the cvar parser aborts on it
         args.add("--fh2_android_adpf=" + (!PERFORMANCE_HINTS_IN_MENU || flag(context, PERFORMANCE_HINTS)));
         // Emulated Xenos GPU on Android drivers (from nfsmw-android's "xenos" mode): ordinary descriptor sets,
         // host framebuffers, no geometry shader or non-solid fill required, shaders compiled before drawing.

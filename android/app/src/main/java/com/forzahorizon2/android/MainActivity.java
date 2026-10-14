@@ -853,6 +853,15 @@ public final class MainActivity extends AppCompatActivity {
                    "emulated or the native one) alone on the fastest (+16 %)."),
                 GameOptions.flag(this, GameOptions.PIN_THREADS),
                 v -> GameOptions.flag(this, GameOptions.PIN_THREADS, v)));
+        rows.add(ui.toggleRow(tr("Núcleo mais rápido para o jogo", "Fastest core for the game"),
+                tr("Em vez do anel, dá o núcleo mais rápido à thread mais ocupada do jogo (ela muda nos " +
+                   "carregamentos, e o modo a segue). Para paisagens pesadas, onde a thread do jogo satura " +
+                   "antes do anel; desligado vale o modo acima.",
+                   "Instead of the ring, gives the fastest core to the game's busiest thread (it changes on " +
+                   "loads, and the mode follows it). For heavy scenery, where the game thread saturates " +
+                   "before the ring; off keeps the mode above."),
+                GameOptions.flag(this, GameOptions.JOGO_RAPIDO),
+                v -> GameOptions.flag(this, GameOptions.JOGO_RAPIDO, v)));
         rows.add(ui.toggleRow(tr("Cache de vértices entre quadros", "Vertex cache across frames"),
                 tr("Reaproveita os vértices que o jogo não mudou desde o quadro anterior, em vez de copiá-los de " +
                    "novo: 87 % menos dados enviados à GPU. No S23 Ultra, parado, +35 % de fps (27 → 36,5); " +
