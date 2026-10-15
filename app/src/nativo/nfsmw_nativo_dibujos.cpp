@@ -11934,15 +11934,36 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       return false;
     }
 #if defined(FH2_RECOMP)
-    // Seeds the multisample images a LOAD pass reads (see above): full 1x -> transient copies. Covered by
-    // the pass entry dependency (TRANSFER in its source stages).
+    // Seeds the multisample images a LOAD pass reads (see above): full 1x -> transient copies. The pass
+    // entry dependency only covers what previous passes wrote through it, not resolve copies recorded
+    // after the last pass: a barrier first makes every previous color/depth/transfer write visible.
     if (muestras >= 2 && copiar_imagen_) {
       bool semilla_alguna = false;
+      for (uint32_t i = 0; i < 5; ++i) {
+        if (semilla_ms[i] && imagenes[i] && imagenes[i]->ms_imagen != VK_NULL_HANDLE) {
+          semilla_alguna = true;
+          break;
+        }
+      }
+      if (semilla_alguna) {
+        ++msaa_sin_borrado_;
+        // Previous color/depth/transfer writes (previous passes, resolve copies) must be visible to the
+        // seed copies below.
+        VkMemoryBarrier barrera{};
+        barrera.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        barrera.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT |
+                                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        barrera.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        dfn_.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                           VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                           VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrera, 0, nullptr, 0,
+                                  nullptr);
+      }
       for (uint32_t i = 0; i < 5; ++i) {
         if (!semilla_ms[i] || !imagenes[i] || imagenes[i]->ms_imagen == VK_NULL_HANDLE) {
           continue;
         }
-        semilla_alguna = true;
         VkImageCopy copia{};
         copia.srcSubresource = {i == 4 ? VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT |
                                                             ((imagenes[i]->formato == VK_FORMAT_D24_UNORM_S8_UINT ||
@@ -11960,6 +11981,16 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
       if (semilla_alguna) {
         ++msaa_sin_borrado_;
+        VkMemoryBarrier barrera{};
+        barrera.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        barrera.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT |
+                                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        barrera.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        dfn_.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                           VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                           VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrera, 0, nullptr, 0,
+                                  nullptr);
       }
     }
 #endif
@@ -11976,7 +12007,13 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       inicio.pClearValues = valores_borrar.data();
       ++fh2_pases_que_borran_;
     }
+#if defined(FH2_RECOMP)
+    // fh2_nativo_msaa: the subpass resolve copies the whole image, so the pass must cover it whole: no
+    // useful-area clipping (its un-drawn rows would resolve as uninitialized memory).
+    if (muestras < 2 && area_util_) {
+#else
     if (area_util_) {
+#endif
       const auto it = alto_util_.find(pitch);
       if (it != alto_util_.end() && it->second < alto) {
         alto_pase = it->second;
