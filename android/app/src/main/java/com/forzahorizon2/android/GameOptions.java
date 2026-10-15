@@ -33,6 +33,7 @@ final class GameOptions {
     static final String MSAA_SAMPLES = "msaa_samples";        // "2", "4"
     static final String FXAA_QUALITY = "fxaa_quality";        // "normal", "high"
     static final String SCALING = "scaling";  // present_effect: bilinear, cas or fsr 1.0
+    static final String SHARPNESS = "sharpness";  // present_cas_additional_sharpness * 100, 0 to 100
     static final String ANISOTROPIC = "anisotropic";          // anisotropic_override: 0, 2 (2x), 3 (4x), 5 (16x)
     static final String SHADOWS = "shadows";                  // not applied yet (needs game hooks)
     static final String SHADOW_DISTANCE = "shadow_distance";  // not applied yet
@@ -89,6 +90,7 @@ final class GameOptions {
             case MSAA_SAMPLES: return "4";
             case FXAA_QUALITY: return "normal";
             case SCALING: return "bilinear";
+            case SHARPNESS: return "0";
             case ANISOTROPIC: return "3";
             case SHADOWS: return "1";
             case SHADOW_DISTANCE: return "far";
@@ -329,6 +331,14 @@ final class GameOptions {
         String scaling = get(context, SCALING);
         if (!"cas".equals(scaling) && !"fsr".equals(scaling)) scaling = "bilinear";
         args.add("--present_effect=" + scaling);
+        // Extra CAS/RCAS sharpness on top of the effect's own (0 keeps the SDK default).
+        int sharpness;
+        try {
+            sharpness = Math.max(0, Math.min(100, Integer.parseInt(get(context, SHARPNESS).trim())));
+        } catch (NumberFormatException e) {
+            sharpness = 0;
+        }
+        args.add("--present_cas_additional_sharpness=" + (sharpness / 100.0));
         args.add("--present_letterbox=false");
         args.add("--present_safe_area_x=100");
         args.add("--present_safe_area_y=100");
