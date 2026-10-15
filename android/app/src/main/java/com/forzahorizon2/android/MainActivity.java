@@ -468,9 +468,13 @@ public final class MainActivity extends AppCompatActivity {
                     library, library ? tr("Encontrada", "Found") : tr("Faltando", "Missing"))));
 
             rendererOptions.addView(ui.header(tr("Imagem do nativo", "Native image")));
-            SegmentedControl aa = new SegmentedControl(this, new String[] {tr("Desligada", "Off"), "FXAA"});
-            aa.choose("fxaa".equals(GameOptions.get(this, GameOptions.ANTI_ALIASING)) ? 1 : 0, false);
-            aa.setOnChoice(index -> GameOptions.set(this, GameOptions.ANTI_ALIASING, index == 1 ? "fxaa" : "off"));
+            SegmentedControl aa = new SegmentedControl(this, new String[] {tr("Desligada", "Off"), "FXAA",
+                    "MSAA 2x", "MSAA 4x"});
+            String aaValor = GameOptions.get(this, GameOptions.ANTI_ALIASING);
+            aa.choose("fxaa".equals(aaValor) ? 1 : "msaa2".equals(aaValor) ? 2 : "msaa4".equals(aaValor) ? 3 : 0,
+                    false);
+            aa.setOnChoice(index -> GameOptions.set(this, GameOptions.ANTI_ALIASING,
+                    index == 1 ? "fxaa" : index == 2 ? "msaa2" : index == 3 ? "msaa4" : "off"));
             rendererOptions.addView(ui.group(
                     renderScaleRow(true, null),
                     ui.stackedRow(tr("Suavização de bordas", "Anti-aliasing"),
@@ -478,9 +482,10 @@ public final class MainActivity extends AppCompatActivity {
                                "FXAA smooths jagged edges with a cheap filter over the final image."), aa),
                     anisotropicRow(),
                     shadowMapRow()));
-            rendererOptions.addView(ui.footer(tr("O nativo não tem MSAA: as superfícies 4x do jogo são desenhadas " +
-                    "com uma amostra.", "The native renderer has no MSAA: the game's 4x surfaces are drawn with one " +
-                    "sample.")));
+            rendererOptions.addView(ui.footer(tr("MSAA 2x/4x desenha a cena 3D com 2/4 amostras e resolve no passe " +
+                    "(custa GPU); o FXAA é um filtro barato sobre a imagem final.",
+                    "MSAA 2x/4x draws the 3D scene with 2/4 samples and resolves in the pass (costs GPU); FXAA " +
+                    "is a cheap filter over the final image.")));
 
             rendererOptions.addView(ui.header(tr("Desempenho do nativo", "Native performance")));
             rendererOptions.addView(ui.group(fpsLimitRow(), onePassRow(

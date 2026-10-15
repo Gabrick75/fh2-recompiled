@@ -273,8 +273,10 @@ final class GameOptions {
             args.add("--nfsmw_renderizador=nativo");
             // The scene and post-processing render targets drawn smaller (12 to 100 %, any step; 12 is 160x90).
             args.add("--fh2_nativo_escala=" + nativeRenderScalePercent(context));
-            // Its own FXAA on the output; it has no MSAA (the game's 4x surfaces are drawn with one sample).
+            // Its own FXAA on the output; MSAA 2x/4x on the 3D scene (fh2_nativo_msaa, off by default).
             args.add("--nfsmw_antialiasing=" + ("fxaa".equals(get(context, ANTI_ALIASING)) ? "fxaa" : "apagado"));
+            String aa = get(context, ANTI_ALIASING);
+            args.add("--fh2_nativo_msaa=" + ("msaa4".equals(aa) ? 4 : "msaa2".equals(aa) ? 2 : 0));
             args.add("--nfsmw_nativo_anisotropico=" + nativeAnisotropic(get(context, ANISOTROPIC)));
             args.add("--nfsmw_nativo_sombras_escala=" + shadowMapScalePercent(context));
             args.add("--nfsmw_nativo_compuesta_perezosa=" + flag(context, LAZY_COMPOSITE));
