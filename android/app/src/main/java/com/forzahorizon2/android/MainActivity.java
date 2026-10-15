@@ -479,6 +479,7 @@ public final class MainActivity extends AppCompatActivity {
                     anisotropicRow(),
                     shadowMapRow(),
                     scalingRow(),
+                    fsrModeRow(),
                     sharpnessRow()));
             rendererOptions.addView(ui.footer(tr("O nativo não tem MSAA: as superfícies 4x do jogo são desenhadas " +
                     "com uma amostra.", "The native renderer has no MSAA: the game's 4x surfaces are drawn with one " +
@@ -533,6 +534,7 @@ public final class MainActivity extends AppCompatActivity {
             image.addView(fxaa);
             image.addView(anisotropicRow());
             image.addView(scalingRow());
+            image.addView(fsrModeRow());
             image.addView(sharpnessRow());
             showModes.run();
             rendererOptions.addView(image);
@@ -678,6 +680,18 @@ public final class MainActivity extends AppCompatActivity {
                    "How the image is brought to the screen's size. FSR is sharper when the game draws below " +
                    "the screen's resolution; CAS only sharpens."),
                 new String[] {"Bilinear", "FSR 1.0", "CAS"}, new String[] {"bilinear", "fsr", "cas"});
+    }
+
+    private View fsrModeRow() {
+        return ui.choiceRow(GameOptions.FSR_MODE, tr("Modo FSR", "FSR mode"),
+                tr("Atalho: escala de render + FSR 1.0 juntos (77/67/59/50/33 % de 1280×720). Desligado vale " +
+                   "a escala e o efeito escolhidos acima.",
+                   "Shortcut: render scale + FSR 1.0 together (77/67/59/50/33 % of 1280x720). Off keeps the " +
+                   "scale and effect chosen above."),
+                new String[] {tr("Desligado", "Off"), tr("Ultra qualidade", "Ultra quality"),
+                        tr("Qualidade", "Quality"), tr("Equilibrado", "Balanced"), tr("Desempenho", "Performance"),
+                        tr("Ultra desempenho", "Ultra performance")},
+                new String[] {"off", "ultra_quality", "quality", "balanced", "performance", "ultra_performance"});
     }
 
     private View sharpnessRow() {

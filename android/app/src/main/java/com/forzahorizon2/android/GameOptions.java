@@ -34,6 +34,7 @@ final class GameOptions {
     static final String FXAA_QUALITY = "fxaa_quality";        // "normal", "high"
     static final String SCALING = "scaling";  // present_effect: bilinear, cas or fsr 1.0
     static final String SHARPNESS = "sharpness";  // present_cas_additional_sharpness * 100, 0 to 100
+    static final String FSR_MODE = "fsr_mode";  // off or an FSR 1.0 preset: render scale + fsr effect
     static final String ANISOTROPIC = "anisotropic";          // anisotropic_override: 0, 2 (2x), 3 (4x), 5 (16x)
     static final String SHADOWS = "shadows";                  // not applied yet (needs game hooks)
     static final String SHADOW_DISTANCE = "shadow_distance";  // not applied yet
@@ -91,6 +92,7 @@ final class GameOptions {
             case FXAA_QUALITY: return "normal";
             case SCALING: return "bilinear";
             case SHARPNESS: return "0";
+            case FSR_MODE: return "off";
             case ANISOTROPIC: return "3";
             case SHADOWS: return "1";
             case SHADOW_DISTANCE: return "far";
@@ -152,6 +154,34 @@ final class GameOptions {
     /** The render scale of the native renderer: the typed percent, 12 (160x90) to 100. */
     static int nativeRenderScalePercent(Context context) {
         return Math.max(12, renderScalePercent(context));
+    }
+
+    /**
+     * FSR 1.0 mode as a render-scale percent of 1280x720, or 0 when off. The spatial FSR only upscales
+     * what the game draws, so each mode is a scale preset with the fsr effect on (the SDK's quality mode
+     * alone does nothing without the temporal runtime).
+     */
+    static int fsrModeScalePercent(Context context) {
+        switch (get(context, FSR_MODE)) {
+            case "ultra_quality": return 77;
+            case "quality": return 67;
+            case "balanced": return 59;
+            case "performance": return 50;
+            case "ultra_performance": return 33;
+            default: return 0;
+        }
+    }
+
+    /** The eighths/percent above, with an FSR preset winning over the typed scale when one is on. */
+    static int effectiveRenderScalePercent(Context context) {
+        int preset = fsrModeScalePercent(context);
+        return preset > 0 ? preset : renderScalePercent(context);
+    }
+
+    /** The native scale above, with an FSR preset winning over the typed scale when one is on. */
+    static int effectiveNativeRenderScalePercent(Context context) {
+        int preset = fsrModeScalePercent(context);
+        return preset > 0 ? Math.max(12, preset) : nativeRenderScalePercent(context);
     }
 
     /** The native renderer's shadow map size, 0 (no shadows) to 100 percent of the game's 1600x1600. */
@@ -274,7 +304,7 @@ final class GameOptions {
             // shaders, no EDRAM emulation. The emulated GPU's arguments below are then ignored; these are its own.
             args.add("--nfsmw_renderizador=nativo");
             // The scene and post-processing render targets drawn smaller (12 to 100 %, any step; 12 is 160x90).
-            args.add("--fh2_nativo_escala=" + nativeRenderScalePercent(context));
+            args.add("--fh2_nativo_escala=" + effectiveNativeRenderScalePercent(context));
             // Its own FXAA on the output; it has no MSAA (the game's 4x surfaces are drawn with one sample).
             args.add("--nfsmw_antialiasing=" + ("fxaa".equals(get(context, ANTI_ALIASING)) ? "fxaa" : "apagado"));
             args.add("--nfsmw_nativo_anisotropico=" + nativeAnisotropic(get(context, ANISOTROPIC)));
@@ -298,7 +328,7 @@ final class GameOptions {
                 break;
         }
         args.add("--anisotropic_override=" + get(context, ANISOTROPIC));
-        args.add("--gpu_escala_render=" + renderScalePercent(context));
+        args.add("--gpu_escala_render=" + effectiveRenderScalePercent(context));
         args.add("--fh2_uma_faixa=" + flag(context, ONE_PASS));
         args.add("--vblank_adaptativo=" + flag(context, ADAPTIVE_VBLANK));
         args.add("--gpu_atalho_resolve=" + flag(context, RESOLVE_SHORTCUT));
@@ -329,6 +359,8 @@ final class GameOptions {
         // fills the whole buffer. The scaling effect (bilinear, CAS sharpening or FSR 1.0) needs
         // REX_HAS_FIDELITYFX_SDK on Android (sdk/src/ui/CMakeLists.txt).
         String scaling = get(context, SCALING);
+        // An FSR mode on wins over the scaling choice: it is a scale preset with the fsr effect.
+        if (fsrModeScalePercent(context) > 0) scaling = "fsr";
         if (!"cas".equals(scaling) && !"fsr".equals(scaling)) scaling = "bilinear";
         args.add("--present_effect=" + scaling);
         // Extra CAS/RCAS sharpness on top of the effect's own (0 keeps the SDK default).
