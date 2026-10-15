@@ -141,6 +141,13 @@ if(REXGLUE_FIDELITYFX_SOURCE_DIR AND EXISTS "${REXGLUE_FIDELITYFX_SOURCE_DIR}/sd
         "${REXGLUE_FIDELITYFX_SOURCE_DIR}/ffx-api/include"
     )
     target_compile_definitions(rexui PRIVATE REX_HAS_FIDELITYFX_SDK=1)
+elseif(ANDROID)
+    # Android: spatial CAS and FSR 1.0 without the FidelityFX SDK. Their
+    # shaders are vendored (ui/shaders/vulkan_spirv/guest_output_ffx_*) and
+    # their constants are local (rex/ui/presenter.h); only the temporal
+    # FSR 2/3 path needs the SDK runtime, which stays off (no
+    # REX_HAS_FIDELITYFX_RUNTIME). The launcher only offers bilinear/cas/fsr.
+    target_compile_definitions(rexui PRIVATE REX_HAS_FIDELITYFX_SDK=1)
 endif()
 
 set(REXUI_HAS_FIDELITYFX_RUNTIME OFF)
