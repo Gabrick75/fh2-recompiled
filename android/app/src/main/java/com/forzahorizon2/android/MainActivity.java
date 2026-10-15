@@ -456,6 +456,7 @@ public final class MainActivity extends AppCompatActivity {
                      "image."));
         rendererOptions.removeAllViews();
         shadersFound = null;
+        fsrModeRefreshers.clear();
         if (nativeRenderer) {
             boolean library = shaderLibrary().isFile();
             shadersFound = library;
@@ -673,17 +674,24 @@ public final class MainActivity extends AppCompatActivity {
      * eighths (12.5 % steps, quarters with MSAA 4x); native: 12 (160x90) to 100, any value. refreshOut gets the refresh, for
      * the anti-aliasing choice that changes the emulated rounding.
      */
+    private final java.util.List<Runnable> fsrModeRefreshers = new java.util.ArrayList<>();
+
+    private void refreshFsrModeRows() {
+        for (Runnable refresh : fsrModeRefreshers) refresh.run();
+    }
+
     private View scalingRow() {
         return ui.choiceRow(GameOptions.SCALING, tr("Escala para a tela", "Scaling to the screen"),
                 tr("Como a imagem é levada ao tamanho da tela. O FSR é mais nítido quando o jogo desenha " +
                    "abaixo da resolução da tela; o CAS só aumenta a nitidez.",
                    "How the image is brought to the screen's size. FSR is sharper when the game draws below " +
                    "the screen's resolution; CAS only sharpens."),
-                new String[] {"Bilinear", "FSR 1.0", "CAS"}, new String[] {"bilinear", "fsr", "cas"});
+                new String[] {"Bilinear", "FSR 1.0", "CAS"}, new String[] {"bilinear", "fsr", "cas"},
+                value -> refreshFsrModeRows());
     }
 
     private View fsrModeRow() {
-        return ui.choiceRow(GameOptions.FSR_MODE, tr("Modo FSR", "FSR mode"),
+        LinearLayout row = ui.choiceRow(GameOptions.FSR_MODE, tr("Modo FSR", "FSR mode"),
                 tr("Atalho: escala de render + FSR 1.0 juntos (77/67/59/50/33 % de 1280×720). Desligado vale " +
                    "a escala e o efeito escolhidos acima.",
                    "Shortcut: render scale + FSR 1.0 together (77/67/59/50/33 % of 1280x720). Off keeps the " +
@@ -692,6 +700,11 @@ public final class MainActivity extends AppCompatActivity {
                         tr("Qualidade", "Quality"), tr("Equilibrado", "Balanced"), tr("Desempenho", "Performance"),
                         tr("Ultra desempenho", "Ultra performance")},
                 new String[] {"off", "ultra_quality", "quality", "balanced", "performance", "ultra_performance"});
+        Runnable refresh = () -> row.setVisibility(
+                "fsr".equals(GameOptions.get(this, GameOptions.SCALING)) ? View.VISIBLE : View.GONE);
+        fsrModeRefreshers.add(refresh);
+        refresh.run();
+        return row;
     }
 
     private View sharpnessRow() {
