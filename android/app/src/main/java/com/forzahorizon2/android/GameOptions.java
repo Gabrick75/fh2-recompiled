@@ -304,7 +304,6 @@ final class GameOptions {
             // shaders, no EDRAM emulation. The emulated GPU's arguments below are then ignored; these are its own.
             args.add("--nfsmw_renderizador=nativo");
             // The scene and post-processing render targets drawn smaller (12 to 100 %, any step; 12 is 160x90).
-<<<<<<< HEAD
             args.add("--fh2_nativo_escala=" + effectiveNativeRenderScalePercent(context));
             // Its own FXAA on the output; MSAA 2x/4x on the 3D scene (fh2_nativo_msaa, off by default).
             args.add("--nfsmw_antialiasing=" + ("fxaa".equals(get(context, ANTI_ALIASING)) ? "fxaa" : "apagado"));
