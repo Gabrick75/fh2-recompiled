@@ -687,7 +687,11 @@ public final class MainActivity extends AppCompatActivity {
                    "How the image is brought to the screen's size. FSR is sharper when the game draws below " +
                    "the screen's resolution; CAS only sharpens."),
                 new String[] {"Bilinear", "FSR 1.0", "CAS"}, new String[] {"bilinear", "fsr", "cas"},
-                value -> refreshFsrModeRows());
+                value -> {
+                    // Leaving FSR must also leave its mode: a stored preset must never override the scale.
+                    if (!"fsr".equals(value)) GameOptions.set(this, GameOptions.FSR_MODE, "off");
+                    refreshFsrModeRows();
+                });
     }
 
     private View fsrModeRow() {

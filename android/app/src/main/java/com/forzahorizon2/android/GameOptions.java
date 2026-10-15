@@ -157,11 +157,11 @@ final class GameOptions {
     }
 
     /**
-     * FSR 1.0 mode as a render-scale percent of 1280x720, or 0 when off. The spatial FSR only upscales
-     * what the game draws, so each mode is a scale preset with the fsr effect on (the SDK's quality mode
-     * alone does nothing without the temporal runtime).
+     * FSR 1.0 mode as a render-scale percent of 1280x720, or 0 when off. Only while the scaling effect
+     * itself is fsr: otherwise a stored mode must never override the typed scale (stale preset).
      */
     static int fsrModeScalePercent(Context context) {
+        if (!"fsr".equals(get(context, SCALING))) return 0;
         switch (get(context, FSR_MODE)) {
             case "ultra_quality": return 77;
             case "quality": return 67;
