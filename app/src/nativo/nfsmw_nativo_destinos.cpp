@@ -6146,6 +6146,15 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if (dibujos_ && imagen.vista != VK_NULL_HANDLE) {
       dibujos_->OlvidarVista(imagen.vista);
     }
+#if defined(FH2_RECOMP)
+    // fh2_nativo_msaa: the transient multisample image goes with its target (same framebuffers).
+    if (dibujos_ && imagen.ms_vista != VK_NULL_HANDLE) {
+      dibujos_->OlvidarVista(imagen.ms_vista);
+    }
+    if (imagen.ms_vista != VK_NULL_HANDLE) dfn_.vkDestroyImageView(device_, imagen.ms_vista, nullptr);
+    if (imagen.ms_imagen != VK_NULL_HANDLE) dfn_.vkDestroyImage(device_, imagen.ms_imagen, nullptr);
+    if (imagen.ms_memoria != VK_NULL_HANDLE) dfn_.vkFreeMemory(device_, imagen.ms_memoria, nullptr);
+#endif
     if (imagen.vista != VK_NULL_HANDLE) dfn_.vkDestroyImageView(device_, imagen.vista, nullptr);
     if (imagen.imagen != VK_NULL_HANDLE) dfn_.vkDestroyImage(device_, imagen.imagen, nullptr);
     if (imagen.memoria != VK_NULL_HANDLE) dfn_.vkFreeMemory(device_, imagen.memoria, nullptr);
