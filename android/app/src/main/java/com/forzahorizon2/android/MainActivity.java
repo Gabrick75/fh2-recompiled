@@ -456,6 +456,7 @@ public final class MainActivity extends AppCompatActivity {
                      "image."));
         rendererOptions.removeAllViews();
         shadersFound = null;
+        fsrModeRefreshers.clear();
         if (nativeRenderer) {
             boolean library = shaderLibrary().isFile();
             shadersFound = library;
@@ -477,7 +478,10 @@ public final class MainActivity extends AppCompatActivity {
                             tr("O FXAA tira o serrilhado com um filtro barato sobre a imagem final.",
                                "FXAA smooths jagged edges with a cheap filter over the final image."), aa),
                     anisotropicRow(),
-                    shadowMapRow()));
+                    shadowMapRow(),
+                    scalingRow(),
+                    fsrModeRow(),
+                    sharpnessRow()));
             rendererOptions.addView(ui.footer(tr("O nativo não tem MSAA: as superfícies 4x do jogo são desenhadas " +
                     "com uma amostra.", "The native renderer has no MSAA: the game's 4x surfaces are drawn with one " +
                     "sample.")));
@@ -530,6 +534,9 @@ public final class MainActivity extends AppCompatActivity {
             image.addView(msaa);
             image.addView(fxaa);
             image.addView(anisotropicRow());
+            image.addView(scalingRow());
+            image.addView(fsrModeRow());
+            image.addView(sharpnessRow());
             showModes.run();
             rendererOptions.addView(image);
 
@@ -560,15 +567,9 @@ public final class MainActivity extends AppCompatActivity {
                             GameOptions.flag(this, GameOptions.ASYNC_SHADERS),
                             v -> GameOptions.flag(this, GameOptions.ASYNC_SHADERS, v))));
         }
-        rendererOptions.addView(ui.header(tr("Ainda sem efeito", "Not applied yet")));
-        rendererOptions.addView(ui.group(
-                ui.choiceRow(GameOptions.SCALING, tr("Escala para a tela", "Scaling to the screen"),
-                        tr("Como a imagem é levada ao tamanho da tela. O FSR é mais nítido quando o jogo desenha " +
-                           "abaixo da resolução da tela; o CAS só aumenta a nitidez.",
-                           "How the image is brought to the screen's size. FSR is sharper when the game draws below " +
-                           "the screen's resolution; CAS only sharpens."),
-                        new String[] {"Bilinear", "FSR 1.0", "CAS"}, new String[] {"bilinear", "fsr", "cas"}),
-                ui.choiceRow(GameOptions.SHADOWS, tr("Sombras", "Shadows"),
+            rendererOptions.addView(ui.header(tr("Ainda sem efeito", "Not applied yet")));
+            rendererOptions.addView(ui.group(
+                    ui.choiceRow(GameOptions.SHADOWS, tr("Sombras", "Shadows"),
                         tr("A cada quanto os mapas de sombras são redesenhados. A cada 2 quadros custa menos e quase " +
                            "não se nota.",
                            "How often the shadow maps are redrawn. Every 2 frames costs less and is hardly noticed."),
@@ -673,6 +674,80 @@ public final class MainActivity extends AppCompatActivity {
      * eighths (12.5 % steps, quarters with MSAA 4x); native: 12 (160x90) to 100, any value. refreshOut gets the refresh, for
      * the anti-aliasing choice that changes the emulated rounding.
      */
+    private final java.util.List<Runnable> fsrModeRefreshers = new java.util.ArrayList<>();
+
+    private void refreshFsrModeRows() {
+        for (Runnable refresh : fsrModeRefreshers) refresh.run();
+    }
+
+    private View scalingRow() {
+        return ui.choiceRow(GameOptions.SCALING, tr("Escala para a tela", "Scaling to the screen"),
+                tr("Como a imagem é levada ao tamanho da tela. O FSR é mais nítido quando o jogo desenha " +
+                   "abaixo da resolução da tela; o CAS só aumenta a nitidez.",
+                   "How the image is brought to the screen's size. FSR is sharper when the game draws below " +
+                   "the screen's resolution; CAS only sharpens."),
+                new String[] {"Bilinear", "FSR 1.0", "CAS"}, new String[] {"bilinear", "fsr", "cas"},
+                value -> {
+                    // Leaving FSR must also leave its mode: a stored preset must never override the scale.
+                    if (!"fsr".equals(value)) GameOptions.set(this, GameOptions.FSR_MODE, "off");
+                    refreshFsrModeRows();
+                });
+    }
+
+    private View fsrModeRow() {
+        LinearLayout row = ui.choiceRow(GameOptions.FSR_MODE, tr("Modo FSR", "FSR mode"),
+                tr("Atalho: escala de render + FSR 1.0 juntos (77/67/59/50/33 % de 1280×720). Desligado vale " +
+                   "a escala e o efeito escolhidos acima.",
+                   "Shortcut: render scale + FSR 1.0 together (77/67/59/50/33 % of 1280x720). Off keeps the " +
+                   "scale and effect chosen above."),
+                new String[] {tr("Desligado", "Off"), tr("Ultra qualidade", "Ultra quality"),
+                        tr("Qualidade", "Quality"), tr("Equilibrado", "Balanced"), tr("Desempenho", "Performance"),
+                        tr("Ultra desempenho", "Ultra performance")},
+                new String[] {"off", "ultra_quality", "quality", "balanced", "performance", "ultra_performance"});
+        Runnable refresh = () -> row.setVisibility(
+                "fsr".equals(GameOptions.get(this, GameOptions.SCALING)) ? View.VISIBLE : View.GONE);
+        fsrModeRefreshers.add(refresh);
+        refresh.run();
+        return row;
+    }
+
+    private View sharpnessRow() {
+        LinearLayout box = ui.column();
+        TextView readout = ui.text("", 22, Menu.PRIMARY, true);
+        box.addView(readout);
+        int stored;
+        try {
+            stored = Math.max(0, Math.min(100, Integer.parseInt(GameOptions.get(this, GameOptions.SHARPNESS).trim())));
+        } catch (NumberFormatException e) {
+            stored = 0;
+        }
+        Slider slider = ui.slider(0, 100, 5, stored / 5 * 5);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(2);
+        box.addView(slider, lp);
+        Runnable show = () -> {
+            int value;
+            try {
+                value = Math.max(0, Math.min(100,
+                        Integer.parseInt(GameOptions.get(this, GameOptions.SHARPNESS).trim())));
+            } catch (NumberFormatException e) {
+                value = 0;
+            }
+            readout.setText(value + " %");
+        };
+        slider.addOnChangeListener((s, value, fromUser) -> {
+            if (!fromUser) return;
+            GameOptions.set(this, GameOptions.SHARPNESS, String.valueOf(Math.round(value / 5f) * 5));
+            show.run();
+        });
+        show.run();
+        return ui.stackedRow(tr("Nitidez extra (CAS/FSR)", "Extra sharpness (CAS/FSR)"),
+                tr("Nitidez a mais sobre o CAS ou o FSR: 0 mantém o padrão. Vale na próxima vez que o jogo abrir.",
+                   "Extra sharpness on top of CAS or FSR: 0 keeps the default. Takes effect the next time the game starts."),
+                box);
+    }
+
     private LinearLayout renderScaleRow(boolean nativeRenderer, Runnable[] refreshOut) {
         LinearLayout box = ui.column();
         LinearLayout readout = new LinearLayout(this);
