@@ -477,7 +477,13 @@ public final class MainActivity extends AppCompatActivity {
                             tr("O FXAA tira o serrilhado com um filtro barato sobre a imagem final.",
                                "FXAA smooths jagged edges with a cheap filter over the final image."), aa),
                     anisotropicRow(),
-                    shadowMapRow()));
+                    shadowMapRow(),
+                    ui.choiceRow(GameOptions.SCALING, tr("Escala para a tela", "Scaling to the screen"),
+                            tr("Como a imagem é levada ao tamanho da tela. O FSR é mais nítido quando o jogo desenha " +
+                               "abaixo da resolução da tela; o CAS só aumenta a nitidez.",
+                               "How the image is brought to the screen's size. FSR is sharper when the game draws below " +
+                               "the screen's resolution; CAS only sharpens."),
+                            new String[] {"Bilinear", "FSR 1.0", "CAS"}, new String[] {"bilinear", "fsr", "cas"})));
             rendererOptions.addView(ui.footer(tr("O nativo não tem MSAA: as superfícies 4x do jogo são desenhadas " +
                     "com uma amostra.", "The native renderer has no MSAA: the game's 4x surfaces are drawn with one " +
                     "sample.")));
