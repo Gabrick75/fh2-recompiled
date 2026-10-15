@@ -530,6 +530,12 @@ public final class MainActivity extends AppCompatActivity {
             image.addView(msaa);
             image.addView(fxaa);
             image.addView(anisotropicRow());
+            image.addView(ui.choiceRow(GameOptions.SCALING, tr("Escala para a tela", "Scaling to the screen"),
+                    tr("Como a imagem é levada ao tamanho da tela. O FSR é mais nítido quando o jogo desenha " +
+                       "abaixo da resolução da tela; o CAS só aumenta a nitidez.",
+                       "How the image is brought to the screen's size. FSR is sharper when the game draws below " +
+                       "the screen's resolution; CAS only sharpens."),
+                    new String[] {"Bilinear", "FSR 1.0", "CAS"}, new String[] {"bilinear", "fsr", "cas"}));
             showModes.run();
             rendererOptions.addView(image);
 
@@ -560,15 +566,9 @@ public final class MainActivity extends AppCompatActivity {
                             GameOptions.flag(this, GameOptions.ASYNC_SHADERS),
                             v -> GameOptions.flag(this, GameOptions.ASYNC_SHADERS, v))));
         }
-        rendererOptions.addView(ui.header(tr("Ainda sem efeito", "Not applied yet")));
-        rendererOptions.addView(ui.group(
-                ui.choiceRow(GameOptions.SCALING, tr("Escala para a tela", "Scaling to the screen"),
-                        tr("Como a imagem é levada ao tamanho da tela. O FSR é mais nítido quando o jogo desenha " +
-                           "abaixo da resolução da tela; o CAS só aumenta a nitidez.",
-                           "How the image is brought to the screen's size. FSR is sharper when the game draws below " +
-                           "the screen's resolution; CAS only sharpens."),
-                        new String[] {"Bilinear", "FSR 1.0", "CAS"}, new String[] {"bilinear", "fsr", "cas"}),
-                ui.choiceRow(GameOptions.SHADOWS, tr("Sombras", "Shadows"),
+            rendererOptions.addView(ui.header(tr("Ainda sem efeito", "Not applied yet")));
+            rendererOptions.addView(ui.group(
+                    ui.choiceRow(GameOptions.SHADOWS, tr("Sombras", "Shadows"),
                         tr("A cada quanto os mapas de sombras são redesenhados. A cada 2 quadros custa menos e quase " +
                            "não se nota.",
                            "How often the shadow maps are redrawn. Every 2 frames costs less and is hardly noticed."),

@@ -32,7 +32,7 @@ final class GameOptions {
     static final String ANTI_ALIASING = "anti_aliasing";      // "off", "msaa", "fxaa"
     static final String MSAA_SAMPLES = "msaa_samples";        // "2", "4"
     static final String FXAA_QUALITY = "fxaa_quality";        // "normal", "high"
-    static final String SCALING = "scaling";                  // not applied yet (no FidelityFX on Android)
+    static final String SCALING = "scaling";  // present_effect: bilinear, cas or fsr 1.0
     static final String ANISOTROPIC = "anisotropic";          // anisotropic_override: 0, 2 (2x), 3 (4x), 5 (16x)
     static final String SHADOWS = "shadows";                  // not applied yet (needs game hooks)
     static final String SHADOW_DISTANCE = "shadow_distance";  // not applied yet
@@ -324,7 +324,11 @@ final class GameOptions {
         args.add("--vulkan_allow_present_mode_mailbox=" + "mailbox".equals(get(context, PRESENT_MODE)));
         args.add("--vulkan_allow_present_mode_immediate=false");
         // The view gives the aspect ratio (16:9 or stretched, GameActivity.layoutSurface) and the presenter
-        // fills the whole buffer.
+        // fills the whole buffer. The scaling effect (bilinear, CAS sharpening or FSR 1.0) needs
+        // REX_HAS_FIDELITYFX_SDK on Android (sdk/src/ui/CMakeLists.txt).
+        String scaling = get(context, SCALING);
+        if (!"cas".equals(scaling) && !"fsr".equals(scaling)) scaling = "bilinear";
+        args.add("--present_effect=" + scaling);
         args.add("--present_letterbox=false");
         args.add("--present_safe_area_x=100");
         args.add("--present_safe_area_y=100");
