@@ -237,6 +237,15 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_a2c_pontilhado, false, "FH2",
                     "Native renderer: alpha to coverage (foliage, fences, crowd) dithered over 2x2 pixels with the "
                     "game's offsets, as the emulation draws it without MSAA; off = one fixed threshold "
                     "(fh2_nativo_a2c_umbral)");
+// Multisample anti-aliasing in the native renderer (0 = off). The game's 4x surfaces are drawn with 2 or 4
+// samples and resolved in-subpass to the usual 1x image, which everything else keeps reading; without host
+// MSAA the game's 4x surfaces are drawn with one sample. Only passes the game clears (their content comes
+// whole from the clear) and only where the game itself uses MSAA surfaces; anything else stays 1x, exactly
+// as today. Alpha to coverage stays an alpha test for now (same look, only better sampled).
+REXCVAR_DEFINE_INT32(fh2_nativo_msaa, 0, "FH2",
+                     "Native renderer: MSAA 2x/4x on the 3D scene (0 = off, 2, 4). Needs a restart.")
+    .range(0, 4)
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_omitir_sombras, false, "NFSMW",
                     "Renderizador nativo (prueba de FPS): no graba los dibujos del mapa de sombras "
                     "(destino solo de profundidad de 1600 o mas de pitch); recorte visible");
@@ -2242,6 +2251,11 @@ struct ClavePipeline {
   // created duplicate pipelines (125-134, and 193-203 in a later version, with no change in the image).
   uint32_t relleno = 0;
   uint32_t relleno2 = 0;
+  // fh2_nativo_msaa: sample count of the pass (0 = one sample, as before; the old prewarm list is cleanly
+  // rejected by its record-size check and rewarmed). muestras_reserva keeps the struct free of implicit
+  // padding (hashed and compared byte by byte, like the rellenos above).
+  uint32_t muestras = 0;
+  uint32_t muestras_reserva = 0;
 };
 static_assert(std::has_unique_object_representations_v<ClavePipeline>,
               "ClavePipeline no puede tener relleno implicito: se hashea y se compara byte a byte");
@@ -3668,11 +3682,31 @@ class DibujosVulkanImpl final : public DibujosVulkan {
      * collisions included.
      */
     uint64_t clave_pase;
-    if (clave_pase_rapida_ && pase_claves_validas_ && std::memcmp(claves, pase_claves_, sizeof(claves)) == 0) {
+#if defined(FH2_RECOMP)
+    // fh2_nativo_msaa: the game wants MSAA here (its 4x surfaces; never the half-pitch clears, which stay
+    // 1x). Mixed into the pass identity: same targets with and without MSAA are different passes. The final
+    // count is decided in EmpezarPase; a hard failure latches MSAA off for the session so no pass opens per
+    // draw.
+    const uint32_t muestras_max =
+        (!msaa_invalido_ && ((superficie_fh2 >> 16) & 0x3) != 0 && !fh2_limpieza_4x)
+            ? std::min(MuestrasMsaaMax(), 4u)
+            : 0;
+#else
+    constexpr uint32_t muestras_max = 0;
+#endif
+    if (clave_pase_rapida_ && pase_claves_validas_ && std::memcmp(claves, pase_claves_, sizeof(claves)) == 0
+#if defined(FH2_RECOMP)
+        && muestras_max == muestras_pase_
+#endif
+    ) {
       const uint64_t n = ++claves_pase_rapidas_;
       clave_pase = (n <= kClavesPaseAComprobar || (n & 4095) == 0) ? ComprobarClavePase(claves, n) : pase_clave_;
     } else {
+#if defined(FH2_RECOMP)
+      clave_pase = XXH3_64bits_withSeed(claves, sizeof(claves), muestras_max);
+#else
       clave_pase = XXH3_64bits(claves, sizeof(claves));
+#endif
     }
     if (!pase_activo_ || clave_pase != pase_clave_ ||
         pase_generacion_ != contexto_->GeneracionComandos()) {
@@ -3701,7 +3735,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
             std::chrono::steady_clock::now() - antes_pase).count());
       }
       cronometrar_pase_ = cambio_cronometrado;
-      const bool empezado = EmpezarPase(r, claves, pitch, clave_pase);
+      const bool empezado = EmpezarPase(r, claves, pitch, clave_pase, muestras_max);
       const auto tras_pase =
           medir_cambio ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
       if (cambio_cronometrado) {
@@ -4314,6 +4348,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     clave.especializacion = especializacion;
 #if defined(FH2_RECOMP)
     clave.relleno = entrada->fh2_entradas_1011;
+    // fh2_nativo_msaa: the pass's sample count (0 = one sample). Pipelines only match passes with the same
+    // count; the old prewarm list is cleanly rejected by its record-size check and rewarmed.
+    clave.muestras = muestras_pase_;
 #endif
     std::copy(std::begin(pase_formatos_), std::end(pase_formatos_), std::begin(clave.formatos));
     static constexpr uint32_t kMezcla[4] = {
@@ -8555,6 +8592,15 @@ class DibujosVulkanImpl final : public DibujosVulkan {
           double(c.bytes_copiados()) / 1048576.0, c.sucias(), c.volatiles(), c.entradas(), c.reciclados(), c.llenos(),
           c.avisos(), c.discrepancias(), cache_comprobar_ ? " (comprobando)" : "");
     }
+#if defined(FH2_RECOMP)
+    // fh2_nativo_msaa: totals since the start.
+    if (msaa_pases_ || msaa_fallos_) {
+      NFSMW_INFORME_ANILLO("[fh2 nativo] MSAA: {} pases multimuestra ({} sin borrado, {:.1f} MB sembrados), "
+                           "{} fallos (1x para la sesion)",
+                           msaa_pases_, msaa_sin_borrado_, double(msaa_semilla_bytes_) / 1048576.0,
+                           msaa_fallos_);
+    }
+#endif
 
     copias_inf_ = InformeCopiasCifras{};
   }
@@ -11580,8 +11626,153 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     std::memcpy(compartidas + kPalabraInvTamano + registro * 2, inv, sizeof(inv));
   }
 
+#if defined(FH2_RECOMP)
+  // fh2_nativo_msaa: sample count allowed this session (cvar ∩ device caps), 0 = MSAA unavailable.
+  // The depth resolve needs Vulkan 1.2 (depthStencilResolve comes enabled with it here).
+  uint32_t MuestrasMsaaMax() {
+    if (msaa_max_muestras_ != UINT32_MAX) {
+      return msaa_max_muestras_;
+    }
+    const int pedido_cvar = REXCVAR_GET(fh2_nativo_msaa);
+    const uint32_t pedido = pedido_cvar >= 4 ? 4 : (pedido_cvar >= 2 ? 2 : 0);
+    uint32_t maximo = 0;
+    if (pedido >= 2 && copiar_imagen_) {
+      if (!crear_pase2_) {
+        crear_pase2_ = reinterpret_cast<PFN_vkCreateRenderPass2>(
+            dispositivo_->vulkan_instance()->functions().vkGetDeviceProcAddr(device_,
+                                                                             "vkCreateRenderPass2"));
+      }
+      const auto& props = dispositivo_->properties();
+      const bool api12 = props.apiVersion >= VK_MAKE_API_VERSION(0, 1, 2, 0);
+      const auto color = props.framebufferColorSampleCounts;
+      const auto depth = props.framebufferDepthSampleCounts;
+      if (crear_pase2_ && (color & VK_SAMPLE_COUNT_2_BIT) && (depth & VK_SAMPLE_COUNT_2_BIT) && api12) {
+        maximo = (pedido >= 4 && (color & VK_SAMPLE_COUNT_4_BIT) && (depth & VK_SAMPLE_COUNT_4_BIT))
+                     ? 4
+                     : 2;
+      }
+      if (maximo < pedido) {
+        REXLOG_INFO("[fh2 nativo] MSAA a {}x indisponivel no aparelho: {}x", pedido, maximo);
+      }
+    }
+    msaa_max_muestras_ = maximo;
+    return maximo;
+  }
+
+  // Ensures every present attachment has a multisample image of the same size and format (created lazily).
+  // False latches MSAA off for the session; the pass then opens 1x.
+  bool PrepararMs(const std::array<ImagenNativa*, 5>& imagenes, uint32_t muestras) {
+    const VkSampleCountFlagBits conteo = muestras >= 4 ? VK_SAMPLE_COUNT_4_BIT : VK_SAMPLE_COUNT_2_BIT;
+    for (uint32_t i = 0; i < 5; ++i) {
+      ImagenNativa* img = imagenes[i];
+      if (!img) {
+        continue;
+      }
+      if (img->ms_imagen != VK_NULL_HANDLE && img->ms_muestras == muestras) {
+        continue;
+      }
+      if (img->ms_imagen != VK_NULL_HANDLE) {
+        DestruirMs(*img);
+      }
+      const bool profundidad = i == 4;
+      VkImageCreateInfo info{};
+      info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+      info.imageType = VK_IMAGE_TYPE_2D;
+      info.format = img->formato;
+      info.extent = {img->ancho, img->alto, 1};
+      info.mipLevels = 1;
+      info.arrayLayers = 1;
+      info.samples = conteo;
+      info.tiling = VK_IMAGE_TILING_OPTIMAL;
+      info.usage = (profundidad ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                                : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) |
+                   VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+      info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      bool bien = rex::ui::vulkan::util::CreateDedicatedAllocationImage(
+          dispositivo_, info, rex::ui::vulkan::util::MemoryPurpose::kDeviceLocal, img->ms_imagen,
+          img->ms_memoria);
+      if (bien) {
+        VkImageAspectFlags aspecto = VK_IMAGE_ASPECT_COLOR_BIT;
+        if (profundidad) {
+          aspecto = VK_IMAGE_ASPECT_DEPTH_BIT;
+          if (img->formato == VK_FORMAT_D24_UNORM_S8_UINT ||
+              img->formato == VK_FORMAT_D32_SFLOAT_S8_UINT) {
+            aspecto |= VK_IMAGE_ASPECT_STENCIL_BIT;
+          }
+        }
+        VkImageViewCreateInfo info_vista{};
+        info_vista.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        info_vista.image = img->ms_imagen;
+        info_vista.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        info_vista.format = img->formato;
+        info_vista.subresourceRange.aspectMask = aspecto;
+        info_vista.subresourceRange.baseMipLevel = 0;
+        info_vista.subresourceRange.levelCount = 1;
+        info_vista.subresourceRange.baseArrayLayer = 0;
+        info_vista.subresourceRange.layerCount = 1;
+        bien = dfn_.vkCreateImageView(device_, &info_vista, nullptr, &img->ms_vista) == VK_SUCCESS;
+      }
+      if (!bien) {
+        DestruirMs(*img);
+        msaa_invalido_ = true;
+        ++msaa_fallos_;
+        REXLOG_WARN("[fh2 nativo] MSAA a {}x: sin imagen multimuestra para {}x{}; queda 1x", muestras,
+                    img->ancho, img->alto);
+        return false;
+      }
+      img->ms_muestras = muestras;
+      // UNDEFINED -> GENERAL, once: the attachments use GENERAL throughout, like the 1x ones.
+      const VkCommandBuffer cmd = contexto_->ComandosTrabajo();
+      if (cmd) {
+        VkImageAspectFlags aspecto = VK_IMAGE_ASPECT_COLOR_BIT;
+        if (profundidad) {
+          aspecto = VK_IMAGE_ASPECT_DEPTH_BIT;
+          if (img->formato == VK_FORMAT_D24_UNORM_S8_UINT ||
+              img->formato == VK_FORMAT_D32_SFLOAT_S8_UINT) {
+            aspecto |= VK_IMAGE_ASPECT_STENCIL_BIT;
+          }
+        }
+        VkImageMemoryBarrier barrera{};
+        barrera.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrera.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrera.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrera.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrera.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrera.image = img->ms_imagen;
+        barrera.subresourceRange.aspectMask = aspecto;
+        barrera.subresourceRange.baseMipLevel = 0;
+        barrera.subresourceRange.levelCount = 1;
+        barrera.subresourceRange.baseArrayLayer = 0;
+        barrera.subresourceRange.layerCount = 1;
+        barrera.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        dfn_.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                  0, 0, nullptr, 0, nullptr, 1, &barrera);
+      }
+    }
+    return true;
+  }
+
+  void DestruirMs(ImagenNativa& img) {
+    if (img.ms_vista != VK_NULL_HANDLE) {
+      OlvidarVista(img.ms_vista);
+      dfn_.vkDestroyImageView(device_, img.ms_vista, nullptr);
+      img.ms_vista = VK_NULL_HANDLE;
+    }
+    if (img.ms_imagen != VK_NULL_HANDLE) {
+      dfn_.vkDestroyImage(device_, img.ms_imagen, nullptr);
+      img.ms_imagen = VK_NULL_HANDLE;
+    }
+    if (img.ms_memoria != VK_NULL_HANDLE) {
+      dfn_.vkFreeMemory(device_, img.ms_memoria, nullptr);
+      img.ms_memoria = VK_NULL_HANDLE;
+    }
+    img.ms_muestras = 0;
+  }
+#endif
+
   bool EmpezarPase(const uint32_t* r, const uint64_t claves[5], uint32_t pitch,
-                   uint64_t clave_pase) {
+                   uint64_t clave_pase, uint32_t muestras_max = 0) {
     inicio_pase_ = cronometrar_ ? std::chrono::steady_clock::now()
                                 : std::chrono::steady_clock::time_point{};
     if (!PrepararVacias()) {
@@ -11666,12 +11857,58 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
     }
 #endif
+    const uint32_t modo_base = sombras_sin_load ? kCargaIgnorar : kCargaLeer;
+#if defined(FH2_RECOMP)
+    // fh2_nativo_msaa: draw into transient multisample images, resolved in-subpass to the images above.
+    // The identity already covers the want; anything that fails latches MSAA off and the pass opens 1x.
+    uint32_t muestras = 0;
+    std::array<VkImageView, 5> vistas_ms{};
+    bool semilla_ms[5] = {};
+    if (muestras_max >= 2 && PrepararMs(imagenes, muestras_max)) {
+      muestras = muestras_max;
+      for (uint32_t i = 0; i < 5; ++i) {
+        if (imagenes[i] && imagenes[i]->ms_vista != VK_NULL_HANDLE) {
+          vistas_ms[i] = imagenes[i]->ms_vista;
+          // A load that is not a clear reads the previous content: seed the multisample image from the
+          // 1x one (same pixels a 1x pass would have loaded). Clears need nothing.
+          semilla_ms[i] = !(mascara_borrar & (1u << i)) && modo_base == kCargaLeer;
+        }
+      }
+      ++msaa_pases_;
+      if (msaa_pases_ == 1) {
+        REXLOG_INFO("[fh2 nativo] MSAA a {}x: los pases que el juego borra se dibujan con {} muestras y se "
+                    "resuelven en el pase",
+                    muestras, muestras);
+      }
+    }
+    muestras_pase_ = muestras;
+    VkRenderPass pase = PaseDe(formatos, modo_base | (mascara_borrar << 4), muestras);
+    if (!pase && muestras >= 2) {
+      // The multisample pass failed (no render pass 2, no depth resolve): latch MSAA off for the session
+      // and open 1x in the same call. The next draws already want 1x (the latch), so this reopens once.
+      msaa_invalido_ = true;
+      ++msaa_fallos_;
+      REXLOG_WARN("[fh2 nativo] MSAA a {}x: sin pase multimuestra; queda 1x", muestras);
+      muestras = 0;
+      muestras_pase_ = 0;
+      vistas_ms = {};
+      for (uint32_t i = 0; i < 5; ++i) {
+        semilla_ms[i] = false;
+      }
+      pase = PaseDe(formatos, modo_base | (mascara_borrar << 4), 0);
+    }
+#else
     const VkRenderPass pase =
         PaseDe(formatos, (sombras_sin_load ? kCargaIgnorar : kCargaLeer) | (mascara_borrar << 4));
+#endif
     if (pase == VK_NULL_HANDLE) {
       return Rechazar(42, "no se pudo crear el render pass");
     }
+#if defined(FH2_RECOMP)
+    const VkFramebuffer framebuffer = FramebufferDe(pase, vistas, ancho, alto, vistas_ms);
+#else
     const VkFramebuffer framebuffer = FramebufferDe(pase, vistas, ancho, alto);
+#endif
     if (framebuffer == VK_NULL_HANDLE) {
       return Rechazar(43, "no se pudo crear el framebuffer");
     }
@@ -11696,6 +11933,36 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (!cmd) {
       return false;
     }
+#if defined(FH2_RECOMP)
+    // Seeds the multisample images a LOAD pass reads (see above): full 1x -> transient copies. Covered by
+    // the pass entry dependency (TRANSFER in its source stages).
+    if (muestras >= 2 && copiar_imagen_) {
+      bool semilla_alguna = false;
+      for (uint32_t i = 0; i < 5; ++i) {
+        if (!semilla_ms[i] || !imagenes[i] || imagenes[i]->ms_imagen == VK_NULL_HANDLE) {
+          continue;
+        }
+        semilla_alguna = true;
+        VkImageCopy copia{};
+        copia.srcSubresource = {i == 4 ? VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT |
+                                                            ((imagenes[i]->formato == VK_FORMAT_D24_UNORM_S8_UINT ||
+                                                              imagenes[i]->formato ==
+                                                                  VK_FORMAT_D32_SFLOAT_S8_UINT)
+                                                                 ? VK_IMAGE_ASPECT_STENCIL_BIT
+                                                                 : 0))
+                                         : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT),
+                                0, 0, 1};
+        copia.dstSubresource = copia.srcSubresource;
+        copia.extent = {imagenes[i]->ancho, imagenes[i]->alto, 1};
+        copiar_imagen_(cmd, imagenes[i]->imagen, VK_IMAGE_LAYOUT_GENERAL, imagenes[i]->ms_imagen,
+                       VK_IMAGE_LAYOUT_GENERAL, 1, &copia);
+        msaa_semilla_bytes_ += uint64_t(imagenes[i]->ancho) * imagenes[i]->alto * 4;
+      }
+      if (semilla_alguna) {
+        ++msaa_sin_borrado_;
+      }
+    }
+#endif
     VkRenderPassBeginInfo inicio{};
     inicio.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     inicio.renderPass = pase;
@@ -11801,15 +12068,30 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   // TRANSFER_DST, the only ones eligible for a ZCULL plane.
   enum : uint32_t { kCargaLeer = 0, kCargaIgnorar = 1, kCargaBorrar = 2 };
 
-  VkRenderPass PaseDe(const uint32_t formatos[5], uint32_t modo_carga = kCargaLeer) {
+  VkRenderPass PaseDe(const uint32_t formatos[5], uint32_t modo_carga = kCargaLeer
+#if defined(FH2_RECOMP)
+                      ,
+                      uint32_t muestras = 0
+#endif
+  ) {
     // The mode is part of the key: two render passes with the same formats but a different loadOp are
-    // different.
+    // different. So is the sample count (fh2_nativo_msaa).
     const uint64_t clave =
+#if defined(FH2_RECOMP)
+        XXH3_64bits_withSeed(formatos, sizeof(uint32_t) * 5,
+                             uint64_t(modo_carga) ^ (uint64_t(muestras) << 32));
+#else
         XXH3_64bits_withSeed(formatos, sizeof(uint32_t) * 5, modo_carga);
+#endif
     if (const auto it = pases_.find(clave); it != pases_.end()) {
       return it->second;
     }
-    const VkRenderPass pase = CrearPase(formatos, modo_carga);  // the usual code, factored out
+    const VkRenderPass pase = CrearPase(formatos, modo_carga
+#if defined(FH2_RECOMP)
+                                        ,
+                                        muestras
+#endif
+    );  // the usual code, factored out
     if (pase == VK_NULL_HANDLE) {
       return VK_NULL_HANDLE;
     }
@@ -11945,10 +12227,29 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 
   // The PaseDe render pass without its cache, with nothing changed. The pipeline prewarm also uses it
   // from its thread (a compatible one: the same formats). It only reads its arguments.
-  VkRenderPass CrearPase(const uint32_t formatos[5], uint32_t modo_carga) const {
-    std::array<VkAttachmentDescription, 5> adjuntos{};
+  VkRenderPass CrearPase(const uint32_t formatos[5], uint32_t modo_carga
+#if defined(FH2_RECOMP)
+                       ,
+                       uint32_t muestras = 0
+#endif
+  ) const {
+#if defined(FH2_RECOMP)
+    // fh2_nativo_msaa: with samples the draws go to transient multisample attachments, resolved in-subpass
+    // to the usual images (which stay the only ones anyone reads). Resolve attachments come after the
+    // multisample ones.
+    const VkSampleCountFlagBits conteo =
+        muestras >= 4 ? VK_SAMPLE_COUNT_4_BIT : (muestras >= 2 ? VK_SAMPLE_COUNT_2_BIT
+                                                              : VK_SAMPLE_COUNT_1_BIT);
+    const bool con_ms = muestras >= 2;
+#endif
+    std::array<VkAttachmentDescription, 10> adjuntos{};
     std::array<VkAttachmentReference, 4> colores{};
     VkAttachmentReference profundidad{};
+#if defined(FH2_RECOMP)
+    std::array<VkAttachmentReference, 4> colores_resueltos{};
+    VkAttachmentReference profundidad_resuelta{};
+    bool hay_profundidad_ms = false;
+#endif
     uint32_t n = 0, n_colores = 0;
     for (uint32_t i = 0; i < 5; ++i) {
       if (!formatos[i]) {
@@ -11956,28 +12257,151 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
       VkAttachmentDescription& a = adjuntos[n];
       a.format = VkFormat(formatos[i]);
+#if defined(FH2_RECOMP)
+      a.samples = con_ms ? conteo : VK_SAMPLE_COUNT_1_BIT;
+#else
       a.samples = VK_SAMPLE_COUNT_1_BIT;
+#endif
       // With the test active, the shadow map does not load its previous content: the game clears it before
       // drawing it, so fetching the 1600x1600 tile only to throw it away is wasted work.
       // Bits 4-8: attachments cleared by this pass whatever the mode (fh2_nativo_borrados_diferidos).
       const uint32_t modo = ((modo_carga >> 4) & (1u << i)) ? uint32_t(kCargaBorrar) : (modo_carga & 0xF);
       a.loadOp = modo == kCargaIgnorar ? VK_ATTACHMENT_LOAD_OP_DONT_CARE
                  : modo == kCargaBorrar ? VK_ATTACHMENT_LOAD_OP_CLEAR
-                                        : VK_ATTACHMENT_LOAD_OP_LOAD;
-      a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                                         : VK_ATTACHMENT_LOAD_OP_LOAD;
+      a.storeOp =
+#if defined(FH2_RECOMP)
+          con_ms ? VK_ATTACHMENT_STORE_OP_DONT_CARE :
+#endif
+                   VK_ATTACHMENT_STORE_OP_STORE;
       a.stencilLoadOp = i != 4                 ? VK_ATTACHMENT_LOAD_OP_DONT_CARE
                         : modo == kCargaBorrar ? VK_ATTACHMENT_LOAD_OP_CLEAR
                                                : VK_ATTACHMENT_LOAD_OP_LOAD;
       a.stencilStoreOp = i == 4 ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+#if defined(FH2_RECOMP)
+      if (con_ms && i == 4) {
+        a.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;  // only the resolve is read
+      }
+#endif
       a.initialLayout = VK_IMAGE_LAYOUT_GENERAL;
       a.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
       if (i < 4) {
         colores[n_colores++] = {n, VK_IMAGE_LAYOUT_GENERAL};
       } else {
         profundidad = {n, VK_IMAGE_LAYOUT_GENERAL};
+#if defined(FH2_RECOMP)
+        hay_profundidad_ms = con_ms;
+#endif
       }
       ++n;
     }
+#if defined(FH2_RECOMP)
+    // The resolve attachments (the usual images), after the multisample ones.
+    uint32_t n_colores_resueltos = 0;
+    for (uint32_t k = 0; k < n_colores; ++k) {
+      VkAttachmentDescription& r = adjuntos[n];
+      r.format = adjuntos[colores[k].attachment].format;
+      r.samples = VK_SAMPLE_COUNT_1_BIT;
+      r.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+      r.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+      r.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+      r.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+      r.initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+      r.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+      colores_resueltos[n_colores_resueltos++] = {n, VK_IMAGE_LAYOUT_GENERAL};
+      ++n;
+    }
+    if (hay_profundidad_ms) {
+      VkAttachmentDescription& r = adjuntos[n];
+      r.format = adjuntos[profundidad.attachment].format;
+      r.samples = VK_SAMPLE_COUNT_1_BIT;
+      r.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+      r.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+      r.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+      r.stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+      r.initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+      r.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+      profundidad_resuelta = {n, VK_IMAGE_LAYOUT_GENERAL};
+      ++n;
+    }
+#endif
+    VkRenderPass pase = VK_NULL_HANDLE;
+#if defined(FH2_RECOMP)
+    if (con_ms && crear_pase2_) {
+      std::array<VkAttachmentDescription2, 10> adjuntos2{};
+      for (uint32_t k = 0; k < n; ++k) {
+        VkAttachmentDescription2& d = adjuntos2[k];
+        d.sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
+        d.format = adjuntos[k].format;
+        d.samples = adjuntos[k].samples;
+        d.loadOp = adjuntos[k].loadOp;
+        d.storeOp = adjuntos[k].storeOp;
+        d.stencilLoadOp = adjuntos[k].stencilLoadOp;
+        d.stencilStoreOp = adjuntos[k].stencilStoreOp;
+        d.initialLayout = adjuntos[k].initialLayout;
+        d.finalLayout = adjuntos[k].finalLayout;
+      }
+      std::array<VkAttachmentReference2, 4> colores2{};
+      std::array<VkAttachmentReference2, 4> colores_resueltos2{};
+      for (uint32_t k = 0; k < n_colores; ++k) {
+        colores2[k] = {VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, nullptr, colores[k].attachment,
+                       colores[k].layout, 0};
+        colores_resueltos2[k] = {VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, nullptr,
+                                 colores_resueltos[k].attachment, colores_resueltos[k].layout, 0};
+      }
+      VkAttachmentReference2 profundidad2{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, nullptr,
+                                          profundidad.attachment, profundidad.layout, 0};
+      VkAttachmentReference2 profundidad_resuelta2{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, nullptr,
+                                                  profundidad_resuelta.attachment,
+                                                  profundidad_resuelta.layout, 0};
+      VkSubpassDescriptionDepthStencilResolve resolver_profundidad{};
+      VkSubpassDescription2 subpase2{};
+      subpase2.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2;
+      subpase2.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+      subpase2.colorAttachmentCount = n_colores;
+      subpase2.pColorAttachments = colores2.data();
+      subpase2.pResolveAttachments = colores_resueltos2.data();
+      if (formatos[4]) {
+        subpase2.pDepthStencilAttachment = &profundidad2;
+        if (hay_profundidad_ms) {
+          resolver_profundidad.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE;
+          resolver_profundidad.depthResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+          resolver_profundidad.stencilResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+          resolver_profundidad.pDepthStencilResolveAttachment = &profundidad_resuelta2;
+          subpase2.pNext = &resolver_profundidad;
+        }
+      }
+      std::array<VkSubpassDependency2, 2> dependencias2{};
+      {
+        VkSubpassDependency base[2]{};
+        DependenciasImagenes(base);
+        for (uint32_t k = 0; k < 2; ++k) {
+          dependencias2[k].sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
+          dependencias2[k].srcSubpass = base[k].srcSubpass;
+          dependencias2[k].dstSubpass = base[k].dstSubpass;
+          dependencias2[k].srcStageMask = base[k].srcStageMask;
+          dependencias2[k].dstStageMask = base[k].dstStageMask;
+          dependencias2[k].srcAccessMask = base[k].srcAccessMask;
+          dependencias2[k].dstAccessMask = base[k].dstAccessMask;
+        }
+      }
+      VkRenderPassCreateInfo2 info2{};
+      info2.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2;
+      info2.attachmentCount = n;
+      info2.pAttachments = adjuntos2.data();
+      info2.subpassCount = 1;
+      info2.pSubpasses = &subpase2;
+      info2.dependencyCount = REXCVAR_GET(nfsmw_nativo_sincronizacion_gpu) ? 2u : 0u;
+      info2.pDependencies = dependencias2.data();
+      if (crear_pase2_(device_, &info2, nullptr, &pase) != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
+      }
+      return pase;
+    }
+    if (con_ms) {
+      return VK_NULL_HANDLE;  // no render pass 2: the caller latches MSAA off and opens 1x
+    }
+#endif
     VkSubpassDescription subpase{};
     subpase.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpase.colorAttachmentCount = n_colores;
@@ -11995,7 +12419,6 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       info.dependencyCount = 2;
       info.pDependencies = dependencias;
     }
-    VkRenderPass pase;
     if (dfn_.vkCreateRenderPass(device_, &info, nullptr, &pase) != VK_SUCCESS) {
       return VK_NULL_HANDLE;
     }
@@ -12003,21 +12426,49 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   }
 
   VkFramebuffer FramebufferDe(VkRenderPass pase, const std::array<VkImageView, 5>& vistas,
-                              uint32_t ancho, uint32_t alto) {
+                              uint32_t ancho, uint32_t alto
+#if defined(FH2_RECOMP)
+                              ,
+                              const std::array<VkImageView, 5>& vistas_ms = {}
+#endif
+  ) {
     struct Clave {
       VkRenderPass pase;
       std::array<VkImageView, 5> vistas;
+#if defined(FH2_RECOMP)
+      std::array<VkImageView, 5> vistas_ms;
+#endif
       uint32_t ancho, alto;
-    } clave{pase, vistas, ancho, alto};
+    }
+#if defined(FH2_RECOMP)
+    clave{pase, vistas, vistas_ms, ancho, alto};
+#else
+    clave{pase, vistas, ancho, alto};
+#endif
     const uint64_t huella = XXH3_64bits(&clave, sizeof(clave));
     if (const auto it = framebuffers_.find(huella); it != framebuffers_.end()) {
       return it->second;
     }
-    std::array<VkImageView, 5> adjuntos{};
+    std::array<VkImageView, 10> adjuntos{};
+    std::array<VkImageView, 10> para_olvidar{};
     uint32_t n = 0;
-    for (VkImageView vista : vistas) {
-      if (vista != VK_NULL_HANDLE) {
-        adjuntos[n++] = vista;
+#if defined(FH2_RECOMP)
+    // fh2_nativo_msaa: multisample views first, resolve (1x) views after, like CrearPase.
+    for (uint32_t i = 0; i < 5; ++i) {
+      para_olvidar[i] = vistas_ms[i];
+      if (vistas_ms[i] != VK_NULL_HANDLE) {
+        adjuntos[n++] = vistas_ms[i];
+      }
+    }
+#endif
+    for (uint32_t i = 0; i < 5; ++i) {
+      para_olvidar[
+#if defined(FH2_RECOMP)
+                   5 +
+#endif
+                   i] = vistas[i];
+      if (vistas[i] != VK_NULL_HANDLE) {
+        adjuntos[n++] = vistas[i];
       }
     }
     VkFramebufferCreateInfo info{};
@@ -12033,7 +12484,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       return VK_NULL_HANDLE;
     }
     framebuffers_.emplace(huella, framebuffer);
-    framebuffers_vistas_[huella] = vistas;  // For OlvidarVista
+    framebuffers_vistas_[huella] = para_olvidar;  // For OlvidarVista
     return framebuffer;
   }
 
@@ -12357,7 +12808,13 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 
     VkPipelineMultisampleStateCreateInfo& muestreo = fijo.muestreo;
     muestreo.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+#if defined(FH2_RECOMP)
+    muestreo.rasterizationSamples =
+        clave.muestras >= 4 ? VK_SAMPLE_COUNT_4_BIT : (clave.muestras >= 2 ? VK_SAMPLE_COUNT_2_BIT
+                                                                           : VK_SAMPLE_COUNT_1_BIT);
+#else
     muestreo.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+#endif
 
     const uint32_t d = clave.profundidad;
     VkPipelineDepthStencilStateCreateInfo& profundidad = fijo.profundidad;
@@ -13780,6 +14237,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   ContextoDestinos* contexto_;
   FnDireccionBufer direccion_bufer_ = nullptr;
   FnCopiarImagen copiar_imagen_ = nullptr;  // resolved faces of the dynamic cubemaps
+#if defined(FH2_RECOMP)
+  PFN_vkCreateRenderPass2 crear_pase2_ = nullptr;  // fh2_nativo_msaa: depth resolve needs render pass 2
+#endif
 
   VkBuffer subida_ = VK_NULL_HANDLE;
   VkDeviceMemory subida_memoria_ = VK_NULL_HANDLE;
@@ -14101,7 +14561,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   std::unordered_map<uint64_t, VkFramebuffer> framebuffers_;
   // nfsmw_nativo_framebuffers_olvidan_vistas. The views of each cached framebuffer (by the same key), the
   // ones retired by the guard, and the counts for the warning.
-  std::unordered_map<uint64_t, std::array<VkImageView, 5>> framebuffers_vistas_;
+  std::unordered_map<uint64_t, std::array<VkImageView, 10>> framebuffers_vistas_;
   std::vector<VkFramebuffer> fb_retirados_;
   bool fb_retirar_ = false;
   uint64_t fb_vistas_olvidadas_ = 0;
@@ -14428,6 +14888,15 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   std::chrono::steady_clock::time_point ultimo_aviso_oclusion_dibujo_{};
   VkCommandBuffer pase_comandos_ = VK_NULL_HANDLE;
   uint64_t pase_clave_ = 0;
+#if defined(FH2_RECOMP)
+  uint32_t muestras_pase_ = 0;  // fh2_nativo_msaa: sample count of the open pass (0 = one sample)
+  uint32_t msaa_max_muestras_ = UINT32_MAX;  // cvar ∩ device caps, evaluated once (0 = MSAA unavailable)
+  bool msaa_invalido_ = false;  // a multisample image/pass/pipeline failed: stay 1x for the session
+  uint64_t msaa_pases_ = 0;
+  uint64_t msaa_semilla_bytes_ = 0;
+  uint64_t msaa_sin_borrado_ = 0;  // passes the game did not clear (seeded from the 1x image)
+  uint64_t msaa_fallos_ = 0;
+#endif
   uint64_t pase_generacion_ = UINT64_MAX;
   uint32_t pase_ancho_ = 0;
   uint32_t pase_alto_ = 0;
