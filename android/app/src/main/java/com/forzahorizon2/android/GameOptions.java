@@ -60,6 +60,7 @@ final class GameOptions {
     static final String TURBO = "turbo";                      // not applied yet
     // Sound
     static final String VOLUME = "volume";
+    static final String VIBRATION_PHONE = "vibration_phone";
     // Language
     static final String GAME_LANGUAGE = "game_language";  // a GameLanguage code: "en-US", "pt-BR"...
     static final String APP_LANGUAGE = "app_language";    // "pt" or "en" (AppLanguage)
@@ -100,6 +101,7 @@ final class GameOptions {
             case SHADOW_MAP_SCALE: return "100";  // the Xbox 360's 1600x1600
             case DRIVER: return "";
             case VOLUME: return "100";
+            case VIBRATION_PHONE: return "true";
             // English (US), what the console settings said before this option existed.
             case GAME_LANGUAGE: return "en-US";
             case GAME_ISO: return "";
@@ -118,7 +120,8 @@ final class GameOptions {
 
     static boolean flag(Context context, String key) {
         boolean byDefault = PIN_THREADS.equals(key) || PERFORMANCE_HINTS.equals(key) || ONE_PASS.equals(key) ||
-                ADAPTIVE_VBLANK.equals(key) || RESOLVE_SHORTCUT.equals(key) || VERTEX_CACHE.equals(key);
+                ADAPTIVE_VBLANK.equals(key) || RESOLVE_SHORTCUT.equals(key) || VERTEX_CACHE.equals(key) ||
+                VIBRATION_PHONE.equals(key);
         return prefs(context).getBoolean(key, byDefault);
     }
 

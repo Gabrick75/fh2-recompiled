@@ -193,7 +193,7 @@ public final class MainActivity extends AppCompatActivity {
     private static final int GRAPHICS = 0, DISPLAY = 1, PERFORMANCE = 2, SOUND = 3, ACHIEVEMENTS = 4, LANGUAGE = 5,
             GAME = 6, ABOUT = 7;
     private static final int[] PAGE_ICONS = {R.drawable.ic_menu_graficos, R.drawable.ic_menu_tela,
-            R.drawable.ic_menu_desempenho, R.drawable.ic_menu_som, R.drawable.ic_menu_conquistas,
+            R.drawable.ic_menu_desempenho, R.drawable.ic_menu_outros, R.drawable.ic_menu_conquistas,
             R.drawable.ic_menu_idioma, R.drawable.ic_menu_jogo, R.drawable.ic_menu_sobre};
     private static final String STATE_PAGE = "page";
 
@@ -214,7 +214,7 @@ public final class MainActivity extends AppCompatActivity {
             case GRAPHICS: return tr("Gráficos", "Graphics");
             case DISPLAY: return tr("Tela", "Display");
             case PERFORMANCE: return tr("Desempenho", "Performance");
-            case SOUND: return tr("Som", "Sound");
+            case SOUND: return tr("Outros", "Others");
             case ACHIEVEMENTS: return tr("Conquistas", "Achievements");
             case LANGUAGE: return tr("Idioma", "Language");
             case GAME: return tr("Jogo e saves", "Game and saves");
@@ -1173,7 +1173,14 @@ public final class MainActivity extends AppCompatActivity {
                 ui.header(tr("Volume", "Volume")),
                 ui.group(ui.choiceRow(GameOptions.VOLUME, tr("Volume do jogo", "Game volume"), null,
                         new String[] {"Normal", tr("Alto", "Loud"), tr("Muito alto", "Very loud"), tr("Máximo", "Max")},
-                        new String[] {"100", "125", "150", "200"})),
+                        new String[] {"100", "125", "150", "200"}),
+                        ui.toggleRow(tr("Vibrar o celular", "Vibrate phone"),
+                                tr("Faz o celular vibrar quando o controle do jogo vibrar. " +
+                                   "A intensidade segue o jogo.",
+                                   "Makes the phone vibrate when the gamepad vibrates. " +
+                                   "Intensity follows the game."),
+                                GameOptions.flag(this, GameOptions.VIBRATION_PHONE),
+                                v -> GameOptions.flag(this, GameOptions.VIBRATION_PHONE, v))),
                 ui.footer(tr("Acima de Normal o som pode distorcer nos picos.",
                         "Above Normal the sound may distort at its peaks.")));
     }
