@@ -61,6 +61,7 @@ final class GameOptions {
     // Sound
     static final String VOLUME = "volume";
     static final String VIBRATION_PHONE = "vibration_phone";
+    static final String VIBRATION_WITH_GAMEPAD = "vibration_with_gamepad";
     // Language
     static final String GAME_LANGUAGE = "game_language";  // a GameLanguage code: "en-US", "pt-BR"...
     static final String APP_LANGUAGE = "app_language";    // "pt" or "en" (AppLanguage)
@@ -102,6 +103,7 @@ final class GameOptions {
             case DRIVER: return "";
             case VOLUME: return "100";
             case VIBRATION_PHONE: return "true";
+            case VIBRATION_WITH_GAMEPAD: return "true";
             // English (US), what the console settings said before this option existed.
             case GAME_LANGUAGE: return "en-US";
             case GAME_ISO: return "";
@@ -121,7 +123,7 @@ final class GameOptions {
     static boolean flag(Context context, String key) {
         boolean byDefault = PIN_THREADS.equals(key) || PERFORMANCE_HINTS.equals(key) || ONE_PASS.equals(key) ||
                 ADAPTIVE_VBLANK.equals(key) || RESOLVE_SHORTCUT.equals(key) || VERTEX_CACHE.equals(key) ||
-                VIBRATION_PHONE.equals(key);
+                VIBRATION_PHONE.equals(key) || VIBRATION_WITH_GAMEPAD.equals(key);
         return prefs(context).getBoolean(key, byDefault);
     }
 

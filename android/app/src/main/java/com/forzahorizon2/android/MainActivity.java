@@ -1180,7 +1180,14 @@ public final class MainActivity extends AppCompatActivity {
                                    "Makes the phone vibrate when the gamepad vibrates. " +
                                    "Intensity follows the game."),
                                 GameOptions.flag(this, GameOptions.VIBRATION_PHONE),
-                                v -> GameOptions.flag(this, GameOptions.VIBRATION_PHONE, v))),
+                                v -> GameOptions.flag(this, GameOptions.VIBRATION_PHONE, v)),
+                        ui.toggleRow(tr("Vibrar junto com o controle", "Vibrate with gamepad"),
+                                tr("Quando ligado, o celular vibra junto com o controle físico conectado. " +
+                                   "Quando desligado, o celular só vibra se não houver controle físico.",
+                                   "When on, the phone vibrates together with the connected gamepad. " +
+                                   "When off, the phone only vibrates if there is no gamepad connected."),
+                                GameOptions.flag(this, GameOptions.VIBRATION_WITH_GAMEPAD),
+                                v -> GameOptions.flag(this, GameOptions.VIBRATION_WITH_GAMEPAD, v))),
                 ui.footer(tr("Acima de Normal o som pode distorcer nos picos.",
                         "Above Normal the sound may distort at its peaks.")));
     }
