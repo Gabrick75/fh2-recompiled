@@ -55,6 +55,8 @@ CXX=${CXX:-g++}
 
 rm -rf "$S"; mkdir -p "$S/spirv"
 
+SUELTOS=${SUELTOS:-$RAIZ/app/out/shaders_fh2_sueltos}
+
 # Manifesto para comparar builds entre PCs (versões + contagens)
 {
   echo "dxc=$DXC"
@@ -63,6 +65,8 @@ rm -rf "$S"; mkdir -p "$S/spirv"
   "$VAL" --version 2>/dev/null | head -1
   echo "spirv_opt=$OPT"
   "$OPT" --version 2>/dev/null | head -1
+  echo "imagens=$(ls "$RAIZ"/app/out/shaders_fh2_imagem.* 2>/dev/null | wc -l)"
+  echo "sueltos=$(ls "$SUELTOS"/*.bin 2>/dev/null | wc -l)"
 } > "$S/versoes.txt" 2>/dev/null || true
 
 python3 "$RAIZ/tools/xenos/extrair_fxobj_pistas.py" "$RAIZ/assets/game_root" "$S/fxobj_pistas" "$B/lzx_xmem"
@@ -71,9 +75,16 @@ python3 "$RAIZ/tools/xenos/extrair_fxobj_pistas.py" "$RAIZ/assets/game_root" "$S
 python3 "$RAIZ/tools/xenos/extrair_contenedores.py" "$RAIZ/assets/game_root" "$S/contenedores" "$S/fxobj_pistas" \
   "${IMAGENS[@]}"
 
-# Shaders soltos da D3D library (dump do renderizador nativo)
-SUELTOS=${SUELTOS:-$RAIZ/app/out/shaders_fh2_sueltos}
-[ -d "$SUELTOS" ] && python3 "$RAIZ/tools/xenos/d3d_internos.py" "$SUELTOS" "$S/contenedores"
+# Shaders soltos da D3D library (dump do renderizador nativo). Sem eles a biblioteca
+# sai menor e sem os shaders internos da D3D (diferenças visuais): gere com o jogo
+# rodando no modo nativo antes de rebuildar:
+#   tools/rodar_pc.sh --fh2_nativo_volcar_sueltos=app/out/shaders_fh2_sueltos
+if [ -d "$SUELTOS" ]; then
+  python3 "$RAIZ/tools/xenos/d3d_internos.py" "$SUELTOS" "$S/contenedores"
+else
+  echo "[aviso] sem $SUELTOS: a biblioteca sai sem os shaders internos da D3D." >&2
+  echo "        Gere com: tools/rodar_pc.sh --fh2_nativo_volcar_sueltos=$SUELTOS" >&2
+fi
 
 # xenos_hlsl retorna 2 quando algum shader é saltado (normal); só falha de verdade com outro código
 "$B/xenos_hlsl" "$S/contenedores" "$S/hlsl" "$COMUN" > "$S/traduccion.log" 2>&1; rc=$?
