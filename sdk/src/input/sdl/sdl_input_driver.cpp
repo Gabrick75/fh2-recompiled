@@ -23,6 +23,8 @@
 #include <rex/platform.h>
 #include <rex/ui/virtual_key.h>
 
+#include "../../../../android/app/src/main/cpp/android_vibration.h"
+
 REXCVAR_DEFINE_STRING(hid_mappings_file, "gamecontrollerdb.txt", "Input",
                       "Path to SDL gamecontroller mappings file");
 
@@ -315,10 +317,26 @@ X_RESULT SDLInputDriver::SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION* vibr
   // XInput vibration holds until the guest changes it, but SDL rumble expires,
   // and a zero duration expires on the next SDL_UpdateJoysticks. Arm it for
   // SDL's maximum instead; each call cancels the previous effect anyway.
-  return SDL_RumbleGamepad(controller->sdl, vibration->left_motor_speed,
-                           vibration->right_motor_speed, kRumbleDurationMs)
-             ? X_ERROR_SUCCESS
-             : X_ERROR_FUNCTION_FAILED;
+  bool rumbled = SDL_RumbleGamepad(controller->sdl, vibration->left_motor_speed,
+                                   vibration->right_motor_speed, kRumbleDurationMs);
+
+  // Also vibrate the Android phone itself when the gamepad rumbles, if the user
+  // enabled it in the launcher. Intensity follows the game's motor speed.
+  if (fh2_android_vibration_enabled() &&
+      (vibration->left_motor_speed > 0 || vibration->right_motor_speed > 0)) {
+    int intensity = 0;
+    if (vibration->left_motor_speed > vibration->right_motor_speed)
+      intensity = (int)vibration->left_motor_speed;
+    else
+      intensity = (int)vibration->right_motor_speed;
+    // Scale 0-65535 motor speed to 0-100 intensity.
+    intensity = (intensity * 100) / 0xFFFF;
+    if (intensity < 1) intensity = 1;
+    if (intensity > 100) intensity = 100;
+    fh2_android_vibrate(kRumbleDurationMs, intensity);
+  }
+
+  return rumbled ? X_ERROR_SUCCESS : X_ERROR_FUNCTION_FAILED;
 }
 
 X_RESULT SDLInputDriver::GetDeviceKeystroke(DeviceId id, uint32_t flags,

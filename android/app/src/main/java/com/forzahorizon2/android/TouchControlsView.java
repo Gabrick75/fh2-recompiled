@@ -41,6 +41,13 @@ public final class TouchControlsView extends View {
     static native void nativeSetTouchState(int buttons, int leftX, int leftY, int rightX, int rightY,
                                            int leftTrigger, int rightTrigger);
 
+    /** Makes the phone vibrate with the given duration (ms) and intensity (0-100). */
+    static native void nativeVibrate(int durationMs, int intensity);
+
+    static void vibrate(int durationMs, int intensity) {
+        nativeVibrate(durationMs, intensity);
+    }
+
     /** One control of the pad. */
     static final class Control {
         final String id;
