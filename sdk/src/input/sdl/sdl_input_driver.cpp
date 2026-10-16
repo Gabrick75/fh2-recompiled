@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <string>
 
 #include <rex/assert.h>
 #include <rex/chrono/clock.h>
@@ -321,16 +322,14 @@ X_RESULT SDLInputDriver::SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION* vibr
                                    vibration->right_motor_speed, kRumbleDurationMs);
 
   // Also vibrate the Android phone itself when the gamepad rumbles, if the user
-  // enabled it in the launcher. Intensity follows the game's motor speed.
-  if (rex_android_vibration_enabled() &&
+  // enabled it and the chosen mode includes the phone. Intensity follows the
+  // game's motor speed.
+  const char* mode = fx2_android_vibration_mode();
+  if (fx2_android_vibration_enabled() &&
       (vibration->left_motor_speed > 0 || vibration->right_motor_speed > 0)) {
-    // If the user disabled "Vibrate with gamepad", skip phone vibration when a
-    // physical gamepad is present. Since SDL3 has no simple count API here,
-    // rely on the toggle as the user's intent: on = vibrate always, off = vibrate
-    // only when no gamepad is connected (caller decides via with_gamepad flag).
-    if (!rex_android_vibration_with_gamepad()) {
-      // Skip phone vibration: user doesn't want it together with a gamepad.
-    } else {
+    bool vibrate_phone = mode && (std::string(mode) == "phone" ||
+                                  std::string(mode) == "both");
+    if (vibrate_phone) {
       int intensity = 0;
       if (vibration->left_motor_speed > vibration->right_motor_speed)
         intensity = (int)vibration->left_motor_speed;
@@ -340,7 +339,7 @@ X_RESULT SDLInputDriver::SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION* vibr
       intensity = (intensity * 100) / 0xFFFF;
       if (intensity < 1) intensity = 1;
       if (intensity > 100) intensity = 100;
-      rex_android_vibration_vibrate(kRumbleDurationMs, intensity);
+      fx2_android_vibration_vibrate(kRumbleDurationMs, intensity);
     }
   }
 

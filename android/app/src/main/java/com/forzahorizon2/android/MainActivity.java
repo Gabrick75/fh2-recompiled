@@ -1174,20 +1174,20 @@ public final class MainActivity extends AppCompatActivity {
                 ui.group(ui.choiceRow(GameOptions.VOLUME, tr("Volume do jogo", "Game volume"), null,
                         new String[] {"Normal", tr("Alto", "Loud"), tr("Muito alto", "Very loud"), tr("Máximo", "Max")},
                         new String[] {"100", "125", "150", "200"}),
-                        ui.toggleRow(tr("Vibrar o celular", "Vibrate phone"),
+                        ui.toggleRow(tr("Vibração", "Vibration"),
                                 tr("Faz o celular vibrar quando o controle do jogo vibrar. " +
                                    "A intensidade segue o jogo.",
                                    "Makes the phone vibrate when the gamepad vibrates. " +
                                    "Intensity follows the game."),
                                 GameOptions.flag(this, GameOptions.VIBRATION_PHONE),
                                 v -> GameOptions.flag(this, GameOptions.VIBRATION_PHONE, v)),
-                        ui.toggleRow(tr("Vibrar junto com o controle", "Vibrate with gamepad"),
-                                tr("Quando ligado, o celular vibra junto com o controle físico conectado. " +
-                                   "Quando desligado, o celular só vibra se não houver controle físico.",
-                                   "When on, the phone vibrates together with the connected gamepad. " +
-                                   "When off, the phone only vibrates if there is no gamepad connected."),
-                                GameOptions.flag(this, GameOptions.VIBRATION_WITH_GAMEPAD),
-                                v -> GameOptions.flag(this, GameOptions.VIBRATION_WITH_GAMEPAD, v))),
+                        ui.choiceRow(GameOptions.VIBRATION_MODE, tr("Modo de vibração", "Vibration mode"),
+                                tr("Escolha o que vibra quando o jogo pede rumble.",
+                                   "Choose what vibrates when the game requests rumble."),
+                                new String[] {tr("Somente o celular", "Phone only"),
+                                              tr("Somente o controle", "Gamepad only"),
+                                              tr("Celular e controle", "Phone and gamepad")},
+                                new String[] {"phone", "gamepad", "both"})),
                 ui.footer(tr("Acima de Normal o som pode distorcer nos picos.",
                         "Above Normal the sound may distort at its peaks.")));
     }
