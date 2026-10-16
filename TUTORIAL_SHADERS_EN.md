@@ -26,15 +26,7 @@ git clone https://github.com/Gabrick75/fh2-recompiled.git
 cd fh2-recompiled
 ```
 
-Switch to the branch with method A (fallback without descriptor indexing):
-
-```sh
-git fetch origin
-git checkout -b compat/nativo-sem-indexing origin/compat/nativo-sem-indexing 2>/dev/null ||
-git checkout -b compat/nativo-sem-indexing
-```
-
-If there is no remote/branch, apply the method A commits manually to your local history. The fallback code is in:
+The fallback code without descriptor indexing (method A) is already on branch `main`:
 - `app/src/nativo/nfsmw_nativo_dibujos.cpp`
 - `app/src/nativo/nfsmw_spirv_descriptores.h`
 - `android/app/src/main/cpp/android_diagnostico.cpp`
@@ -188,10 +180,9 @@ Look for:
 ## Summary commands
 
 ```sh
-# 1. clone + branch
+# 1. clone
 git clone https://github.com/Gabrick75/fh2-recompiled.git
 cd fh2-recompiled
-git checkout -b compat/nativo-sem-indexing
 
 # 2. thirdparty
 python3 tools/fetch_thirdparty.py
