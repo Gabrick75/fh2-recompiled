@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 import android.graphics.Canvas;
 import android.graphics.DashPathEffect;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.view.HapticFeedbackConstants;
@@ -96,6 +97,7 @@ public final class TouchControlsView extends View {
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint dashed = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF rect = new RectF();
+    private final Path arrowPath = new Path();
     private final SharedPreferences prefs;
     private Host host;
 
@@ -313,26 +315,35 @@ public final class TouchControlsView extends View {
                 ? event.getActionIndex() : -1;
         final int buttonsBefore = buttonState();
 
-        // Sticks hold on to the finger that grabbed them.
+        final int width = getWidth();
+        final int height = getHeight();
+
+        // Single pass over controls: refresh held sticks, reset non-stick state.
         for (Control c : controls) {
-            if (c.type != STICK || c.pointer < 0) {
-                continue;
-            }
-            int index = event.findPointerIndex(c.pointer);
-            if (index < 0 || index == liftedIndex) {
-                c.pointer = -1;
-                c.knobX = c.knobY = 0f;
-                continue;
-            }
-            float radius = radius(c);
-            c.knobX = clamp((event.getX(index) - c.originX) / radius, -1f, 1f);
-            c.knobY = clamp((event.getY(index) - c.originY) / radius, -1f, 1f);
-            float length = (float) Math.hypot(c.knobX, c.knobY);
-            if (length > 1f) {
-                c.knobX /= length;
-                c.knobY /= length;
+            if (c.type == STICK) {
+                if (c.pointer < 0) {
+                    continue;
+                }
+                int index = event.findPointerIndex(c.pointer);
+                if (index < 0 || index == liftedIndex) {
+                    c.pointer = -1;
+                    c.knobX = c.knobY = 0f;
+                    continue;
+                }
+                float radius = radius(c, height);
+                c.knobX = clamp((event.getX(index) - c.originX) / radius, -1f, 1f);
+                c.knobY = clamp((event.getY(index) - c.originY) / radius, -1f, 1f);
+                float length = (float) Math.hypot(c.knobX, c.knobY);
+                if (length > 1f) {
+                    c.knobX /= length;
+                    c.knobY /= length;
+                }
+            } else {
+                c.pressed = false;
+                c.dpad = 0;
             }
         }
+
         // A new finger on a stick grabs it; the stick centres itself under the finger.
         if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
             int index = event.getActionIndex();
@@ -346,10 +357,6 @@ public final class TouchControlsView extends View {
             }
         }
         // Buttons, pedals and the D-pad follow the fingers, so a thumb can slide from gas to brake.
-        for (Control c : controls) {
-            c.pressed = false;
-            c.dpad = 0;
-        }
         for (int i = 0; i < event.getPointerCount(); i++) {
             if (i == liftedIndex || holdsStick(event.getPointerId(i))) {
                 continue;
@@ -360,7 +367,7 @@ public final class TouchControlsView extends View {
                 continue;
             }
             if (c.type == DPAD) {
-                c.dpad |= dpadBits(c, px, py);
+                c.dpad |= dpadBits(c, px, py, width, height);
             } else {
                 c.pressed = true;
             }
@@ -435,9 +442,9 @@ public final class TouchControlsView extends View {
         return null;
     }
 
-    private int dpadBits(Control c, float px, float py) {
-        float dx = px - c.x * getWidth(), dy = py - c.y * getHeight();
-        if (Math.hypot(dx, dy) < radius(c) * .2f) {
+    private int dpadBits(Control c, float px, float py, int width, int height) {
+        float dx = px - c.x * width, dy = py - c.y * height;
+        if (Math.hypot(dx, dy) < radius(c, height) * .2f) {
             return 0;
         }
         double angle = Math.toDegrees(Math.atan2(-dy, dx));  // 0 = right, 90 = up
@@ -460,35 +467,42 @@ public final class TouchControlsView extends View {
     /** The control under a point; the nearest one when several overlap. In the editor, hidden ones too. */
     private Control hitAny(float px, float py, boolean includeHidden) {
         Control best = null;
-        double bestDistance = Double.MAX_VALUE;
+        double bestDistanceSq = Double.MAX_VALUE;
+        final float w = getWidth();
+        final float h = getHeight();
         for (Control c : controls) {
-            if ((!c.visible && !includeHidden) || !contains(c, px, py, c.type == STICK ? 1.15f : 1.08f)) {
+            if ((!c.visible && !includeHidden) || !contains(c, px, py, c.type == STICK ? 1.15f : 1.08f, w, h)) {
                 continue;
             }
-            double d = Math.hypot(px - c.x * getWidth(), py - c.y * getHeight()) / radius(c);
-            if (d < bestDistance) {
-                bestDistance = d;
+            float cx = c.x * w, cy = c.y * h;
+            float dx = px - cx, dy = py - cy;
+            float r = radius(c, h);
+            double d = (dx * dx + dy * dy) / (r * r);
+            if (d < bestDistanceSq) {
+                bestDistanceSq = d;
                 best = c;
             }
         }
         return best;
     }
 
-    private boolean contains(Control c, float px, float py, float slack) {
-        float cx = c.x * getWidth(), cy = c.y * getHeight();
+    private boolean contains(Control c, float px, float py, float slack, float w, float h) {
+        float cx = c.x * w, cy = c.y * h;
         if (c.type == PEDAL) {
-            float halfW = pedalWidth(c) * .5f * slack, halfH = c.size * getHeight() * .5f * slack;
+            float halfW = pedalWidth(c, h) * .5f * slack, halfH = c.size * h * .5f * slack;
             return Math.abs(px - cx) <= halfW && Math.abs(py - cy) <= halfH;
         }
-        return Math.hypot(px - cx, py - cy) <= radius(c) * slack;
+        float dx = px - cx, dy = py - cy;
+        float r = radius(c, h) * slack;
+        return dx * dx + dy * dy <= r * r;
     }
 
-    private float radius(Control c) {
-        return c.size * getHeight() * .5f;
+    private float radius(Control c, float h) {
+        return c.size * h * .5f;
     }
 
-    private float pedalWidth(Control c) {
-        return c.size * getHeight() * .55f;
+    private float pedalWidth(Control c, float h) {
+        return c.size * h * .55f;
     }
 
     private void releaseAll() {
@@ -570,6 +584,8 @@ public final class TouchControlsView extends View {
         if (hiddenByGamepad && !editing) {
             return;
         }
+        final float w = getWidth();
+        final float h = getHeight();
         if (editing) {
             canvas.drawColor(0x66000000);
         }
@@ -578,28 +594,28 @@ public final class TouchControlsView extends View {
                 continue;
             }
             float alpha = c.visible ? (editing ? 1f : opacity) : .35f;
-            drawControl(canvas, c, alpha);
+            drawControl(canvas, c, alpha, w, h);
             if (editing) {
-                float cx = c.x * getWidth(), cy = c.y * getHeight();
+                float cx = c.x * w, cy = c.y * h;
                 dashed.setStrokeWidth(3f);
                 dashed.setColor(c == selected ? 0xFFFFC107 : 0x88FFFFFF);
                 if (c.type == PEDAL) {
-                    float hw = pedalWidth(c) * .5f + 8f, hh = c.size * getHeight() * .5f + 8f;
+                    float hw = pedalWidth(c, h) * .5f + 8f, hh = c.size * h * .5f + 8f;
                     canvas.drawRect(cx - hw, cy - hh, cx + hw, cy + hh, dashed);
                 } else {
-                    canvas.drawCircle(cx, cy, radius(c) + 8f, dashed);
+                    canvas.drawCircle(cx, cy, radius(c, h) + 8f, dashed);
                 }
                 if (!c.visible) {
                     text.setColor(0xFFFFFFFF);
-                    text.setTextSize(Math.max(22f, radius(c) * .28f));
-                    canvas.drawText(tr("OCULTO", "HIDDEN"), cx, cy + radius(c) + text.getTextSize() + 6f, text);
+                    text.setTextSize(Math.max(22f, radius(c, h) * .28f));
+                    canvas.drawText(tr("OCULTO", "HIDDEN"), cx, cy + radius(c, h) + text.getTextSize() + 6f, text);
                 }
             }
         }
     }
 
-    private void drawControl(Canvas canvas, Control c, float alpha) {
-        final float cx = c.x * getWidth(), cy = c.y * getHeight(), r = radius(c);
+    private void drawControl(Canvas canvas, Control c, float alpha, float w, float h) {
+        final float cx = c.x * w, cy = c.y * h, r = radius(c, h);
         final int a = Math.round(alpha * 255f);
         switch (c.type) {
             case STICK: {
@@ -634,7 +650,7 @@ public final class TouchControlsView extends View {
                 break;
             }
             case PEDAL: {
-                float hw = pedalWidth(c) * .5f, hh = c.size * getHeight() * .5f;
+                float hw = pedalWidth(c, h) * .5f, hh = c.size * h * .5f;
                 rect.set(cx - hw, cy - hh, cx + hw, cy + hh);
                 float corner = hw * .35f;
                 fill.setColor(withAlpha(c.pressed ? 0xFFFF9A32 : c.color, a * 200 / 255));
@@ -678,12 +694,12 @@ public final class TouchControlsView extends View {
         canvas.save();
         canvas.rotate(rotation, x, y);
         fill.setColor(withAlpha(on ? 0xFFFF9A32 : 0xFFEAF2FA, a * (on ? 240 : 170) / 255));
-        android.graphics.Path p = new android.graphics.Path();
-        p.moveTo(x, y - size * .5f);
-        p.lineTo(x + size * .5f, y + size * .35f);
-        p.lineTo(x - size * .5f, y + size * .35f);
-        p.close();
-        canvas.drawPath(p, fill);
+        arrowPath.rewind();
+        arrowPath.moveTo(x, y - size * .5f);
+        arrowPath.lineTo(x + size * .5f, y + size * .35f);
+        arrowPath.lineTo(x - size * .5f, y + size * .35f);
+        arrowPath.close();
+        canvas.drawPath(arrowPath, fill);
         canvas.restore();
     }
 
