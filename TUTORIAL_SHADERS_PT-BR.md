@@ -66,6 +66,12 @@ Isso gera `app/generated/rexglue.cmake` e `app/generated/default/sources.cmake`,
 
 (O script usa `-march=x86-64-v3`, igual ao PC de referência — o SDK exige SSSE3+. Se a sua CPU for anterior a ~2013, rode `MARCH=x86-64-v2 ./build_pc.sh`.)
 
+Depois, gere o despejo da imagem do executável (**obrigatório** para o passo 7; abre o jogo no PC — espere iniciar e feche):
+
+```sh
+tools/rodar_pc.sh --xex_despejar_imagem=app/out/shaders_fh2_imagem
+```
+
 ## 6. Ferramentas da biblioteca de shaders (automático)
 
 A biblioteca `fh2_shaders.nfsp` precisa de DXC (HLSL → SPIR-V) e spirv-val/opt. **Nada manual:** o `tools/xenos/biblioteca.sh` baixa sozinho as versões exatas e travadas (iguais em todo PC):
@@ -87,9 +93,25 @@ O que acontece:
 4. Compila com DXC para SPIR-V Vulkan 1.2.
 5. Empacota em `app/out/shaders_fh2/fh2_shaders.nfsp`.
 
-Saída esperada: algo como `spirv ok=2559 falhou=0` e o arquivo `fh2_shaders.nfsp` (~72 MB).
+Saída esperada: `spirv ok=4074 falhou=4` e o arquivo `fh2_shaders.nfsp` (~72 MB).
 
 > **Importante:** esta biblioteca é feita a partir dos seus arquivos do jogo. Não compartilhe nem commite.
+
+### Shaders internos da D3D (sueltos): biblioteca completa em duas passadas
+
+A primeira biblioteca sai sem os shaders internos da D3D (o script avisa `[aviso] sem .../shaders_fh2_sueltos`). Ela já abre o jogo — use-a para gerar o despejo que falta, com o jogo em modo nativo (navegue nos menus/jogue um pouco para o renderizador encontrar os shaders; depois feche):
+
+```sh
+tools/rodar_pc.sh --nfsmw_renderizador=nativo --fh2_nativo_volcar_sueltos=$PWD/app/out/shaders_fh2_sueltos
+```
+
+Depois rebuild para a biblioteca completa:
+
+```sh
+tools/xenos/biblioteca.sh
+```
+
+Conferência (valores de referência em `app/out/shaders_fh2/versoes.txt`): `contenedores=4142`, `hlsl=4078`, `spirv ok=4074 falhou=4`, `sueltos=42`, `nfsp_bytes=75497272`.
 
 ## 8. Build do Android APK
 
@@ -187,7 +209,14 @@ python3 tools/fase1_extraer.py SeuFH2.iso -o assets/game_root
 # 4. build do PC (SDK host + codegen + app)
 ./build_pc.sh
 
+# 4b. dump da imagem do executável (obrigatório p/ biblioteca)
+tools/rodar_pc.sh --xex_despejar_imagem=app/out/shaders_fh2_imagem
+
 # 5. biblioteca shaders (toolchain exato baixado sozinho)
+tools/xenos/biblioteca.sh
+
+# 5b. sueltos da D3D + rebuild p/ biblioteca completa
+tools/rodar_pc.sh --nfsmw_renderizador=nativo --fh2_nativo_volcar_sueltos=$PWD/app/out/shaders_fh2_sueltos
 tools/xenos/biblioteca.sh
 
 # 6. build APK
