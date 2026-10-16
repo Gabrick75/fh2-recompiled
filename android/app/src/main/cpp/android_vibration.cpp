@@ -2,15 +2,25 @@
 #include <android/log.h>
 
 #include "android_vibration.h"
+#include "../../../../../sdk/include/rex/input/android_vibration_hook.h"
 
 #define LOGV(...) __android_log_print(ANDROID_LOG_VERBOSE, "FH2Vibration", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "FH2Vibration", __VA_ARGS__)
 
 static JavaVM* g_vm = nullptr;
 
+static void app_vibrate_cb(int duration_ms, int intensity) {
+    vibrate_via_java(duration_ms, intensity);
+}
+
+static bool app_vibration_enabled_cb(void) {
+    return vibration_enabled_via_java();
+}
+
 extern "C" jint JNI_OnLoad(JavaVM* vm, void*) {
     g_vm = vm;
-    LOGV("JNI_OnLoad: stored JavaVM");
+    rex_android_vibration_register_hooks(app_vibrate_cb, app_vibration_enabled_cb);
+    LOGV("JNI_OnLoad: stored JavaVM and registered vibration hooks");
     return JNI_VERSION_1_6;
 }
 
