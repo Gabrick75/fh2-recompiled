@@ -64,6 +64,8 @@ A single command does everything (builds the SDK `rexglue` host if needed, runs 
 
 This generates `app/generated/rexglue.cmake` and `app/generated/default/sources.cmake`, required for the Android build.
 
+(The script uses `-march=x86-64-v3`, like the reference PC — the SDK needs SSSE3+. If your CPU is older than ~2013, run `MARCH=x86-64-v2 ./build_pc.sh`.)
+
 ## 6. Shader library tools (automatic)
 
 The `fh2_shaders.nfsp` library needs DXC (HLSL → SPIR-V) and spirv-val/opt. **Nothing manual:** `tools/xenos/biblioteca.sh` downloads the exact pinned versions itself (same on every PC):

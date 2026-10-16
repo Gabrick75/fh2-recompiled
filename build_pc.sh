@@ -13,6 +13,9 @@ RAIZ=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 CC_BIN=${CC:-clang-20}
 CXX_BIN=${CXX:-clang++-20}
 PYBIN=${PYTHON:-python3}
+# x86-64-v3 = baseline do PC de referência (o SDK usa intrínsecos SSSE3+;
+# sem -march o build falha). Troque se a CPU for anterior a ~2013: MARCH=x86-64-v2.
+MARCHA=${MARCH:-x86-64-v3}
 
 # ---- 0. jogo extraído (não há como baixar: é do ISO do jogador) ----
 if [ ! -f "$RAIZ/assets/game_root/default.xex" ]; then
@@ -58,7 +61,8 @@ if [ ! -x "$REXGLUE" ]; then
   echo "[info] compilando o rexglue host (só na primeira vez; demora)..."
   command -v "$CC_BIN" >/dev/null 2>&1 || { echo "ERRO: $CC_BIN não encontrado." >&2; exit 1; }
   cmake -S "$RAIZ/sdk" -B "$RAIZ/sdk/out/linux-amd64" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_COMPILER="$CC_BIN" -DCMAKE_CXX_COMPILER="$CXX_BIN" || exit 1
+    -DCMAKE_C_COMPILER="$CC_BIN" -DCMAKE_CXX_COMPILER="$CXX_BIN" \
+    -DCMAKE_C_FLAGS="-march=$MARCHA" -DCMAKE_CXX_FLAGS="-march=$MARCHA" || exit 1
   cmake --build "$RAIZ/sdk/out/linux-amd64" --target rexglue || exit 1
 else
   echo "[info] rexglue host já presente; pulando compilação."
@@ -81,6 +85,7 @@ REXGLUE="$REXGLUE" PYTHON="$PYBIN" "$RAIZ/tools/codegen.sh" app || exit 1
 echo "[info] configurando e compilando o app..."
 cmake -S "$RAIZ/app" -B "$RAIZ/app/out/linux" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER="$CC_BIN" -DCMAKE_CXX_COMPILER="$CXX_BIN" \
+  -DCMAKE_C_FLAGS="-march=$MARCHA" -DCMAKE_CXX_FLAGS="-march=$MARCHA" \
   -DREXSDK_DIR="$RAIZ/sdk" || exit 1
 cmake --build "$RAIZ/app/out/linux" || exit 1
 
