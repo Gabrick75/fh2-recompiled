@@ -322,7 +322,7 @@ X_RESULT SDLInputDriver::SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION* vibr
 
   // Also vibrate the Android phone itself when the gamepad rumbles, if the user
   // enabled it in the launcher. Intensity follows the game's motor speed.
-  if (rex::input::rex_android_vibration_enabled() &&
+  if (rex_android_vibration_enabled() &&
       (vibration->left_motor_speed > 0 || vibration->right_motor_speed > 0)) {
     int intensity = 0;
     if (vibration->left_motor_speed > vibration->right_motor_speed)
@@ -333,7 +333,7 @@ X_RESULT SDLInputDriver::SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION* vibr
     intensity = (intensity * 100) / 0xFFFF;
     if (intensity < 1) intensity = 1;
     if (intensity > 100) intensity = 100;
-    rex::input::rex_android_vibration_vibrate(kRumbleDurationMs, intensity);
+    rex_android_vibration_vibrate(kRumbleDurationMs, intensity);
   }
 
   return rumbled ? X_ERROR_SUCCESS : X_ERROR_FUNCTION_FAILED;

@@ -9,6 +9,9 @@
 
 static JavaVM* g_vm = nullptr;
 
+static void vibrate_via_java(int durationMs, int intensity);
+static bool vibration_enabled_via_java(void);
+
 static void app_vibrate_cb(int duration_ms, int intensity) {
     vibrate_via_java(duration_ms, intensity);
 }
