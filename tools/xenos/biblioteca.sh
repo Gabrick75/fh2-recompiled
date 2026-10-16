@@ -75,7 +75,10 @@ python3 "$RAIZ/tools/xenos/extrair_contenedores.py" "$RAIZ/assets/game_root" "$S
 SUELTOS=${SUELTOS:-$RAIZ/app/out/shaders_fh2_sueltos}
 [ -d "$SUELTOS" ] && python3 "$RAIZ/tools/xenos/d3d_internos.py" "$SUELTOS" "$S/contenedores"
 
-"$B/xenos_hlsl" "$S/contenedores" "$S/hlsl" "$COMUN" > "$S/traduccion.log" 2>&1; tail -1 "$S/traduccion.log"
+# xenos_hlsl retorna 2 quando algum shader é saltado (normal); só falha de verdade com outro código
+"$B/xenos_hlsl" "$S/contenedores" "$S/hlsl" "$COMUN" > "$S/traduccion.log" 2>&1; rc=$?
+tail -1 "$S/traduccion.log"
+if [ $rc -ne 0 ] && [ $rc -ne 2 ]; then exit $rc; fi
 grep "rechazada\|no produjo\|no pude\|firma" "$S/traduccion.log" | sed -E 's/^ *[pv]_[0-9]+(\.bin)?:? *//' |
   sort | uniq -c | sort -rn | head -5
 
