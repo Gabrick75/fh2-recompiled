@@ -31,8 +31,12 @@ else
 fi
 
 # ---- 2. dependências de sistema do SDL3/X11 (falha fatal sem elas; instala sozinho) ----
-DEPS_SDL="libasound2-dev libdbus-1-dev libdecor-0-dev libegl1-mesa-dev libpipewire-0.3-dev libpulse-dev libudev-dev libwayland-dev libx11-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev libxkbcommon-dev libxrandr-dev libxss-dev libxtst-dev"
-if [ ! -f /usr/include/X11/extensions/XTest.h ]; then
+DEPS_SDL="libasound2-dev libdbus-1-dev libdecor-0-dev libegl1-mesa-dev libpipewire-0.3-dev libpulse-dev libudev-dev libwayland-dev libx11-dev libx11-xcb-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev libxkbcommon-dev libxrandr-dev libxss-dev libxtst-dev"
+FALTAM=""
+[ -f /usr/include/X11/extensions/XTest.h ] || FALTAM=1
+pkg-config --exists x11-xcb 2>/dev/null || FALTAM=1
+pkg-config --exists wayland-client 2>/dev/null || FALTAM=1
+if [ -n "$FALTAM" ]; then
   echo "[info] instalando dependências de build do SDL3/X11..."
   if command -v apt-get >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
     sudo apt-get update && sudo apt-get install -y $DEPS_SDL || {
