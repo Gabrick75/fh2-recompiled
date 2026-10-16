@@ -90,8 +90,9 @@ fi
 "$B/xenos_hlsl" "$S/contenedores" "$S/hlsl" "$COMUN" > "$S/traduccion.log" 2>&1; rc=$?
 tail -1 "$S/traduccion.log"
 if [ $rc -ne 0 ] && [ $rc -ne 2 ]; then exit $rc; fi
+# grep sem match retorna 1: com pipefail isso abortaria o script (é só informativo)
 grep "rechazada\|no produjo\|no pude\|firma" "$S/traduccion.log" | sed -E 's/^ *[pv]_[0-9]+(\.bin)?:? *//' |
-  sort | uniq -c | sort -rn | head -5
+  sort | uniq -c | sort -rn | head -5 || true
 
 : > "$S/dxc.log"; ok=0; fail=0
 for f in "$S"/hlsl/*.hlsl; do
@@ -107,7 +108,7 @@ for f in "$S"/hlsl/*.hlsl; do
   fi
 done
 echo "spirv ok=$ok falhou=$fail"
-grep -h "error:" "$S/dxc.log" | sed -E 's/.*error: //' | sort | uniq -c | sort -rn | head -6
+grep -h "error:" "$S/dxc.log" | sed -E 's/.*error: //' | sort | uniq -c | sort -rn | head -6 || true
 
 "$CXX" -std=c++23 -O1 -DFH2_RECOMP -I"$RAIZ/app/src/nativo" -I"$TP/xxHash" -I"$TP/fmt/include" -DFMT_HEADER_ONLY \
   "$RAIZ/tools/xenos/empaquetar.cpp" "$RAIZ/app/src/nativo/nfsmw_shader_library.cpp" -o "$B/empaquetar" || exit 1
@@ -120,4 +121,6 @@ grep -h "error:" "$S/dxc.log" | sed -E 's/.*error: //' | sort | uniq -c | sort -
   echo "nfsp_bytes=$(stat -c%s "$S/fh2_shaders.nfsp" 2>/dev/null)"
 } >> "$S/versoes.txt" 2>/dev/null || true
 cat "$S/versoes.txt"
-python3 "$RAIZ/tools/xenos/cobertura.py" "$XSH" "$S/contenedores" "$S/spirv"
+# cobertura é só informativa (o .xsh só existe em PC que já rodou o jogo): não aborta o build
+python3 "$RAIZ/tools/xenos/cobertura.py" "$XSH" "$S/contenedores" "$S/spirv" ||
+  echo "[aviso] cobertura indisponível (sem $XSH)"

@@ -44,9 +44,9 @@ ferramentas_resolver_dxc() {
   if [ -n "${DXC:-}" ]; then
     echo "[aviso] DXC=$DXC não é a versão travada ($FH2_DXC_TAG); será baixada a exata." >&2
   fi
-  # 2. Instalação travada já baixada antes
+  # 2. Instalação travada já baixada antes (ls sem match + pipefail abortaria: || true)
   local achado
-  achado=$(ls -d "$FH2_DXC_DIR"/*/bin/dxc 2>/dev/null | head -1)
+  achado=$(ls -d "$FH2_DXC_DIR"/*/bin/dxc 2>/dev/null | head -1 || true)
   if ferramentas_dxc_ok "$achado"; then DXC="$achado"; return 0; fi
   # 3. Baixar a versão exata do GitHub (download único de ~490 MB)
   echo "[info] baixando DXC $FH2_DXC_TAG (~490 MB)..."
@@ -62,7 +62,7 @@ ferramentas_resolver_dxc() {
   local tmp="$HOME/.cache/fh2-tools/dxc-extrair"
   rm -rf "$tmp"; mkdir -p "$tmp"
   tar -xzf "$tgz" -C "$tmp" || return 1
-  achado=$(find "$tmp" -maxdepth 3 -path "*/bin/dxc" 2>/dev/null | head -1)
+  achado=$(find "$tmp" -maxdepth 3 -path "*/bin/dxc" 2>/dev/null | head -1 || true)
   if ! ferramentas_dxc_ok "$achado"; then
     echo "ERRO: DXC extraído mas a versão não confere." >&2
     return 1
