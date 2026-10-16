@@ -1,6 +1,6 @@
 # Tutorial — Build do Android e biblioteca de shaders (português)
 
-Passo a passo, do clone do repositório até o jogo rodando no modo nativo no Motorola Moto G9 Play (Adreno 610)
+Passo a passo, do clone do repositório até o jogo rodando no modo nativo em um dispositivo Android
 com o fallback sem descriptor indexing (método A), sem precisar do driver Turnip.
 
 ## 1. Pré-requisitos (PC Linux)
@@ -83,7 +83,7 @@ mkdir -p ~/.local/share/fh2-tools
 **spirv-val / spirv-opt** (já vêm no Android NDK):
 
 ```sh
-ls $HOME/Android/Sdk/ndk/28.2.13676358/shader-tools/linux-x86_64/
+ls $HOME/Android/Sdk/ndk/*/shader-tools/linux-x86_64/
 # deve conter spirv-val e spirv-opt
 ```
 
@@ -119,43 +119,43 @@ O APK fica em:
 android/app/build/outputs/apk/release/app-release.apk
 ```
 
-## 9. Instalar somente no Moto G9 Play via ADB
+## 9. Instalar no dispositivo Android via ADB
 
 ```sh
 adb devices -l
-# confirme que aparece 0074545453 (moto_g_9__play)
+# confirme o serial do seu dispositivo na lista
 
-adb -s 0074545453 install -r android/app/build/outputs/apk/release/app-release.apk
+adb -s <SEU_SERIAL> install -r android/app/build/outputs/apk/release/app-release.apk
 ```
 
-## 10. Preparar os arquivos do jogo no celular
+## 10. Preparar os arquivos do jogo no dispositivo
 
-Copie a pasta extraída ou o ISO para o armazenamento do celular:
+Copie a pasta extraída ou o ISO para o armazenamento do dispositivo:
 
 ```sh
 # opção A: pasta extraída
-adb -s 0074545453 push assets/game_root /sdcard/jogos/ForzaHorizon2
+adb -s <SEU_SERIAL> push assets/game_root /sdcard/jogos/ForzaHorizon2
 
 # opção B: ISO (se preferir ler direto da imagem)
-adb -s 0074545453 push /caminho/para/SeuForzaHorizon2.iso /sdcard/jogos/
+adb -s <SEU_SERIAL> push /caminho/para/SeuForzaHorizon2.iso /sdcard/jogos/
 ```
 
 E a biblioteca de shaders:
 
 ```sh
-adb -s 0074545453 push app/out/shaders_fh2/fh2_shaders.nfsp /sdcard/jogos/ForzaHorizon2/
+adb -s <SEU_SERIAL> push app/out/shaders_fh2/fh2_shaders.nfsp /sdcard/jogos/ForzaHorizon2/
 ```
 
 A biblioteca deve ficar ao lado dos arquivos do jogo (ou ao lado do ISO), pois o renderizador nativo a carrega de `fh2_nativo_biblioteca_dir`.
 
-## 11. Configurar o launcher no celular
+## 11. Configurar o launcher no dispositivo
 
-Abra o app no Moto G9 Play e defina:
+Abra o app no dispositivo Android e defina:
 
 | Ajuste | Valor |
 |--------|-------|
 | Renderizador | **Native** |
-| Resolução | 720p ou menor (50% recomendado no Adreno 610) |
+| Resolução | 720p ou menor (recomendado 50% ou menos em GPUs Adreno) |
 | Anti-aliasing | Off |
 | Driver de GPU | Sistema (vazio) — não precisa de Turnip para o fallback |
 | FPS | 30 |
@@ -167,17 +167,17 @@ No arquivo de opções (ou via menu), garanta que está ativo:
 --fh2_nativo_sin_indexing=true     # FORÇA o fallback sem descriptor indexing
 ```
 
-O `sin_indexing` auto-liga quando falta `runtimeDescriptorArray` (caso do driver stock do Adreno 610), mas forçar com `true` garante o caminho A mesmo que a detecção mude.
+O `sin_indexing` auto-liga quando falta `runtimeDescriptorArray` (caso de drivers stock de algumas GPUs Adreno), mas forçar com `true` garante o caminho A mesmo que a detecção mude.
 
 ## 12. Iniciar o jogo
 
-Toque em **Jogar**. O renderizador nativo deve agora inicializar no Adreno 610 sem exigir o Turnip.
+Toque em **Jogar**. O renderizador nativo deve inicializar sem exigir o Turnip.
 
 Se a tela continuar preta, gere o diagnóstico e confira o log:
 
 ```sh
 # no launcher, About > Diagnostics > criar relatório
-adb -s 0074545453 pull /sdcard/jogos/fh2-logs/fh2_$(date +%Y%m%d)_*.log .
+adb -s <SEU_SERIAL> pull /sdcard/jogos/fh2-logs/fh2_$(date +%Y%m%d)_*.log .
 ```
 
 Procure por:
@@ -212,12 +212,12 @@ tools/xenos/biblioteca.sh
 export ANDROID_HOME="$HOME/Android/Sdk"
 ./build_android.sh
 
-# 7. instalar só no Moto G9 Play
-adb -s 0074545453 install -r android/app/build/outputs/apk/release/app-release.apk
+# 7. instalar no dispositivo Android
+adb -s <SEU_SERIAL> install -r android/app/build/outputs/apk/release/app-release.apk
 
 # 8. enviar dados e shader
-adb -s 0074545453 push assets/game_root /sdcard/jogos/ForzaHorizon2
-adb -s 0074545453 push app/out/shaders_fh2/fh2_shaders.nfsp /sdcard/jogos/ForzaHorizon2/
+adb -s <SEU_SERIAL> push assets/game_root /sdcard/jogos/ForzaHorizon2
+adb -s <SEU_SERIAL> push app/out/shaders_fh2/fh2_shaders.nfsp /sdcard/jogos/ForzaHorizon2/
 ```
 
 A partir daí, configure **Native** no launcher e jogue.
