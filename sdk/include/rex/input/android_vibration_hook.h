@@ -7,7 +7,8 @@ extern "C" {
 
 /** Register callbacks for Android phone vibration. Called by the Android app at startup. */
 void rex_android_vibration_register_hooks(void (*vibrate)(int duration_ms, int intensity),
-                                          bool (*enabled)(void));
+                                          bool (*enabled)(void),
+                                          bool (*with_gamepad)(void));
 
 /** Call these from the SDL input driver when the gamepad rumbles. */
 bool rex_android_vibration_enabled(void);

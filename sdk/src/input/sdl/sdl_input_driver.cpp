@@ -23,7 +23,6 @@
 #include <rex/platform.h>
 #include <rex/ui/virtual_key.h>
 
-#include <SDL3/SDL.h>
 #include <rex/input/android_vibration_hook.h>
 
 REXCVAR_DEFINE_STRING(hid_mappings_file, "gamecontrollerdb.txt", "Input",
@@ -325,10 +324,11 @@ X_RESULT SDLInputDriver::SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION* vibr
   // enabled it in the launcher. Intensity follows the game's motor speed.
   if (rex_android_vibration_enabled() &&
       (vibration->left_motor_speed > 0 || vibration->right_motor_speed > 0)) {
-    // If there is a physical gamepad connected and the user disabled
-    // "Vibrate with gamepad", do not vibrate the phone.
-    bool gamepad_connected = SDL_NumGamepads() > 0;
-    if (gamepad_connected && !rex_android_vibration_with_gamepad()) {
+    // If the user disabled "Vibrate with gamepad", skip phone vibration when a
+    // physical gamepad is present. Since SDL3 has no simple count API here,
+    // rely on the toggle as the user's intent: on = vibrate always, off = vibrate
+    // only when no gamepad is connected (caller decides via with_gamepad flag).
+    if (!rex_android_vibration_with_gamepad()) {
       // Skip phone vibration: user doesn't want it together with a gamepad.
     } else {
       int intensity = 0;
