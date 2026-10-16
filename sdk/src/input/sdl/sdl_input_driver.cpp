@@ -23,6 +23,7 @@
 #include <rex/platform.h>
 #include <rex/ui/virtual_key.h>
 
+#include <SDL3/SDL.h>
 #include <rex/input/android_vibration_hook.h>
 
 REXCVAR_DEFINE_STRING(hid_mappings_file, "gamecontrollerdb.txt", "Input",
@@ -324,16 +325,23 @@ X_RESULT SDLInputDriver::SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION* vibr
   // enabled it in the launcher. Intensity follows the game's motor speed.
   if (rex_android_vibration_enabled() &&
       (vibration->left_motor_speed > 0 || vibration->right_motor_speed > 0)) {
-    int intensity = 0;
-    if (vibration->left_motor_speed > vibration->right_motor_speed)
-      intensity = (int)vibration->left_motor_speed;
-    else
-      intensity = (int)vibration->right_motor_speed;
-    // Scale 0-65535 motor speed to 0-100 intensity.
-    intensity = (intensity * 100) / 0xFFFF;
-    if (intensity < 1) intensity = 1;
-    if (intensity > 100) intensity = 100;
-    rex_android_vibration_vibrate(kRumbleDurationMs, intensity);
+    // If there is a physical gamepad connected and the user disabled
+    // "Vibrate with gamepad", do not vibrate the phone.
+    bool gamepad_connected = SDL_NumGamepads() > 0;
+    if (gamepad_connected && !rex_android_vibration_with_gamepad()) {
+      // Skip phone vibration: user doesn't want it together with a gamepad.
+    } else {
+      int intensity = 0;
+      if (vibration->left_motor_speed > vibration->right_motor_speed)
+        intensity = (int)vibration->left_motor_speed;
+      else
+        intensity = (int)vibration->right_motor_speed;
+      // Scale 0-65535 motor speed to 0-100 intensity.
+      intensity = (intensity * 100) / 0xFFFF;
+      if (intensity < 1) intensity = 1;
+      if (intensity > 100) intensity = 100;
+      rex_android_vibration_vibrate(kRumbleDurationMs, intensity);
+    }
   }
 
   return rumbled ? X_ERROR_SUCCESS : X_ERROR_FUNCTION_FAILED;

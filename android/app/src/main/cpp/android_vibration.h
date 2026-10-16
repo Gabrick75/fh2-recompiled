@@ -12,6 +12,9 @@ void fh2_android_vibrate(int durationMs, int intensity);
 /** Returns true if the user enabled phone vibration in the launcher (VIBRATION_PHONE). */
 bool fh2_android_vibration_enabled(void);
 
+/** Returns true if the user enabled phone vibration together with a connected gamepad. */
+bool fh2_android_vibration_with_gamepad(void);
+
 #ifdef __cplusplus
 }
 #endif

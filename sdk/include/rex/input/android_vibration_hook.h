@@ -11,6 +11,7 @@ void rex_android_vibration_register_hooks(void (*vibrate)(int duration_ms, int i
 
 /** Call these from the SDL input driver when the gamepad rumbles. */
 bool rex_android_vibration_enabled(void);
+bool rex_android_vibration_with_gamepad(void);
 void rex_android_vibration_vibrate(int duration_ms, int intensity);
 
 #ifdef __cplusplus

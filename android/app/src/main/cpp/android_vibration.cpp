@@ -11,6 +11,7 @@ static JavaVM* g_vm = nullptr;
 
 static void vibrate_via_java(int durationMs, int intensity);
 static bool vibration_enabled_via_java(void);
+static bool vibration_with_gamepad_via_java(void);
 
 static void app_vibrate_cb(int duration_ms, int intensity) {
     vibrate_via_java(duration_ms, intensity);
@@ -20,9 +21,14 @@ static bool app_vibration_enabled_cb(void) {
     return vibration_enabled_via_java();
 }
 
+static bool app_vibration_with_gamepad_cb(void) {
+    return vibration_with_gamepad_via_java();
+}
+
 extern "C" jint JNI_OnLoad(JavaVM* vm, void*) {
     g_vm = vm;
-    rex_android_vibration_register_hooks(app_vibrate_cb, app_vibration_enabled_cb);
+    rex_android_vibration_register_hooks(app_vibrate_cb, app_vibration_enabled_cb,
+                                         app_vibration_with_gamepad_cb);
     LOGV("JNI_OnLoad: stored JavaVM and registered vibration hooks");
     return JNI_VERSION_1_6;
 }
@@ -225,8 +231,87 @@ static bool vibration_enabled_via_java(void) {
     return enabled == JNI_TRUE;
 }
 
+static bool vibration_with_gamepad_via_java(void) {
+    if (!g_vm) {
+        return false;
+    }
+
+    JNIEnv* env = nullptr;
+    jint rs = g_vm->AttachCurrentThread(&env, nullptr);
+    if (rs != JNI_OK || !env) {
+        return false;
+    }
+
+    jclass activityThread = env->FindClass("android/app/ActivityThread");
+    if (!activityThread) {
+        g_vm->DetachCurrentThread();
+        return false;
+    }
+
+    jmethodID currentApplication = env->GetStaticMethodID(activityThread, "currentApplication",
+                                                          "()Landroid/app/Application;");
+    if (!currentApplication) {
+        g_vm->DetachCurrentThread();
+        return false;
+    }
+
+    jobject application = env->CallStaticObjectMethod(activityThread, currentApplication);
+    if (!application) {
+        g_vm->DetachCurrentThread();
+        return false;
+    }
+
+    jclass context = env->FindClass("android/content/Context");
+    if (!context) {
+        g_vm->DetachCurrentThread();
+        return false;
+    }
+
+    jmethodID getSharedPreferences = env->GetMethodID(context, "getSharedPreferences",
+                                                      "(Ljava/lang/String;I)Landroid/content/SharedPreferences;");
+    if (!getSharedPreferences) {
+        g_vm->DetachCurrentThread();
+        return false;
+    }
+
+    jstring prefsName = env->NewStringUTF("fh2_game");
+    jobject prefs = env->CallObjectMethod(application, getSharedPreferences, prefsName, 0);
+    env->DeleteLocalRef(prefsName);
+    if (!prefs) {
+        g_vm->DetachCurrentThread();
+        return false;
+    }
+
+    jclass prefsClass = env->FindClass("android/content/SharedPreferences");
+    if (!prefsClass) {
+        env->DeleteLocalRef(prefs);
+        g_vm->DetachCurrentThread();
+        return false;
+    }
+
+    jmethodID getBoolean = env->GetMethodID(prefsClass, "getBoolean",
+                                            "(Ljava/lang/String;Z)Z");
+    if (!getBoolean) {
+        env->DeleteLocalRef(prefs);
+        g_vm->DetachCurrentThread();
+        return false;
+    }
+
+    jstring key = env->NewStringUTF("vibration_with_gamepad");
+    jboolean enabled = env->CallBooleanMethod(prefs, getBoolean, key, JNI_TRUE);
+    env->DeleteLocalRef(key);
+    env->DeleteLocalRef(prefs);
+    g_vm->DetachCurrentThread();
+
+    return enabled == JNI_TRUE;
+}
+
 extern "C" bool fh2_android_vibration_enabled(void) {
     return vibration_enabled_via_java();
+}
+
+extern "C" bool fh2_android_vibration_with_gamepad(void) {
+    return vibration_with_gamepad_via_java();
 }
 
 extern "C" void fh2_android_vibrate(int durationMs, int intensity) {
