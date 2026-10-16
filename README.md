@@ -6,6 +6,8 @@
 
 [Português](README.pt-BR.md) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [License: GPL-3.0](LICENSE)
 
+[![Discord](https://img.shields.io/badge/Discord-Join%20the%20server-5865F2?logo=discord&logoColor=white)](https://discord.gg/tpwfAyYy3Q)
+
 </div>
 
 > [!IMPORTANT]
