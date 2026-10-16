@@ -30,7 +30,25 @@ else
   echo "[info] thirdparty já presente; pulando download."
 fi
 
-# ---- 2. binário rexglue host (gera app/generated); compila se ausente ----
+# ---- 2. dependências de sistema do SDL3/X11 (falha fatal sem elas; instala sozinho) ----
+DEPS_SDL="libasound2-dev libdbus-1-dev libdecor-0-dev libegl1-mesa-dev libpipewire-0.3-dev libpulse-dev libudev-dev libwayland-dev libx11-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev libxkbcommon-dev libxrandr-dev libxss-dev libxtst-dev"
+if [ ! -f /usr/include/X11/extensions/XTest.h ]; then
+  echo "[info] instalando dependências de build do SDL3/X11..."
+  if command -v apt-get >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
+    sudo apt-get update && sudo apt-get install -y $DEPS_SDL || {
+      echo "ERRO: falha ao instalar dependências; rode manualmente:" >&2
+      echo "      sudo apt-get install -y $DEPS_SDL" >&2
+      exit 1
+    }
+  else
+    echo "ERRO: cabeçalhos X11 ausentes e sem apt-get/sudo automático." >&2
+    echo "      No Ubuntu/Pop!_OS, rode: sudo apt-get install -y $DEPS_SDL" >&2
+    echo "      (lista completa: https://wiki.libsdl.org/SDL3/README-linux)" >&2
+    exit 1
+  fi
+fi
+
+# ---- 3. binário rexglue host (gera app/generated); compila se ausente ----
 REXGLUE="$RAIZ/sdk/out/linux-amd64/rexglue"
 if [ ! -x "$REXGLUE" ]; then
   echo "[info] compilando o rexglue host (só na primeira vez; demora)..."
@@ -43,7 +61,7 @@ else
 fi
 [ -x "$REXGLUE" ] || { echo "ERRO: binário rexglue não gerado em $REXGLUE." >&2; exit 1; }
 
-# ---- 3. codegen (gera app/generated; ~7 min na primeira vez) ----
+# ---- 4. codegen (gera app/generated; ~7 min na primeira vez) ----
 echo "[info] rodando codegen..."
 REXGLUE="$REXGLUE" PYTHON="$PYBIN" "$RAIZ/tools/codegen.sh" app || exit 1
 [ -f "$RAIZ/app/generated/rexglue.cmake" ] || {
@@ -55,7 +73,7 @@ REXGLUE="$REXGLUE" PYTHON="$PYBIN" "$RAIZ/tools/codegen.sh" app || exit 1
   exit 1
 }
 
-# ---- 4. configure + build do app (passo 5 do tutorial) ----
+# ---- 5. configure + build do app (passo 5 do tutorial) ----
 echo "[info] configurando e compilando o app..."
 cmake -S "$RAIZ/app" -B "$RAIZ/app/out/linux" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER="$CC_BIN" -DCMAKE_CXX_COMPILER="$CXX_BIN" \

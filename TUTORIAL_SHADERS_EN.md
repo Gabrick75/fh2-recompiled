@@ -7,8 +7,13 @@ using the fallback without descriptor indexing (method A), without needing the T
 
 ```sh
 sudo apt update
-sudo apt install -y git clang-20 clang++-20 cmake ninja-build python3 openjdk-17-jdk unzip wget curl
+sudo apt install -y git clang-20 clang++-20 cmake ninja-build python3 openjdk-17-jdk unzip wget curl \
+  libasound2-dev libdbus-1-dev libdecor-0-dev libegl1-mesa-dev libpipewire-0.3-dev libpulse-dev \
+  libudev-dev libwayland-dev libx11-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev \
+  libxkbcommon-dev libxrandr-dev libxss-dev libxtst-dev
 ```
+
+(The `lib*` packages are the SDL3/X11 build dependencies; without them the SDK configure fails. `./build_pc.sh` installs any missing ones itself.)
 
 Verify:
 

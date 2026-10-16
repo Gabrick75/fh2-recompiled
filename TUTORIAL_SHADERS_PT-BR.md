@@ -7,8 +7,13 @@ com o fallback sem descriptor indexing (método A), sem precisar do driver Turni
 
 ```sh
 sudo apt update
-sudo apt install -y git clang-20 clang++-20 cmake ninja-build python3 openjdk-17-jdk unzip wget curl
+sudo apt install -y git clang-20 clang++-20 cmake ninja-build python3 openjdk-17-jdk unzip wget curl \
+  libasound2-dev libdbus-1-dev libdecor-0-dev libegl1-mesa-dev libpipewire-0.3-dev libpulse-dev \
+  libudev-dev libwayland-dev libx11-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev \
+  libxkbcommon-dev libxrandr-dev libxss-dev libxtst-dev
 ```
+
+(Os pacotes `lib*` são as dependências de build do SDL3/X11; sem eles o configure do SDK falha. O `./build_pc.sh` instala sozinho o que faltar.)
 
 Verifique:
 
