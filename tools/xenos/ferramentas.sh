@@ -112,6 +112,7 @@ ferramentas_resolver_spirv() {
   for c in "$sdk/cmdline-tools/latest/bin/sdkmanager" "$sdk/cmdline-tools/bin/sdkmanager" "$sdk/tools/bin/sdkmanager"; do
     if [ -x "$c" ]; then sdkm="$c"; break; fi
   done
+  # condição de if é isenta do set -e: seguro mesmo quando sdkm já está setado
   if [ -z "$sdkm" ] && command -v sdkmanager >/dev/null 2>&1; then sdkm="sdkmanager"; fi
   if [ -z "$sdkm" ]; then
     echo "ERRO: NDK $FH2_NDK_VERSAO ausente e sdkmanager não encontrado em $sdk." >&2

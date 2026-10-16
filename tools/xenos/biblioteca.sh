@@ -87,7 +87,9 @@ else
 fi
 
 # xenos_hlsl retorna 2 quando algum shader é saltado (normal); só falha de verdade com outro código
-"$B/xenos_hlsl" "$S/contenedores" "$S/hlsl" "$COMUN" > "$S/traduccion.log" 2>&1; rc=$?
+# rc=0 + || : com set -e, `cmd; rc=$?` abortaria se cmd falhasse (o ; não protege)
+rc=0
+"$B/xenos_hlsl" "$S/contenedores" "$S/hlsl" "$COMUN" > "$S/traduccion.log" 2>&1 || rc=$?
 tail -1 "$S/traduccion.log"
 if [ $rc -ne 0 ] && [ $rc -ne 2 ]; then exit $rc; fi
 # grep sem match retorna 1: com pipefail isso abortaria o script (é só informativo)
