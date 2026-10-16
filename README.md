@@ -160,6 +160,11 @@ files on the phone (or next to the .iso), for example with `tools/enviar_bibliot
 Vulkan before it can be chosen. On Adreno 6xx and 7xx a Mesa Turnip build is often faster than the phone's own
 driver.
 
+## Tutorials
+
+- [Tutorial — Build do Android e biblioteca de shaders (português)](TUTORIAL_SHADERS_PT-BR.md): clone, codegen, biblioteca `fh2_shaders.nfsp`, APK, instalação no Moto G9 Play (Adreno 610) e configuração do renderizador nativo com fallback sem descriptor indexing (método A), sem Turnip.
+- [Tutorial — Android build and native shader library (English)](TUTORIAL_SHADERS_EN.md): same guide in English.
+
 ## Repository layout
 
 | Path | Contents |

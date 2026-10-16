@@ -161,6 +161,11 @@ celular (ou junto da .iso), por exemplo com `tools/enviar_biblioteca_android.sh`
 com Vulkan antes de deixar escolhê-lo. Nos Adreno 6xx e 7xx um Turnip (Mesa) costuma ser mais rápido que o
 driver do próprio celular.
 
+## Tutoriais
+
+- [Tutorial — Build do Android e biblioteca de shaders (português)](TUTORIAL_SHADERS_PT-BR.md): clone, codegen, biblioteca `fh2_shaders.nfsp`, APK, instalação no Moto G9 Play (Adreno 610) e configuração do renderizador nativo com fallback sem descriptor indexing (método A), sem Turnip.
+- [Tutorial — Android build and native shader library (English)](TUTORIAL_SHADERS_EN.md): mesmo guia em inglês.
+
 ## Estrutura do repositório
 
 | Caminho | Conteúdo |
