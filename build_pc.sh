@@ -1,0 +1,65 @@
+#!/bin/bash
+# Build completo do PC (passo 5 do tutorial) sem nada manual: SDK host (rexglue) ->
+# codegen (app/generated) -> cmake configure -> cmake build.
+# Idempotente: o ninja pula o que já está feito; o codegen roda sempre.
+#
+#   ./build_pc.sh
+#
+# Precisa antes: passo 4 do tutorial (assets/game_root com default.xex extraído
+# do seu próprio ISO). O resto (thirdparty, binário rexglue, generated) é feito aqui.
+set -euo pipefail
+
+RAIZ=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+CC_BIN=${CC:-clang-20}
+CXX_BIN=${CXX:-clang++-20}
+PYBIN=${PYTHON:-python3}
+
+# ---- 0. jogo extraído (não há como baixar: é do ISO do jogador) ----
+if [ ! -f "$RAIZ/assets/game_root/default.xex" ]; then
+  echo "ERRO: assets/game_root/default.xex não encontrado." >&2
+  echo "      Extraia seu próprio ISO primeiro (passo 4 do tutorial):" >&2
+  echo "      python3 tools/fase1_extraer.py /caminho/para/SeuForzaHorizon2.iso -o assets/game_root" >&2
+  exit 1
+fi
+
+# ---- 1. fontes de terceiros do SDK (passo 3; pula se já feito) ----
+if [ ! -f "$RAIZ/sdk/thirdparty/CMakeLists.txt" ]; then
+  echo "[info] baixando fontes de terceiros do SDK..."
+  "$PYBIN" "$RAIZ/tools/fetch_thirdparty.py" || exit 1
+else
+  echo "[info] thirdparty já presente; pulando download."
+fi
+
+# ---- 2. binário rexglue host (gera app/generated); compila se ausente ----
+REXGLUE="$RAIZ/sdk/out/linux-amd64/rexglue"
+if [ ! -x "$REXGLUE" ]; then
+  echo "[info] compilando o rexglue host (só na primeira vez; demora)..."
+  command -v "$CC_BIN" >/dev/null 2>&1 || { echo "ERRO: $CC_BIN não encontrado." >&2; exit 1; }
+  cmake -S "$RAIZ/sdk" -B "$RAIZ/sdk/out/linux-amd64" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER="$CC_BIN" -DCMAKE_CXX_COMPILER="$CXX_BIN" || exit 1
+  cmake --build "$RAIZ/sdk/out/linux-amd64" --target rexglue || exit 1
+else
+  echo "[info] rexglue host já presente; pulando compilação."
+fi
+[ -x "$REXGLUE" ] || { echo "ERRO: binário rexglue não gerado em $REXGLUE." >&2; exit 1; }
+
+# ---- 3. codegen (gera app/generated; ~7 min na primeira vez) ----
+echo "[info] rodando codegen..."
+REXGLUE="$REXGLUE" PYTHON="$PYBIN" "$RAIZ/tools/codegen.sh" app || exit 1
+[ -f "$RAIZ/app/generated/rexglue.cmake" ] || {
+  echo "ERRO: codegen não gerou app/generated/rexglue.cmake; veja app/codegen.log." >&2
+  exit 1
+}
+[ -f "$RAIZ/app/generated/default/sources.cmake" ] || {
+  echo "ERRO: codegen não gerou app/generated/default/sources.cmake; veja app/codegen.log." >&2
+  exit 1
+}
+
+# ---- 4. configure + build do app (passo 5 do tutorial) ----
+echo "[info] configurando e compilando o app..."
+cmake -S "$RAIZ/app" -B "$RAIZ/app/out/linux" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER="$CC_BIN" -DCMAKE_CXX_COMPILER="$CXX_BIN" \
+  -DREXSDK_DIR="$RAIZ/sdk" || exit 1
+cmake --build "$RAIZ/app/out/linux" || exit 1
+
+echo "[ok] build do PC pronto: $RAIZ/app/out/linux/fh2"

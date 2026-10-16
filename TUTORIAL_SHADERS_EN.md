@@ -49,16 +49,15 @@ python3 tools/fase1_extraer.py /path/to/YourForzaHorizon2.iso -o assets/game_roo
 
 The `assets/game_root/` folder is ignored by Git and must never be shared.
 
-## 5. Run codegen on PC (generates `app/generated`)
+## 5. PC build: host SDK, codegen and app (generates `app/generated`)
+
+A single command does everything (builds the SDK `rexglue` host if needed, runs codegen over your game and builds the app; slow the first time):
 
 ```sh
-cmake -S app -B app/out/linux -G Ninja -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_C_COMPILER=clang-20 -DCMAKE_CXX_COMPILER=clang++-20 \
-      -DREXSDK_DIR="$PWD/sdk"
-cmake --build app/out/linux
+./build_pc.sh
 ```
 
-This generates `app/generated/default/sources.cmake`, required for the Android build.
+This generates `app/generated/rexglue.cmake` and `app/generated/default/sources.cmake`, required for the Android build.
 
 ## 6. Shader library tools (automatic)
 
@@ -178,10 +177,8 @@ python3 tools/fetch_thirdparty.py
 # 3. extract game (your ISO)
 python3 tools/fase1_extraer.py YourFH2.iso -o assets/game_root
 
-# 4. PC codegen
-cmake -S app -B app/out/linux -G Ninja -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_C_COMPILER=clang-20 -DCMAKE_CXX_COMPILER=clang++-20 -DREXSDK_DIR="$PWD/sdk"
-cmake --build app/out/linux
+# 4. PC build (host SDK + codegen + app)
+./build_pc.sh
 
 # 5. shader library (exact toolchain downloaded itself)
 tools/xenos/biblioteca.sh

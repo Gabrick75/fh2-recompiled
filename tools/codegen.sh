@@ -6,15 +6,26 @@
 #
 # The second and third arguments are for the trees made by tools/editions/crear_arbol.py: the list of hooked
 # functions of that edition and the address table used to create it (see docs/editions.md).
-# Set PYTHON if the Python launcher is not "python" (on Windows it is usually "py").
+# Set PYTHON if the Python launcher is neither "python3" nor "python" (on Windows it is usually "py").
 set -e
 RAIZ=$(cd "$(dirname "$0")/.." && pwd)
 APP=$RAIZ/${1:?usage: tools/codegen.sh <app folder> [hooked functions] [address table]}
 REXGLUE=${REXGLUE:?set REXGLUE to the rexglue executable built from sdk/}
-PY=${PYTHON:-python}
+if [ -n "${PYTHON:-}" ]; then
+  PY="$PYTHON"
+elif command -v python3 >/dev/null 2>&1; then
+  PY=python3
+else
+  PY=python
+fi
 cd "$APP"
 echo "== codegen ($APP)"
-"$REXGLUE" codegen nfsmw_manifest.toml > codegen.log 2>&1 || { echo "codegen failed, see $APP/codegen.log"; exit 1; }
+if [ -f fh2_manifest.toml ]; then
+  MANIFIESTO=fh2_manifest.toml
+else
+  MANIFIESTO=nfsmw_manifest.toml
+fi
+"$REXGLUE" codegen "$MANIFIESTO" > codegen.log 2>&1 || { echo "codegen failed, see $APP/codegen.log"; exit 1; }
 cd "$RAIZ"
 echo "== direct calls"
 if [ -n "${2:-}" ]; then
@@ -23,7 +34,9 @@ else
   "$PY" tools/llamadas_directas.py --gen "$APP/generated/default"
 fi
 echo "== literal copies"
-if [ -n "${3:-}" ]; then
+if [ ! -f "$RAIZ/tools/copia_literal.py" ]; then
+  echo "[aviso] sin tools/copia_literal.py; omitiendo copias literales."
+elif [ -n "${3:-}" ]; then
   "$PY" tools/copia_literal.py "$APP/generated/default" "$APP/src/copias_literales" --tabla "$RAIZ/$3"
 else
   "$PY" tools/copia_literal.py "$APP/generated/default" "$APP/src/copias_literales"
