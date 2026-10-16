@@ -60,30 +60,18 @@ cmake --build app/out/linux
 
 Isso gera `app/generated/default/sources.cmake`, obrigatório para o build do Android.
 
-## 6. Instalar ferramentas para gerar a biblioteca de shaders
+## 6. Ferramentas da biblioteca de shaders (automático)
 
-A biblioteca `fh2_shaders.nfsp` precisa de DXC e spirv-val/opt.
+A biblioteca `fh2_shaders.nfsp` precisa de DXC (HLSL → SPIR-V) e spirv-val/opt. **Nada manual:** o `tools/xenos/biblioteca.sh` baixa sozinho as versões exatas e travadas (iguais em todo PC):
+- DXC `v1.9.2607` do GitHub (~490 MB, download único, com checagem sha256);
+- SPIR-V do NDK `29.0.14206865`, instalado sozinho via `sdkmanager` (precisa do Android SDK com cmdline-tools e Java).
 
-**DXC** (HLSL → SPIR-V):
-
-```sh
-mkdir -p ~/.local/share/fh2-tools
-# Baixe um release do DXC (https://github.com/microsoft/DirectXShaderCompiler)
-# e coloque em: ~/.local/share/fh2-tools/dxc-<versao>/bin/dxc
-```
-
-**spirv-val / spirv-opt** (já vêm no Android NDK):
-
-```sh
-ls $HOME/Android/Sdk/ndk/*/shader-tools/linux-x86_64/
-# deve conter spirv-val e spirv-opt
-```
+Se as versões locais divergirem, o script avisa, baixa/instala as exatas e segue. Não instale DXC nem NDK manualmente para isso.
 
 ## 7. Gerar a biblioteca de shaders (modo nativo)
 
 ```sh
-export DXC=~/.local/share/fh2-tools/dxc-*/bin/dxc   # ajuste o caminho real
-tools/xenos/biblioteca.sh
+tools/xenos/biblioteca.sh   # baixa sozinho o toolchain exato (DXC + NDK)
 ```
 
 O que acontece:
@@ -195,8 +183,7 @@ cmake -S app -B app/out/linux -G Ninja -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_C_COMPILER=clang-20 -DCMAKE_CXX_COMPILER=clang++-20 -DREXSDK_DIR="$PWD/sdk"
 cmake --build app/out/linux
 
-# 5. biblioteca shaders
-export DXC=~/.local/share/fh2-tools/dxc-*/bin/dxc
+# 5. biblioteca shaders (toolchain exato baixado sozinho)
 tools/xenos/biblioteca.sh
 
 # 6. build APK
