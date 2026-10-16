@@ -9,7 +9,7 @@ extern "C" {
 void rex_android_vibration_register_hooks(void (*vibrate)(int duration_ms, int intensity),
                                           bool (*enabled)(void));
 
-/** Call these from the SDL input driver when the gamepad rumbles. Defined in sdk/src/input/. */
+/** Call these from the SDL input driver when the gamepad rumbles. */
 bool rex_android_vibration_enabled(void);
 void rex_android_vibration_vibrate(int duration_ms, int intensity);
 
