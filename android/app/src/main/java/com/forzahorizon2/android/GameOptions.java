@@ -298,6 +298,11 @@ final class GameOptions {
     static List<String> arguments(Context context) {
         List<String> args = new ArrayList<>();
         args.add("--audio_ganancia_pct=" + get(context, VOLUME));
+        // Phone vibration (android_vibration.cpp): read once at start, never through the JVM per frame.
+        args.add("--fh2_android_vibracao=" + flag(context, VIBRATION_PHONE));
+        String vibrationMode = get(context, VIBRATION_MODE);
+        if (!"phone".equals(vibrationMode) && !"gamepad".equals(vibrationMode)) vibrationMode = "both";
+        args.add("--fh2_android_vibracao_modo=" + vibrationMode);  // never empty: the cvar parser aborts on it
         GpuDrivers.arguments(context, args);  // the chosen Vulkan driver, or the system's
         // The FPS limit is the guest vblank rate (fpsLimit).
         args.add("--video_mode_refresh_rate=" + vblankRate(context));

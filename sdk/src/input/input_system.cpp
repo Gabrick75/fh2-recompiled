@@ -31,13 +31,6 @@
 
 extern "C" bool fx2_android_vibration_enabled(void);
 
-#ifdef __ANDROID__
-#include <android/log.h>
-#define VIBRATION_LOG(...) __android_log_print(ANDROID_LOG_INFO, "FH2Vibration", __VA_ARGS__)
-#else
-#define VIBRATION_LOG(...) ((void)0)
-#endif
-
 #if REX_PLATFORM_SWITCH
 REXCVAR_DEFINE_STRING(input_backend, "switch", "Input", "Input backend: switch")
     .allowed({"switch"});
@@ -316,9 +309,6 @@ X_RESULT InputSystem::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration
   if (!REXCVAR_GET(input_vibracion) && !fx2_android_vibration_enabled()) {
     vibration = &sin_vibracion;
   }
-  VIBRATION_LOG("InputSystem::SetState: left=%u right=%u vib_enabled=%d",
-                vibration->left_motor_speed, vibration->right_motor_speed,
-                fx2_android_vibration_enabled());
   for (DeviceId id : ids) {
     auto* driver = DriverForDevice(id);
     const DeviceInfo* info = DeviceInfoFor(id);

@@ -1,345 +1,177 @@
 #include <jni.h>
 #include <android/log.h>
+#include <pthread.h>
+
 #include <string>
+
+#include <rex/cvar.h>
 
 #include "android_vibration.h"
 #include "../../../../../sdk/include/rex/input/android_vibration_hook.h"
 
-#define LOGV(...) __android_log_print(ANDROID_LOG_VERBOSE, "FH2Vibration", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "FH2Vibration", __VA_ARGS__)
 
-static JavaVM* g_vm = nullptr;
+// The launcher's "Vibração" options come as arguments (GameOptions.arguments), like every other option: the
+// game asks for them on every XInputSetState (once per frame), so they must cost a variable read, not a trip
+// through the JVM.
+REXCVAR_DEFINE_BOOL(fh2_android_vibracao, true, "FH2",
+                    "Android: the phone vibrates when the game rumbles (the launcher's Vibração toggle)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_STRING(fh2_android_vibracao_modo, "both", "FH2",
+                      "Android: what vibrates when the game rumbles: phone, gamepad or both")
+    .allowed({"phone", "gamepad", "both"})
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
-static void vibrate_via_java(int durationMs, int intensity);
-static bool vibration_enabled_via_java(void);
-static std::string vibration_mode_via_java();
+namespace {
 
-static void app_vibrate_cb(int duration_ms, int intensity) {
-    vibrate_via_java(duration_ms, intensity);
+JavaVM* g_vm = nullptr;
+
+// Looked up once (JNI_OnLoad, on a Java thread): the Vibrator service and the methods vibrate_via_java calls.
+jobject g_vibrator = nullptr;  // global ref
+jclass g_vibration_effect = nullptr;  // global ref, null before API 26
+jmethodID g_create_one_shot = nullptr;
+jmethodID g_vibrate_effect = nullptr;
+jmethodID g_vibrate_ms = nullptr;
+
+// Threads this file attached to the JVM are detached when they exit, not after every call: an attach creates a
+// java.lang.Thread each time. Threads that were already attached (Java's, SDL's) are never detached here.
+pthread_key_t g_detach_key;
+pthread_once_t g_detach_once = PTHREAD_ONCE_INIT;
+
+void DetachAtExit(void*) {
+  if (g_vm) {
+    g_vm->DetachCurrentThread();
+  }
 }
 
-static bool app_vibration_enabled_cb(void) {
-    return vibration_enabled_via_java();
+void CreateDetachKey() { pthread_key_create(&g_detach_key, DetachAtExit); }
+
+JNIEnv* EnvForThisThread() {
+  if (!g_vm) {
+    return nullptr;
+  }
+  JNIEnv* env = nullptr;
+  if (g_vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_OK) {
+    return env;
+  }
+  if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK || !env) {
+    return nullptr;
+  }
+  pthread_once(&g_detach_once, CreateDetachKey);
+  pthread_setspecific(g_detach_key, env);
+  return env;
 }
 
-static const char* app_vibration_mode_cb(void) {
-    static std::string cached = vibration_mode_via_java();
-    return cached.c_str();
+bool ClearException(JNIEnv* env) {
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    return true;
+  }
+  return false;
 }
+
+void LookUpVibrator(JNIEnv* env) {
+  jclass activity_thread = env->FindClass("android/app/ActivityThread");
+  jmethodID current_application =
+      activity_thread ? env->GetStaticMethodID(activity_thread, "currentApplication", "()Landroid/app/Application;")
+                      : nullptr;
+  jobject application = current_application ? env->CallStaticObjectMethod(activity_thread, current_application)
+                                            : nullptr;
+  jclass context = env->FindClass("android/content/Context");
+  jmethodID get_system_service =
+      context ? env->GetMethodID(context, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;") : nullptr;
+  jstring service = env->NewStringUTF("vibrator");  // Context.VIBRATOR_SERVICE
+  jobject vibrator = (application && get_system_service)
+                         ? env->CallObjectMethod(application, get_system_service, service)
+                         : nullptr;
+  jclass vibrator_class = env->FindClass("android/os/Vibrator");
+  if (ClearException(env) || !vibrator || !vibrator_class) {
+    LOGE("Vibrator service not available: the phone will not vibrate");
+    return;
+  }
+  g_vibrate_ms = env->GetMethodID(vibrator_class, "vibrate", "(J)V");
+  ClearException(env);
+  jclass effect = env->FindClass("android/os/VibrationEffect");
+  if (!ClearException(env) && effect) {
+    g_create_one_shot = env->GetStaticMethodID(effect, "createOneShot", "(JI)Landroid/os/VibrationEffect;");
+    g_vibrate_effect = env->GetMethodID(vibrator_class, "vibrate", "(Landroid/os/VibrationEffect;)V");
+    if (!ClearException(env) && g_create_one_shot && g_vibrate_effect) {
+      g_vibration_effect = static_cast<jclass>(env->NewGlobalRef(effect));
+    }
+  }
+  g_vibrator = env->NewGlobalRef(vibrator);
+}
+
+void vibrate_via_java(int duration_ms, int intensity) {
+  if (!g_vibrator) {
+    return;
+  }
+  JNIEnv* env = EnvForThisThread();
+  if (!env) {
+    return;
+  }
+  // amplitude 1-255 from intensity 0-100
+  int amplitude = intensity * 255 / 100;
+  if (amplitude < 1) amplitude = 1;
+  if (amplitude > 255) amplitude = 255;
+  // Local refs pile up on a native thread that never returns to Java: free them here.
+  if (env->PushLocalFrame(4) != JNI_OK) {
+    ClearException(env);
+    return;
+  }
+  bool done = false;
+  if (g_vibration_effect) {
+    jobject effect =
+        env->CallStaticObjectMethod(g_vibration_effect, g_create_one_shot, jlong(duration_ms), jint(amplitude));
+    if (!ClearException(env) && effect) {
+      env->CallVoidMethod(g_vibrator, g_vibrate_effect, effect);
+      done = !ClearException(env);
+    }
+  }
+  if (!done && g_vibrate_ms) {
+    env->CallVoidMethod(g_vibrator, g_vibrate_ms, jlong(duration_ms));
+    ClearException(env);
+  }
+  env->PopLocalFrame(nullptr);
+}
+
+bool vibration_enabled() { return REXCVAR_GET(fh2_android_vibracao); }
+
+// One of three literals: never a pointer into a string that can change.
+const char* vibration_mode() {
+  static const char* const mode = [] {
+    const std::string& value = REXCVAR_GET(fh2_android_vibracao_modo);
+    return value == "phone" ? "phone" : value == "gamepad" ? "gamepad" : "both";
+  }();
+  return mode;
+}
+
+void app_vibrate_cb(int duration_ms, int intensity) { vibrate_via_java(duration_ms, intensity); }
+
+bool app_vibration_enabled_cb(void) { return vibration_enabled(); }
+
+const char* app_vibration_mode_cb(void) { return vibration_mode(); }
+
+}  // namespace
 
 extern "C" jint JNI_OnLoad(JavaVM* vm, void*) {
-    g_vm = vm;
-    fx2_android_vibration_register_hooks(app_vibrate_cb, app_vibration_enabled_cb,
-                                         app_vibration_mode_cb);
-    LOGV("JNI_OnLoad: stored JavaVM and registered vibration hooks");
-    return JNI_VERSION_1_6;
+  g_vm = vm;
+  JNIEnv* env = nullptr;
+  if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_OK && env) {
+    LookUpVibrator(env);
+  }
+  fx2_android_vibration_register_hooks(app_vibrate_cb, app_vibration_enabled_cb, app_vibration_mode_cb);
+  return JNI_VERSION_1_6;
 }
 
-static void vibrate_via_java(int durationMs, int intensity) {
-    LOGE("vibrate_via_java: duration=%d intensity=%d g_vm=%p", durationMs, intensity,
-         (void*)g_vm);
-    if (!g_vm) {
-        LOGE("JavaVM not available");
-        return;
-    }
+extern "C" bool fh2_android_vibration_enabled(void) { return vibration_enabled(); }
 
-    JNIEnv* env = nullptr;
-    jint rs = g_vm->AttachCurrentThread(&env, nullptr);
-    if (rs != JNI_OK || !env) {
-        LOGE("could not attach thread to JVM");
-        return;
-    }
+extern "C" const char* fh2_android_vibration_mode(void) { return vibration_mode(); }
 
-    // amplitude 0-255 from intensity 0-100
-    int amplitude = (int)(((double)intensity / 100.0) * 255.0);
-    if (amplitude < 0) amplitude = 0;
-    if (amplitude > 255) amplitude = 255;
-
-    jclass activityThread = env->FindClass("android/app/ActivityThread");
-    if (!activityThread) {
-        LOGE("could not find ActivityThread");
-        g_vm->DetachCurrentThread();
-        return;
-    }
-
-    jmethodID currentApplication = env->GetStaticMethodID(activityThread, "currentApplication",
-                                                          "()Landroid/app/Application;");
-    if (!currentApplication) {
-        LOGE("could not find currentApplication");
-        g_vm->DetachCurrentThread();
-        return;
-    }
-
-    jobject application = env->CallStaticObjectMethod(activityThread, currentApplication);
-    if (!application) {
-        LOGE("could not get Application");
-        g_vm->DetachCurrentThread();
-        return;
-    }
-
-    jclass context = env->FindClass("android/content/Context");
-    if (!context) {
-        LOGE("could not find Context");
-        g_vm->DetachCurrentThread();
-        return;
-    }
-
-    jfieldID vibratorServiceField = env->GetStaticFieldID(context, "VIBRATOR_SERVICE",
-                                                          "Ljava/lang/String;");
-    if (!vibratorServiceField) {
-        LOGE("could not find VIBRATOR_SERVICE");
-        g_vm->DetachCurrentThread();
-        return;
-    }
-
-    jstring vibratorService = (jstring)env->GetStaticObjectField(context, vibratorServiceField);
-    if (!vibratorService) {
-        LOGE("could not get VIBRATOR_SERVICE string");
-        g_vm->DetachCurrentThread();
-        return;
-    }
-
-    jmethodID getSystemService = env->GetMethodID(context, "getSystemService",
-                                                  "(Ljava/lang/String;)Ljava/lang/Object;");
-    if (!getSystemService) {
-        LOGE("could not find getSystemService");
-        g_vm->DetachCurrentThread();
-        return;
-    }
-
-    jobject vibrator = env->CallObjectMethod(application, getSystemService, vibratorService);
-    if (!vibrator) {
-        LOGE("could not get Vibrator service");
-        g_vm->DetachCurrentThread();
-        return;
-    }
-
-    jclass vibratorClass = env->FindClass("android/os/Vibrator");
-    if (!vibratorClass) {
-        LOGE("could not find Vibrator class");
-        g_vm->DetachCurrentThread();
-        return;
-    }
-
-    bool usedEffect = false;
-    jclass vibrationEffectClass = env->FindClass("android/os/VibrationEffect");
-    if (vibrationEffectClass) {
-        jmethodID createOneShot = env->GetStaticMethodID(vibrationEffectClass, "createOneShot",
-                                                         "(JI)Landroid/os/VibrationEffect;");
-        if (createOneShot) {
-            jobject effect = env->CallStaticObjectMethod(vibrationEffectClass, createOneShot,
-                                                         (jlong)durationMs, (jint)amplitude);
-            if (effect) {
-                jmethodID vibrate = env->GetMethodID(vibratorClass, "vibrate",
-                                                     "(Landroid/os/VibrationEffect;)V");
-                if (vibrate) {
-                    env->CallVoidMethod(vibrator, vibrate, effect);
-                    LOGV("vibrate(VibrationEffect) duration=%d amplitude=%d", durationMs, amplitude);
-                    usedEffect = true;
-                } else {
-                    LOGE("could not find Vibrator.vibrate(VibrationEffect)");
-                }
-            } else {
-                LOGE("could not create VibrationEffect");
-            }
-        } else {
-            LOGE("could not find VibrationEffect.createOneShot");
-        }
-    }
-
-    if (!usedEffect) {
-        jmethodID vibrateMs = env->GetMethodID(vibratorClass, "vibrate", "(J)V");
-        if (vibrateMs) {
-            env->CallVoidMethod(vibrator, vibrateMs, (jlong)durationMs);
-            LOGV("vibrate(ms) duration=%d", durationMs);
-        } else {
-            LOGE("could not find Vibrator.vibrate(long)");
-        }
-    }
-
-    g_vm->DetachCurrentThread();
-}
-
-static bool vibration_enabled_via_java(void) {
-    LOGV("vibration_enabled_via_java: called");
-    if (!g_vm) {
-        LOGV("vibration_enabled_via_java: no g_vm");
-        return false;
-    }
-
-    JNIEnv* env = nullptr;
-    jint rs = g_vm->AttachCurrentThread(&env, nullptr);
-    if (rs != JNI_OK || !env) {
-        return false;
-    }
-
-    jclass activityThread = env->FindClass("android/app/ActivityThread");
-    if (!activityThread) {
-        g_vm->DetachCurrentThread();
-        return false;
-    }
-
-    jmethodID currentApplication = env->GetStaticMethodID(activityThread, "currentApplication",
-                                                          "()Landroid/app/Application;");
-    if (!currentApplication) {
-        g_vm->DetachCurrentThread();
-        return false;
-    }
-
-    jobject application = env->CallStaticObjectMethod(activityThread, currentApplication);
-    if (!application) {
-        g_vm->DetachCurrentThread();
-        return false;
-    }
-
-    jclass context = env->FindClass("android/content/Context");
-    if (!context) {
-        g_vm->DetachCurrentThread();
-        return false;
-    }
-
-    jmethodID getSharedPreferences = env->GetMethodID(context, "getSharedPreferences",
-                                                      "(Ljava/lang/String;I)Landroid/content/SharedPreferences;");
-    if (!getSharedPreferences) {
-        g_vm->DetachCurrentThread();
-        return false;
-    }
-
-    jstring prefsName = env->NewStringUTF("fh2_game");
-    jobject prefs = env->CallObjectMethod(application, getSharedPreferences, prefsName, 0);
-    env->DeleteLocalRef(prefsName);
-    if (!prefs) {
-        g_vm->DetachCurrentThread();
-        return false;
-    }
-
-    jclass prefsClass = env->FindClass("android/content/SharedPreferences");
-    if (!prefsClass) {
-        env->DeleteLocalRef(prefs);
-        g_vm->DetachCurrentThread();
-        return false;
-    }
-
-    jmethodID getBoolean = env->GetMethodID(prefsClass, "getBoolean",
-                                            "(Ljava/lang/String;Z)Z");
-    if (!getBoolean) {
-        env->DeleteLocalRef(prefs);
-        g_vm->DetachCurrentThread();
-        return false;
-    }
-
-    jstring key = env->NewStringUTF("vibration_phone");
-    jboolean enabled = env->CallBooleanMethod(prefs, getBoolean, key, JNI_TRUE);
-    env->DeleteLocalRef(key);
-    env->DeleteLocalRef(prefs);
-    g_vm->DetachCurrentThread();
-
-    return enabled == JNI_TRUE;
-}
-
-static std::string vibration_mode_via_java() {
-    std::string mode = "both";
-    if (!g_vm) {
-        return mode;
-    }
-
-    JNIEnv* env = nullptr;
-    jint rs = g_vm->AttachCurrentThread(&env, nullptr);
-    if (rs != JNI_OK || !env) {
-        return mode;
-    }
-
-    jclass activityThread = env->FindClass("android/app/ActivityThread");
-    if (!activityThread) {
-        g_vm->DetachCurrentThread();
-        return mode;
-    }
-
-    jmethodID currentApplication = env->GetStaticMethodID(activityThread, "currentApplication",
-                                                          "()Landroid/app/Application;");
-    if (!currentApplication) {
-        g_vm->DetachCurrentThread();
-        return mode;
-    }
-
-    jobject application = env->CallStaticObjectMethod(activityThread, currentApplication);
-    if (!application) {
-        g_vm->DetachCurrentThread();
-        return mode;
-    }
-
-    jclass context = env->FindClass("android/content/Context");
-    if (!context) {
-        g_vm->DetachCurrentThread();
-        return mode;
-    }
-
-    jmethodID getSharedPreferences = env->GetMethodID(context, "getSharedPreferences",
-                                                      "(Ljava/lang/String;I)Landroid/content/SharedPreferences;");
-    if (!getSharedPreferences) {
-        g_vm->DetachCurrentThread();
-        return mode;
-    }
-
-    jstring prefsName = env->NewStringUTF("fh2_game");
-    jobject prefs = env->CallObjectMethod(application, getSharedPreferences, prefsName, 0);
-    env->DeleteLocalRef(prefsName);
-    if (!prefs) {
-        g_vm->DetachCurrentThread();
-        return mode;
-    }
-
-    jclass prefsClass = env->FindClass("android/content/SharedPreferences");
-    if (!prefsClass) {
-        env->DeleteLocalRef(prefs);
-        g_vm->DetachCurrentThread();
-        return mode;
-    }
-
-    jmethodID getString = env->GetMethodID(prefsClass, "getString",
-                                           "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
-    if (!getString) {
-        env->DeleteLocalRef(prefs);
-        g_vm->DetachCurrentThread();
-        return mode;
-    }
-
-    jstring key = env->NewStringUTF("vibration_mode");
-    jstring def = env->NewStringUTF("both");
-    jstring result = (jstring)env->CallObjectMethod(prefs, getString, key, def);
-    env->DeleteLocalRef(key);
-    env->DeleteLocalRef(def);
-    env->DeleteLocalRef(prefs);
-    g_vm->DetachCurrentThread();
-
-    if (result) {
-        const char* chars = env->GetStringUTFChars(result, nullptr);
-        if (chars) {
-            mode = chars;
-            env->ReleaseStringUTFChars(result, chars);
-        }
-        env->DeleteLocalRef(result);
-    }
-
-    return mode;
-}
-
-extern "C" bool fh2_android_vibration_enabled(void) {
-    return vibration_enabled_via_java();
-}
-
-extern "C" const char* fh2_android_vibration_mode(void) {
-    static std::string cached = vibration_mode_via_java();
-    return cached.c_str();
-}
-
-extern "C" void fh2_android_vibrate(int durationMs, int intensity) {
-    vibrate_via_java(durationMs, intensity);
-}
+extern "C" void fh2_android_vibrate(int durationMs, int intensity) { vibrate_via_java(durationMs, intensity); }
 
 // Keep the original JNI entry point for direct Java calls too.
 extern "C" JNIEXPORT void JNICALL
-Java_com_forzahorizon2_android_TouchControlsView_nativeVibrate(JNIEnv* env, jclass, jint durationMs,
-                                                               jint intensity) {
-    vibrate_via_java(durationMs, intensity);
+Java_com_forzahorizon2_android_TouchControlsView_nativeVibrate(JNIEnv*, jclass, jint durationMs, jint intensity) {
+  vibrate_via_java(durationMs, intensity);
 }
