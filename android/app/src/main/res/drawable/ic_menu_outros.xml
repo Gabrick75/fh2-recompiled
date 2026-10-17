@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sidebar icon of the launcher (Menu.java), tinted by the code. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF" android:pathData="M12,2.2c5.4,0 9.8,4.4 9.8,9.8s-4.4,9.8 -9.8,9.8 S2.2,17.4 2.2,12 S6.6,2.2 12,2.2Z M12,20.7c4.8,0 8.7-3.9 8.7-8.7s-3.9,-8.7 -8.7,-8.7 C7.2,3.3 3.3,7.2 3.3,12 S7.2,20.7 12,20.7Z"/>
+    <path android:fillColor="#FFFFFFFF" android:pathData="M12,5.3c0,3.7 -3,6.7 -6.7,6.7s-6.7,-3 -6.7,-6.7 S8.3,-1.4 12,-1.4 S18.7,1.6 18.7,5.3 S15.7,12 12,12Z"/>
+    <path android:fillColor="#FFFFFFFF" android:pathData="M12,18.7c0,-3.7 3,-6.7 6.7,-6.7s6.7,3 6.7,6.7 -3,6.7 -6.7,6.7 S5.3,22.4 5.3,18.7Z"/>
+</vector>

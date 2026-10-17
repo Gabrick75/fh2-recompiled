@@ -14,6 +14,8 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.provider.Settings;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
@@ -33,7 +35,6 @@ import static com.forzahorizon2.android.AppLanguage.tr;
 
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.slider.Slider;
-
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -193,7 +194,7 @@ public final class MainActivity extends AppCompatActivity {
     private static final int GRAPHICS = 0, DISPLAY = 1, PERFORMANCE = 2, SOUND = 3, ACHIEVEMENTS = 4, LANGUAGE = 5,
             GAME = 6, ABOUT = 7;
     private static final int[] PAGE_ICONS = {R.drawable.ic_menu_graficos, R.drawable.ic_menu_tela,
-            R.drawable.ic_menu_desempenho, R.drawable.ic_menu_som, R.drawable.ic_menu_conquistas,
+            R.drawable.ic_menu_desempenho, R.drawable.ic_menu_outros, R.drawable.ic_menu_conquistas,
             R.drawable.ic_menu_idioma, R.drawable.ic_menu_jogo, R.drawable.ic_menu_sobre};
     private static final String STATE_PAGE = "page";
 
@@ -214,7 +215,7 @@ public final class MainActivity extends AppCompatActivity {
             case GRAPHICS: return tr("Gráficos", "Graphics");
             case DISPLAY: return tr("Tela", "Display");
             case PERFORMANCE: return tr("Desempenho", "Performance");
-            case SOUND: return tr("Som", "Sound");
+            case SOUND: return tr("Outros", "Others");
             case ACHIEVEMENTS: return tr("Conquistas", "Achievements");
             case LANGUAGE: return tr("Idioma", "Language");
             case GAME: return tr("Jogo e saves", "Game and saves");
@@ -1169,13 +1170,60 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private ScrollView soundPage() {
+        // Volume group: choice row followed by its footer note.
+        LinearLayout volumeBox = ui.group(ui.choiceRow(GameOptions.VOLUME, tr("Volume do jogo", "Game volume"), null,
+                new String[] {"Normal", tr("Alto", "Loud"), tr("Muito alto", "Very loud"), tr("Máximo", "Max")},
+                new String[] {"100", "125", "150", "200"}));
+        TextView volumeFooter = ui.footer(tr("Acima de Normal o som pode distorcer nos picos.",
+                "Above Normal the sound may distort at its peaks."));
+
+        // Vibration section: toggle row + mode selector (shown only when vibration is on).
+        LinearLayout vibrationModeRow = ui.choiceRow(GameOptions.VIBRATION_MODE, tr("Modo de vibração", "Vibration mode"),
+                tr("Escolha o que vibra quando o jogo pede rumble.",
+                   "Choose what vibrates when the game requests rumble."),
+                new String[] {tr("Somente o celular", "Phone only"),
+                              tr("Somente o controle", "Gamepad only"),
+                              tr("Celular e controle", "Phone and gamepad")},
+                new String[] {"phone", "gamepad", "both"},
+                value -> {
+                    // Test vibration immediately when the user picks a mode.
+                    try {
+                        Vibrator vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+                        if (vibrator != null && vibrator.hasVibrator()) {
+                            int durationMs = 300;
+                            int intensity;
+                            if ("phone".equals(value)) intensity = 100;
+                            else if ("gamepad".equals(value)) intensity = 60;
+                            else intensity = 100; // both
+                            vibrator.vibrate(VibrationEffect.createOneShot(durationMs, intensity));
+                        }
+                    } catch (Throwable t) {
+                        android.util.Log.e("FH2Vibration", "vibrate failed: " + t);
+                    }
+                });
+        boolean vibrationOn = GameOptions.flag(this, GameOptions.VIBRATION_PHONE);
+        vibrationModeRow.setVisibility(vibrationOn ? View.VISIBLE : View.GONE);
+
+        LinearLayout vibrationBox = ui.group();
+        LinearLayout vibrationToggle = ui.toggleRow(tr("Vibração", "Vibration"),
+                tr("Faz o celular vibrar quando o controle do jogo vibrar. " +
+                   "A intensidade segue o jogo.",
+                   "Makes the phone vibrate when the gamepad vibrates. " +
+                   "Intensity follows the game."),
+                GameOptions.flag(this, GameOptions.VIBRATION_PHONE),
+                v -> {
+                    GameOptions.flag(this, GameOptions.VIBRATION_PHONE, v);
+                    vibrationModeRow.setVisibility(v ? View.VISIBLE : View.GONE);
+                });
+        vibrationBox.addView(vibrationToggle);
+        vibrationBox.addView(vibrationModeRow);
+
         return pageScroll(ui.pageTitle(pageName(SOUND), null),
                 ui.header(tr("Volume", "Volume")),
-                ui.group(ui.choiceRow(GameOptions.VOLUME, tr("Volume do jogo", "Game volume"), null,
-                        new String[] {"Normal", tr("Alto", "Loud"), tr("Muito alto", "Very loud"), tr("Máximo", "Max")},
-                        new String[] {"100", "125", "150", "200"})),
-                ui.footer(tr("Acima de Normal o som pode distorcer nos picos.",
-                        "Above Normal the sound may distort at its peaks.")));
+                volumeBox,
+                volumeFooter,
+                ui.header(tr("Vibração", "Vibration")),
+                vibrationBox);
     }
 
     // ---- Achievements: the game's, unlocked ones in the app's magenta, locked ones grey with a lock ------------

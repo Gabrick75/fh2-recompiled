@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <string>
 
 #include <rex/assert.h>
 #include <rex/chrono/clock.h>
@@ -22,6 +23,15 @@
 #include <rex/logging.h>
 #include <rex/platform.h>
 #include <rex/ui/virtual_key.h>
+
+#include <rex/input/android_vibration_hook.h>
+
+#ifdef __ANDROID__
+#include <android/log.h>
+#define VIBRATION_LOG(...) __android_log_print(ANDROID_LOG_INFO, "FH2Vibration", __VA_ARGS__)
+#else
+#define VIBRATION_LOG(...) ((void)0)
+#endif
 
 REXCVAR_DEFINE_STRING(hid_mappings_file, "gamecontrollerdb.txt", "Input",
                       "Path to SDL gamecontroller mappings file");
@@ -299,26 +309,97 @@ X_RESULT SDLInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
 X_RESULT SDLInputDriver::SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION* vibration) {
   assert(sdl_events_initialized_ && SDL_Gamepad_initialized_);
 
+  VIBRATION_LOG("SetDeviceVibration id=%u left=%u right=%u", id,
+                vibration->left_motor_speed, vibration->right_motor_speed);
+
   QueueControllerUpdate();
 
   auto guard = DrainAndLock();
 
   auto controller = FindController(id);
   if (!controller) {
+    VIBRATION_LOG("SetDeviceVibration: controller not found");
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
 
   if (controller->is_touch) {
+    // Touch controller (on-screen pad): vibrate the Android phone if the user
+    // enabled it and the chosen mode includes the phone.
+    const char* touch_mode = fx2_android_vibration_mode();
+    bool touch_enabled = fx2_android_vibration_enabled();
+    VIBRATION_LOG("SetDeviceVibration: TOUCH controller enabled=%d mode=%s left=%u right=%u",
+         touch_enabled, touch_mode ? touch_mode : "null",
+         vibration->left_motor_speed, vibration->right_motor_speed);
+    if (touch_enabled &&
+        (vibration->left_motor_speed > 0 || vibration->right_motor_speed > 0)) {
+      bool touch_vibrate_phone = touch_mode &&
+          (std::string(touch_mode) == "phone" || std::string(touch_mode) == "both");
+      VIBRATION_LOG("SetDeviceVibration: touch vibrate_phone=%d mode=%s",
+           touch_vibrate_phone, touch_mode ? touch_mode : "null");
+      if (touch_vibrate_phone) {
+        int intensity = 0;
+        if (vibration->left_motor_speed > vibration->right_motor_speed)
+          intensity = (int)vibration->left_motor_speed;
+        else
+          intensity = (int)vibration->right_motor_speed;
+        intensity = (intensity * 100) / 0xFFFF;
+        if (intensity < 1) intensity = 1;
+        if (intensity > 100) intensity = 100;
+        VIBRATION_LOG("SetDeviceVibration: touch calling phone vibrate duration=%u intensity=%d",
+             kRumbleDurationMs, intensity);
+        fx2_android_vibration_vibrate(kRumbleDurationMs, intensity);
+      } else {
+        VIBRATION_LOG("SetDeviceVibration: touch mode=%s does not include phone, skipping",
+             touch_mode ? touch_mode : "null");
+      }
+    } else if (!touch_enabled) {
+      VIBRATION_LOG("SetDeviceVibration: touch vibration disabled by user, skipping");
+    }
     return X_ERROR_SUCCESS;
   }
 
   // XInput vibration holds until the guest changes it, but SDL rumble expires,
   // and a zero duration expires on the next SDL_UpdateJoysticks. Arm it for
   // SDL's maximum instead; each call cancels the previous effect anyway.
-  return SDL_RumbleGamepad(controller->sdl, vibration->left_motor_speed,
-                           vibration->right_motor_speed, kRumbleDurationMs)
-             ? X_ERROR_SUCCESS
-             : X_ERROR_FUNCTION_FAILED;
+  bool rumbled = SDL_RumbleGamepad(controller->sdl, vibration->left_motor_speed,
+                                   vibration->right_motor_speed, kRumbleDurationMs);
+
+  // Also vibrate the Android phone itself when the gamepad rumbles, if the user
+  // enabled it and the chosen mode includes the phone. Intensity follows the
+  // game's motor speed.
+  const char* mode = fx2_android_vibration_mode();
+  bool enabled = fx2_android_vibration_enabled();
+  VIBRATION_LOG("SetDeviceVibration: PHYSICAL controller enabled=%d mode=%s left=%u right=%u",
+       enabled, mode ? mode : "null",
+       vibration->left_motor_speed, vibration->right_motor_speed);
+  if (enabled &&
+      (vibration->left_motor_speed > 0 || vibration->right_motor_speed > 0)) {
+    bool vibrate_phone = mode && (std::string(mode) == "phone" ||
+                                  std::string(mode) == "both");
+    VIBRATION_LOG("SetDeviceVibration: physical vibrate_phone=%d mode=%s",
+         vibrate_phone, mode ? mode : "null");
+    if (vibrate_phone) {
+      int intensity = 0;
+      if (vibration->left_motor_speed > vibration->right_motor_speed)
+        intensity = (int)vibration->left_motor_speed;
+      else
+        intensity = (int)vibration->right_motor_speed;
+      // Scale 0-65535 motor speed to 0-100 intensity.
+      intensity = (intensity * 100) / 0xFFFF;
+      if (intensity < 1) intensity = 1;
+      if (intensity > 100) intensity = 100;
+      VIBRATION_LOG("SetDeviceVibration: calling phone vibrate duration=%u intensity=%d",
+           kRumbleDurationMs, intensity);
+      fx2_android_vibration_vibrate(kRumbleDurationMs, intensity);
+    } else {
+      VIBRATION_LOG("SetDeviceVibration: mode=%s does not include phone, skipping",
+           mode ? mode : "null");
+    }
+  } else if (!enabled) {
+    VIBRATION_LOG("SetDeviceVibration: vibration disabled by user, skipping");
+  }
+
+  return rumbled ? X_ERROR_SUCCESS : X_ERROR_FUNCTION_FAILED;
 }
 
 X_RESULT SDLInputDriver::GetDeviceKeystroke(DeviceId id, uint32_t flags,
