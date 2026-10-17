@@ -14,6 +14,8 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.provider.Settings;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
@@ -1186,15 +1188,17 @@ public final class MainActivity extends AppCompatActivity {
                 value -> {
                     // Test vibration immediately when the user picks a mode.
                     try {
-                        int durationMs = 300;
-                        int intensity;
-                        if ("phone".equals(value)) intensity = 100;
-                        else if ("gamepad".equals(value)) intensity = 60;
-                        else intensity = 100; // both
-                        TouchControlsView.nativeVibrate(durationMs, intensity);
+                        Vibrator vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+                        if (vibrator != null && vibrator.hasVibrator()) {
+                            int durationMs = 300;
+                            int intensity;
+                            if ("phone".equals(value)) intensity = 100;
+                            else if ("gamepad".equals(value)) intensity = 60;
+                            else intensity = 100; // both
+                            vibrator.vibrate(VibrationEffect.createOneShot(durationMs, intensity));
+                        }
                     } catch (Throwable t) {
-                        // Avoid crashing the app if the native method is not ready yet.
-                        android.util.Log.e("FH2Vibration", "nativeVibrate failed: " + t);
+                        android.util.Log.e("FH2Vibration", "vibrate failed: " + t);
                     }
                 });
         boolean vibrationOn = GameOptions.flag(this, GameOptions.VIBRATION_PHONE);
