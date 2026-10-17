@@ -33,7 +33,6 @@ import static com.forzahorizon2.android.AppLanguage.tr;
 
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.slider.Slider;
-
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -1183,7 +1182,16 @@ public final class MainActivity extends AppCompatActivity {
                 new String[] {tr("Somente o celular", "Phone only"),
                               tr("Somente o controle", "Gamepad only"),
                               tr("Celular e controle", "Phone and gamepad")},
-                new String[] {"phone", "gamepad", "both"});
+                new String[] {"phone", "gamepad", "both"},
+                value -> {
+                    // Test vibration immediately when the user picks a mode.
+                    int durationMs = 300;
+                    int intensity;
+                    if ("phone".equals(value)) intensity = 100;
+                    else if ("gamepad".equals(value)) intensity = 60;
+                    else intensity = 100; // both
+                    TouchControlsView.nativeVibrate(durationMs, intensity);
+                });
         boolean vibrationOn = GameOptions.flag(this, GameOptions.VIBRATION_PHONE);
         vibrationModeRow.setVisibility(vibrationOn ? View.VISIBLE : View.GONE);
 
