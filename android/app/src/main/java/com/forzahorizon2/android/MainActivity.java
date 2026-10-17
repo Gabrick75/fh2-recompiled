@@ -1177,9 +1177,19 @@ public final class MainActivity extends AppCompatActivity {
 
     private ScrollView soundPage() {
         // Volume group: choice row followed by its footer note.
-        LinearLayout volumeBox = ui.group(ui.choiceRow(GameOptions.VOLUME, tr("Volume do jogo", "Game volume"), null,
-                new String[] {"Normal", tr("Alto", "Loud"), tr("Muito alto", "Very loud"), tr("Máximo", "Max")},
-                new String[] {"100", "125", "150", "200"}));
+        LinearLayout volumeBox = ui.group(
+                ui.toggleRow(tr("Decodificar áudio em segundo plano", "Decode audio in the background"),
+                        tr("Ligado: um thread próprio decodifica o som do jogo e alivia a CPU, mas em alguns " +
+                           "celulares o som sai travando ou robótico. Desligado: o jogo decodifica o próprio " +
+                           "som, como antes. Vale na próxima vez que o jogo abrir.",
+                           "On: a thread of its own decodes the game's sound and spares the CPU, but on some " +
+                           "phones the sound stutters or sounds robotic. Off: the game decodes its own sound, " +
+                           "as before. Takes effect the next time the game starts."),
+                        GameOptions.flag(this, GameOptions.AUDIO_WORKER),
+                        v -> GameOptions.flag(this, GameOptions.AUDIO_WORKER, v)),
+                ui.choiceRow(GameOptions.VOLUME, tr("Volume do jogo", "Game volume"), null,
+                        new String[] {"Normal", tr("Alto", "Loud"), tr("Muito alto", "Very loud"), tr("Máximo", "Max")},
+                        new String[] {"100", "125", "150", "200"}));
         TextView volumeFooter = ui.footer(tr("Acima de Normal o som pode distorcer nos picos.",
                 "Above Normal the sound may distort at its peaks."));
 

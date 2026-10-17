@@ -60,6 +60,9 @@ final class GameOptions {
     static final String TURBO = "turbo";                      // not applied yet
     // Sound
     static final String VOLUME = "volume";
+    // audio_xma_en_trabajador: on = 1 (the XMA Decoder thread decodes everything), off = 2 (the game's audio
+    // thread decodes, as before f47050e). Off by default: on several phones mode 1 made the sound stutter.
+    static final String AUDIO_WORKER = "audio_worker";
     static final String VIBRATION_PHONE = "vibration_phone";
     static final String VIBRATION_MODE = "vibration_mode";  // "phone", "gamepad", "both"
     // Language
@@ -307,6 +310,7 @@ final class GameOptions {
     static List<String> arguments(Context context) {
         List<String> args = new ArrayList<>();
         args.add("--audio_ganancia_pct=" + get(context, VOLUME));
+        args.add("--audio_xma_en_trabajador=" + (flag(context, AUDIO_WORKER) ? 1 : 2));
         // Phone vibration (android_vibration.cpp): read once at start, never through the JVM per frame.
         args.add("--fh2_android_vibracao=" + flag(context, VIBRATION_PHONE));
         String vibrationMode = get(context, VIBRATION_MODE);
