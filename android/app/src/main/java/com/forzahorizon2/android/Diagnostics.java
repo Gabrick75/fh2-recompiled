@@ -130,6 +130,13 @@ final class Diagnostics {
                 Arrays.sort(nativeLogs, Comparator.comparingLong(File::lastModified).reversed());
                 for (int i = 0; i < Math.min(2, nativeLogs.length); i++) addFile(zip, "native/" + nativeLogs[i].getName(), nativeLogs[i]);
             }
+            // The play sessions' own logs (GameActivity.sessionLogBase): the game log and the usage log of the
+            // newest two, recut at their start and end like the others.
+            for (File session : newestSessions(2)) {
+                addFile(zip, "sessao/" + session.getName(), session);
+                File usage = new File(session.getParentFile(), session.getName().replace(".log", "_uso.log"));
+                addFile(zip, "sessao/" + usage.getName(), usage);
+            }
             addLogcat(zip);
             if (Build.VERSION.SDK_INT >= 30 && manager != null) addExitInfo(zip, manager, context);
         } catch (Exception error) {
@@ -137,6 +144,20 @@ final class Diagnostics {
             throw error;
         }
         return report;
+    }
+
+    // Internal storage/jogos/fh2-logs, where GameActivity writes one game log per session (fh2_<date>_<time>.log,
+    // next to its _uso.log). Newest first.
+    static File sessionLogFolder() {
+        return new File(android.os.Environment.getExternalStorageDirectory(), "jogos/fh2-logs");
+    }
+
+    static File[] newestSessions(int count) {
+        File[] logs = sessionLogFolder().listFiles(file -> file.isFile() && file.getName().startsWith("fh2_")
+                && file.getName().endsWith(".log") && !file.getName().endsWith("_uso.log"));
+        if (logs == null) return new File[0];
+        Arrays.sort(logs, Comparator.comparingLong(File::lastModified).reversed());
+        return Arrays.copyOf(logs, Math.min(count, logs.length));
     }
 
     private static void add(ZipOutputStream zip, String name, byte[] data) throws IOException {
