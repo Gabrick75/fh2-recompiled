@@ -7,8 +7,13 @@ com o fallback sem descriptor indexing (método A), sem precisar do driver Turni
 
 ```sh
 sudo apt update
-sudo apt install -y git clang-20 clang++-20 cmake ninja-build python3 openjdk-17-jdk unzip wget curl
+sudo apt install -y git clang-20 clang++-20 cmake ninja-build python3 openjdk-17-jdk unzip wget curl \
+  libasound2-dev libdbus-1-dev libdecor-0-dev libegl1-mesa-dev libpipewire-0.3-dev libpulse-dev \
+  libudev-dev libwayland-dev libx11-dev libx11-xcb-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev \
+  libxkbcommon-dev libxrandr-dev libxss-dev libxtst-dev
 ```
+
+(Os pacotes `lib*` são as dependências de build do SDL3/X11; sem eles o configure do SDK falha. O `./build_pc.sh` instala sozinho o que faltar.)
 
 Verifique:
 
@@ -49,16 +54,23 @@ python3 tools/fase1_extraer.py /caminho/para/SeuForzaHorizon2.iso -o assets/game
 
 A pasta `assets/game_root/` é ignorada pelo Git e nunca deve ser compartilhada.
 
-## 5. Rodar o codegen no PC (gera `app/generated`)
+## 5. Build do PC: SDK host, codegen e app (gera `app/generated`)
+
+Um comando só faz tudo (compila o `rexglue` host do SDK se preciso, roda o codegen sobre o seu jogo e compila o app; demora na primeira vez):
 
 ```sh
-cmake -S app -B app/out/linux -G Ninja -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_C_COMPILER=clang-20 -DCMAKE_CXX_COMPILER=clang++-20 \
-      -DREXSDK_DIR="$PWD/sdk"
-cmake --build app/out/linux
+./build_pc.sh
 ```
 
-Isso gera `app/generated/default/sources.cmake`, obrigatório para o build do Android.
+Isso gera `app/generated/rexglue.cmake` e `app/generated/default/sources.cmake`, obrigatórios para o build do Android.
+
+(O script usa `-march=x86-64-v3`, igual ao PC de referência — o SDK exige SSSE3+. Se a sua CPU for anterior a ~2013, rode `MARCH=x86-64-v2 ./build_pc.sh`.)
+
+Depois, gere o despejo da imagem do executável (**obrigatório** para o passo 7; abre o jogo no PC — espere iniciar e feche):
+
+```sh
+tools/rodar_pc.sh --xex_despejar_imagem=app/out/shaders_fh2_imagem
+```
 
 ## 6. Ferramentas da biblioteca de shaders (automático)
 
@@ -81,9 +93,25 @@ O que acontece:
 4. Compila com DXC para SPIR-V Vulkan 1.2.
 5. Empacota em `app/out/shaders_fh2/fh2_shaders.nfsp`.
 
-Saída esperada: algo como `spirv ok=2559 falhou=0` e o arquivo `fh2_shaders.nfsp` (~72 MB).
+Saída esperada: `spirv ok=4074 falhou=4` e o arquivo `fh2_shaders.nfsp` (~72 MB).
 
 > **Importante:** esta biblioteca é feita a partir dos seus arquivos do jogo. Não compartilhe nem commite.
+
+### Shaders internos da D3D (sueltos): biblioteca completa em duas passadas
+
+A primeira biblioteca sai sem os shaders internos da D3D (o script avisa `[aviso] sem .../shaders_fh2_sueltos`). Ela já abre o jogo — use-a para gerar o despejo que falta, com o jogo em modo nativo (navegue nos menus/jogue um pouco para o renderizador encontrar os shaders; depois feche):
+
+```sh
+tools/rodar_pc.sh --nfsmw_renderizador=nativo --fh2_nativo_volcar_sueltos=$PWD/app/out/shaders_fh2_sueltos
+```
+
+Depois rebuild para a biblioteca completa:
+
+```sh
+tools/xenos/biblioteca.sh
+```
+
+Conferência (valores de referência em `app/out/shaders_fh2/versoes.txt`): `contenedores=4142`, `hlsl=4078`, `spirv ok=4074 falhou=4`, `sueltos=42`, `nfsp_bytes=75497272`.
 
 ## 8. Build do Android APK
 
@@ -178,12 +206,17 @@ python3 tools/fetch_thirdparty.py
 # 3. extrair jogo (seu ISO)
 python3 tools/fase1_extraer.py SeuFH2.iso -o assets/game_root
 
-# 4. codegen PC
-cmake -S app -B app/out/linux -G Ninja -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_C_COMPILER=clang-20 -DCMAKE_CXX_COMPILER=clang++-20 -DREXSDK_DIR="$PWD/sdk"
-cmake --build app/out/linux
+# 4. build do PC (SDK host + codegen + app)
+./build_pc.sh
+
+# 4b. dump da imagem do executável (obrigatório p/ biblioteca)
+tools/rodar_pc.sh --xex_despejar_imagem=app/out/shaders_fh2_imagem
 
 # 5. biblioteca shaders (toolchain exato baixado sozinho)
+tools/xenos/biblioteca.sh
+
+# 5b. sueltos da D3D + rebuild p/ biblioteca completa
+tools/rodar_pc.sh --nfsmw_renderizador=nativo --fh2_nativo_volcar_sueltos=$PWD/app/out/shaders_fh2_sueltos
 tools/xenos/biblioteca.sh
 
 # 6. build APK

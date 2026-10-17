@@ -7,8 +7,13 @@ using the fallback without descriptor indexing (method A), without needing the T
 
 ```sh
 sudo apt update
-sudo apt install -y git clang-20 clang++-20 cmake ninja-build python3 openjdk-17-jdk unzip wget curl
+sudo apt install -y git clang-20 clang++-20 cmake ninja-build python3 openjdk-17-jdk unzip wget curl \
+  libasound2-dev libdbus-1-dev libdecor-0-dev libegl1-mesa-dev libpipewire-0.3-dev libpulse-dev \
+  libudev-dev libwayland-dev libx11-dev libx11-xcb-dev libxcursor-dev libxext-dev libxfixes-dev libxi-dev \
+  libxkbcommon-dev libxrandr-dev libxss-dev libxtst-dev
 ```
+
+(The `lib*` packages are the SDL3/X11 build dependencies; without them the SDK configure fails. `./build_pc.sh` installs any missing ones itself.)
 
 Verify:
 
@@ -49,16 +54,23 @@ python3 tools/fase1_extraer.py /path/to/YourForzaHorizon2.iso -o assets/game_roo
 
 The `assets/game_root/` folder is ignored by Git and must never be shared.
 
-## 5. Run codegen on PC (generates `app/generated`)
+## 5. PC build: host SDK, codegen and app (generates `app/generated`)
+
+A single command does everything (builds the SDK `rexglue` host if needed, runs codegen over your game and builds the app; slow the first time):
 
 ```sh
-cmake -S app -B app/out/linux -G Ninja -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_C_COMPILER=clang-20 -DCMAKE_CXX_COMPILER=clang++-20 \
-      -DREXSDK_DIR="$PWD/sdk"
-cmake --build app/out/linux
+./build_pc.sh
 ```
 
-This generates `app/generated/default/sources.cmake`, required for the Android build.
+This generates `app/generated/rexglue.cmake` and `app/generated/default/sources.cmake`, required for the Android build.
+
+(The script uses `-march=x86-64-v3`, like the reference PC — the SDK needs SSSE3+. If your CPU is older than ~2013, run `MARCH=x86-64-v2 ./build_pc.sh`.)
+
+Then dump the executable image (**required** for step 7; opens the game on PC — wait for it to boot, then close):
+
+```sh
+tools/rodar_pc.sh --xex_despejar_imagem=app/out/shaders_fh2_imagem
+```
 
 ## 6. Shader library tools (automatic)
 
@@ -81,9 +93,25 @@ What happens:
 4. Compiles with DXC to SPIR-V Vulkan 1.2.
 5. Packs into `app/out/shaders_fh2/fh2_shaders.nfsp`.
 
-Expected output: something like `spirv ok=2559 falhou=0` and the `fh2_shaders.nfsp` file (~72 MB).
+Expected output: `spirv ok=4074 falhou=4` and the `fh2_shaders.nfsp` file (~72 MB).
 
 > **Important:** this library is built from your own game files. Do not share or commit it.
+
+### D3D internal shaders (sueltos): complete library in two passes
+
+The first library lacks the D3D internal shaders (the script warns `[aviso] sem .../shaders_fh2_sueltos`). It already opens the game — use it to dump what's missing, running the game in native mode (browse menus/play a little so the renderer meets the shaders; then close):
+
+```sh
+tools/rodar_pc.sh --nfsmw_renderizador=nativo --fh2_nativo_volcar_sueltos=$PWD/app/out/shaders_fh2_sueltos
+```
+
+Then rebuild for the complete library:
+
+```sh
+tools/xenos/biblioteca.sh
+```
+
+Reference values (`app/out/shaders_fh2/versoes.txt`): `contenedores=4142`, `hlsl=4078`, `spirv ok=4074 falhou=4`, `sueltos=42`, `nfsp_bytes=75497272`.
 
 ## 8. Build the Android APK
 
@@ -178,12 +206,17 @@ python3 tools/fetch_thirdparty.py
 # 3. extract game (your ISO)
 python3 tools/fase1_extraer.py YourFH2.iso -o assets/game_root
 
-# 4. PC codegen
-cmake -S app -B app/out/linux -G Ninja -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_C_COMPILER=clang-20 -DCMAKE_CXX_COMPILER=clang++-20 -DREXSDK_DIR="$PWD/sdk"
-cmake --build app/out/linux
+# 4. PC build (host SDK + codegen + app)
+./build_pc.sh
+
+# 4b. executable image dump (required for library)
+tools/rodar_pc.sh --xex_despejar_imagem=app/out/shaders_fh2_imagem
 
 # 5. shader library (exact toolchain downloaded itself)
+tools/xenos/biblioteca.sh
+
+# 5b. D3D sueltos + rebuild for the complete library
+tools/rodar_pc.sh --nfsmw_renderizador=nativo --fh2_nativo_volcar_sueltos=$PWD/app/out/shaders_fh2_sueltos
 tools/xenos/biblioteca.sh
 
 # 6. build APK
