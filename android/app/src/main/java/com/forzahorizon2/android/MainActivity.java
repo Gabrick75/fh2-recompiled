@@ -472,11 +472,15 @@ public final class MainActivity extends AppCompatActivity {
             rendererOptions.addView(ui.header(tr("Imagem do nativo", "Native image")));
             SegmentedControl aa = new SegmentedControl(this, new String[] {tr("Desligada", "Off"), "FXAA",
                     "MSAA 2x", "MSAA 4x"});
+            // Stored like the emulated renderer's choice ("msaa" + MSAA_SAMPLES), so switching renderers keeps it.
             String aaValor = GameOptions.get(this, GameOptions.ANTI_ALIASING);
-            aa.choose("fxaa".equals(aaValor) ? 1 : "msaa2".equals(aaValor) ? 2 : "msaa4".equals(aaValor) ? 3 : 0,
-                    false);
-            aa.setOnChoice(index -> GameOptions.set(this, GameOptions.ANTI_ALIASING,
-                    index == 1 ? "fxaa" : index == 2 ? "msaa2" : index == 3 ? "msaa4" : "off"));
+            boolean msaa2 = "2".equals(GameOptions.get(this, GameOptions.MSAA_SAMPLES));
+            aa.choose("fxaa".equals(aaValor) ? 1 : "msaa".equals(aaValor) ? (msaa2 ? 2 : 3) : 0, false);
+            aa.setOnChoice(index -> {
+                GameOptions.set(this, GameOptions.ANTI_ALIASING,
+                        index == 1 ? "fxaa" : index >= 2 ? "msaa" : "off");
+                if (index >= 2) GameOptions.set(this, GameOptions.MSAA_SAMPLES, index == 2 ? "2" : "4");
+            });
             rendererOptions.addView(ui.group(
                     renderScaleRow(true, null),
                     ui.stackedRow(tr("Suavização de bordas", "Anti-aliasing"),

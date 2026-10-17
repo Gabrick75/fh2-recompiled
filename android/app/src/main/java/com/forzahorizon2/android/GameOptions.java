@@ -113,7 +113,15 @@ final class GameOptions {
     }
 
     static String get(Context context, String key) {
-        return prefs(context).getString(key, defaultOf(key));
+        String value = prefs(context).getString(key, defaultOf(key));
+        if (ANTI_ALIASING.equals(key) && ("msaa2".equals(value) || "msaa4".equals(value))) {
+            // Before the native renderer used the emulated one's form, it stored "msaa2"/"msaa4": both renderers
+            // now keep "msaa" here and the sample count in MSAA_SAMPLES.
+            prefs(context).edit().putString(ANTI_ALIASING, "msaa")
+                    .putString(MSAA_SAMPLES, value.substring(4)).apply();
+            value = "msaa";
+        }
+        return value;
     }
 
     static void set(Context context, String key, String value) {
@@ -318,8 +326,9 @@ final class GameOptions {
             args.add("--fh2_nativo_escala=" + effectiveNativeRenderScalePercent(context));
             // Its own FXAA on the output; MSAA 2x/4x on the 3D scene (fh2_nativo_msaa, off by default).
             args.add("--nfsmw_antialiasing=" + ("fxaa".equals(get(context, ANTI_ALIASING)) ? "fxaa" : "apagado"));
-            String aa = get(context, ANTI_ALIASING);
-            args.add("--fh2_nativo_msaa=" + ("msaa4".equals(aa) ? 4 : "msaa2".equals(aa) ? 2 : 0));
+            // The same choice as the emulated renderer's: "msaa" and the sample count (2 or 4).
+            args.add("--fh2_nativo_msaa=" + (!"msaa".equals(get(context, ANTI_ALIASING)) ? 0
+                    : "2".equals(get(context, MSAA_SAMPLES)) ? 2 : 4));
             args.add("--nfsmw_nativo_anisotropico=" + nativeAnisotropic(get(context, ANISOTROPIC)));
             args.add("--nfsmw_nativo_sombras_escala=" + shadowMapScalePercent(context));
             args.add("--nfsmw_nativo_compuesta_perezosa=" + flag(context, LAZY_COMPOSITE));
