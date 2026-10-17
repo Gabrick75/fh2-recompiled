@@ -303,8 +303,9 @@ X_RESULT InputSystem::SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration
   bool pad_rumbled = false;
   X_RESULT pad_error = X_ERROR_DEVICE_NOT_CONNECTED;
   // input_vibracion = false: the game still sees its call serviced, but the controllers only
-  // receive zero vibration. On Android, the launcher's "Vibração" toggle can override this
-  // via fx2_android_vibration_enabled(), so the phone still vibrates even when the cvar is off.
+  // receive zero vibration. On Android, with the launcher's "Vibração" on, the real values go to
+  // the SDL driver, which splits them by the chosen mode: the phone (VibratePhone) and the pad
+  // (PadRumbles), so "phone only" never rumbles the pad.
   X_INPUT_VIBRATION sin_vibracion{};
   if (!REXCVAR_GET(input_vibracion) && !fx2_android_vibration_enabled()) {
     vibration = &sin_vibracion;

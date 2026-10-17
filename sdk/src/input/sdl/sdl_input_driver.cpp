@@ -341,6 +341,19 @@ void VibratePhone(const X_INPUT_VIBRATION* vibration) {
   phone_armed = now;
   fx2_android_vibration_vibrate(kPhoneRumbleMs, intensity);
 }
+
+// Whether a physical pad gets the game's rumble: input_vibracion (the settings file) or, on Android, the
+// launcher's vibration with a mode that includes the pad. "Phone only" sends the pad zero, so it stops.
+bool PadRumbles() {
+  if (REXCVAR_GET(input_vibracion)) {
+    return true;
+  }
+  if (!fx2_android_vibration_enabled()) {
+    return false;
+  }
+  const char* mode = fx2_android_vibration_mode();
+  return mode && (std::strcmp(mode, "gamepad") == 0 || std::strcmp(mode, "both") == 0);
+}
 }  // namespace
 
 X_RESULT SDLInputDriver::SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION* vibration) {
@@ -364,8 +377,10 @@ X_RESULT SDLInputDriver::SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION* vibr
   // XInput vibration holds until the guest changes it, but SDL rumble expires,
   // and a zero duration expires on the next SDL_UpdateJoysticks. Arm it for
   // SDL's maximum instead; each call cancels the previous effect anyway.
-  bool rumbled = SDL_RumbleGamepad(controller->sdl, vibration->left_motor_speed,
-                                   vibration->right_motor_speed, kRumbleDurationMs);
+  const bool pad = PadRumbles();
+  bool rumbled = SDL_RumbleGamepad(controller->sdl, pad ? uint16_t(vibration->left_motor_speed) : uint16_t(0),
+                                   pad ? uint16_t(vibration->right_motor_speed) : uint16_t(0),
+                                   kRumbleDurationMs);
 
   // Also vibrate the Android phone itself when the gamepad rumbles.
   VibratePhone(vibration);
