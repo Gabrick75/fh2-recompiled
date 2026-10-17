@@ -3696,7 +3696,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 #endif
     if (clave_pase_rapida_ && pase_claves_validas_ && std::memcmp(claves, pase_claves_, sizeof(claves)) == 0
 #if defined(FH2_RECOMP)
-        && muestras_max == muestras_pase_
+        && muestras_max == muestras_pedidas_pase_
 #endif
     ) {
       const uint64_t n = ++claves_pase_rapidas_;
@@ -8595,10 +8595,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 #if defined(FH2_RECOMP)
     // fh2_nativo_msaa: totals since the start.
     if (msaa_pases_ || msaa_fallos_) {
-      NFSMW_INFORME_ANILLO("[fh2 nativo] MSAA: {} pases multimuestra ({} sin borrado, {:.1f} MB sembrados), "
+      NFSMW_INFORME_ANILLO("[fh2 nativo] MSAA: {} pases multimuestra, {} a 1x por cargar lo anterior, "
                            "{} fallos (1x para la sesion)",
-                           msaa_pases_, msaa_sin_borrado_, double(msaa_semilla_bytes_) / 1048576.0,
-                           msaa_fallos_);
+                           msaa_pases_, msaa_sin_borrado_, msaa_fallos_);
     }
 #endif
 
@@ -11722,7 +11721,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         return false;
       }
       img->ms_muestras = muestras;
-      // UNDEFINED -> GENERAL, once: the attachments use GENERAL throughout, like the 1x ones.
+      // UNDEFINED -> GENERAL, once, before the pass that draws into it: the attachments use GENERAL throughout,
+      // like the 1x ones.
       const VkCommandBuffer cmd = contexto_->ComandosTrabajo();
       if (cmd) {
         VkImageAspectFlags aspecto = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -11745,8 +11745,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         barrera.subresourceRange.levelCount = 1;
         barrera.subresourceRange.baseArrayLayer = 0;
         barrera.subresourceRange.layerCount = 1;
-        barrera.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        dfn_.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        barrera.dstAccessMask = profundidad ? (VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                               VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
+                                            : (VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                                               VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+        dfn_.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                  profundidad ? (VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                                 VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT)
+                                              : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                                   0, 0, nullptr, 0, nullptr, 1, &barrera);
       }
     }
@@ -11860,24 +11866,36 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     const uint32_t modo_base = sombras_sin_load ? kCargaIgnorar : kCargaLeer;
 #if defined(FH2_RECOMP)
     // fh2_nativo_msaa: draw into transient multisample images, resolved in-subpass to the images above.
-    // The identity already covers the want; anything that fails latches MSAA off and the pass opens 1x.
+    // Only passes that start from nothing (every attachment cleared, or nothing loaded): a pass that loads
+    // the previous content opens 1x and reads the resolved image, which is valid. Copying the 1x image into a
+    // multisample one would be invalid Vulkan (vkCmdCopyImage needs equal sample counts), and the multisample
+    // images keep nothing between passes (storeOp DONT_CARE). Anything that fails latches MSAA off.
+    muestras_pedidas_pase_ = muestras_max;
     uint32_t muestras = 0;
     std::array<VkImageView, 5> vistas_ms{};
-    bool semilla_ms[5] = {};
-    if (muestras_max >= 2 && PrepararMs(imagenes, muestras_max)) {
+    bool todo_borrado = modo_base != kCargaLeer;
+    if (!todo_borrado) {
+      todo_borrado = true;
+      for (uint32_t i = 0; i < 5; ++i) {
+        if (imagenes[i] && !(mascara_borrar & (1u << i))) {
+          todo_borrado = false;
+          break;
+        }
+      }
+    }
+    if (muestras_max >= 2 && !todo_borrado) {
+      ++msaa_sin_borrado_;
+    } else if (muestras_max >= 2 && PrepararMs(imagenes, muestras_max)) {
       muestras = muestras_max;
       for (uint32_t i = 0; i < 5; ++i) {
         if (imagenes[i] && imagenes[i]->ms_vista != VK_NULL_HANDLE) {
           vistas_ms[i] = imagenes[i]->ms_vista;
-          // A load that is not a clear reads the previous content: seed the multisample image from the
-          // 1x one (same pixels a 1x pass would have loaded). Clears need nothing.
-          semilla_ms[i] = !(mascara_borrar & (1u << i)) && modo_base == kCargaLeer;
         }
       }
       ++msaa_pases_;
       if (msaa_pases_ == 1) {
         REXLOG_INFO("[fh2 nativo] MSAA a {}x: los pases que el juego borra se dibujan con {} muestras y se "
-                    "resuelven en el pase",
+                    "resuelven en el pase; los que cargan lo anterior van a 1x",
                     muestras, muestras);
       }
     }
@@ -11892,9 +11910,6 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       muestras = 0;
       muestras_pase_ = 0;
       vistas_ms = {};
-      for (uint32_t i = 0; i < 5; ++i) {
-        semilla_ms[i] = false;
-      }
       pase = PaseDe(formatos, modo_base | (mascara_borrar << 4), 0);
     }
 #else
@@ -11933,67 +11948,6 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (!cmd) {
       return false;
     }
-#if defined(FH2_RECOMP)
-    // Seeds the multisample images a LOAD pass reads (see above): full 1x -> transient copies. The pass
-    // entry dependency only covers what previous passes wrote through it, not resolve copies recorded
-    // after the last pass: a barrier first makes every previous color/depth/transfer write visible.
-    if (muestras >= 2 && copiar_imagen_) {
-      bool semilla_alguna = false;
-      for (uint32_t i = 0; i < 5; ++i) {
-        if (semilla_ms[i] && imagenes[i] && imagenes[i]->ms_imagen != VK_NULL_HANDLE) {
-          semilla_alguna = true;
-          break;
-        }
-      }
-      if (semilla_alguna) {
-        ++msaa_sin_borrado_;
-        // Previous color/depth/transfer writes (previous passes, resolve copies) must be visible to the
-        // seed copies below.
-        VkMemoryBarrier barrera{};
-        barrera.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        barrera.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT |
-                                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        barrera.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        dfn_.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                                           VK_PIPELINE_STAGE_TRANSFER_BIT |
-                                           VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                                  VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrera, 0, nullptr, 0,
-                                  nullptr);
-      }
-      for (uint32_t i = 0; i < 5; ++i) {
-        if (!semilla_ms[i] || !imagenes[i] || imagenes[i]->ms_imagen == VK_NULL_HANDLE) {
-          continue;
-        }
-        VkImageCopy copia{};
-        copia.srcSubresource = {i == 4 ? VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT |
-                                                            ((imagenes[i]->formato == VK_FORMAT_D24_UNORM_S8_UINT ||
-                                                              imagenes[i]->formato ==
-                                                                  VK_FORMAT_D32_SFLOAT_S8_UINT)
-                                                                 ? VK_IMAGE_ASPECT_STENCIL_BIT
-                                                                 : 0))
-                                         : VkImageAspectFlags(VK_IMAGE_ASPECT_COLOR_BIT),
-                                0, 0, 1};
-        copia.dstSubresource = copia.srcSubresource;
-        copia.extent = {imagenes[i]->ancho, imagenes[i]->alto, 1};
-        copiar_imagen_(cmd, imagenes[i]->imagen, VK_IMAGE_LAYOUT_GENERAL, imagenes[i]->ms_imagen,
-                       VK_IMAGE_LAYOUT_GENERAL, 1, &copia);
-        msaa_semilla_bytes_ += uint64_t(imagenes[i]->ancho) * imagenes[i]->alto * 4;
-      }
-      if (semilla_alguna) {
-        ++msaa_sin_borrado_;
-        VkMemoryBarrier barrera{};
-        barrera.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        barrera.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT |
-                                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        barrera.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        dfn_.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                                           VK_PIPELINE_STAGE_TRANSFER_BIT |
-                                           VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                                  VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrera, 0, nullptr, 0,
-                                  nullptr);
-      }
-    }
-#endif
     VkRenderPassBeginInfo inicio{};
     inicio.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     inicio.renderPass = pase;
@@ -14951,11 +14905,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   uint64_t pase_clave_ = 0;
 #if defined(FH2_RECOMP)
   uint32_t muestras_pase_ = 0;  // fh2_nativo_msaa: sample count of the open pass (0 = one sample)
+  uint32_t muestras_pedidas_pase_ = 0;  // the count the open pass was asked for (its identity), for the fast path
   uint32_t msaa_max_muestras_ = UINT32_MAX;  // cvar ∩ device caps, evaluated once (0 = MSAA unavailable)
   bool msaa_invalido_ = false;  // a multisample image/pass/pipeline failed: stay 1x for the session
   uint64_t msaa_pases_ = 0;
-  uint64_t msaa_semilla_bytes_ = 0;
-  uint64_t msaa_sin_borrado_ = 0;  // passes the game did not clear (seeded from the 1x image)
+  uint64_t msaa_sin_borrado_ = 0;  // passes that wanted MSAA but load the previous content: opened 1x
   uint64_t msaa_fallos_ = 0;
 #endif
   uint64_t pase_generacion_ = UINT64_MAX;
