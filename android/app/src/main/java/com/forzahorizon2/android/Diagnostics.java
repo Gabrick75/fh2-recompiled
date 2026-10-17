@@ -90,6 +90,130 @@ final class Diagnostics {
                 .format(new Date(library.lastModified()));
     }
 
+    // The newest play session at a glance, all read from its logs when the report is made (nothing measured
+    // during the game): when it ran, how the process ended, the FPS of its usage log, the Vulkan driver the game
+    // really opened and its last errors.
+    private static String lastSessionSummary(Context context, ActivityManager manager) {
+        StringBuilder out = new StringBuilder("Última sessão:\n");
+        File[] sessions = newestSessions(1);
+        if (sessions.length == 0) return out.append("  nenhuma em ").append(sessionLogFolder()).append('\n').toString();
+        File log = sessions[0];
+        long start = sessionStart(log);
+        out.append("  arquivo: ").append(log.getName()).append('\n');
+        out.append("  início: ").append(start > 0 ? formatTime(start) : "desconhecido")
+                .append(", último registro: ").append(formatTime(log.lastModified()));
+        if (start > 0 && log.lastModified() >= start) {
+            out.append(" (").append((log.lastModified() - start) / 1000).append(" s)");
+        }
+        out.append('\n').append("  término: ").append(exitLine(context, manager, start)).append('\n');
+        out.append("  FPS: ").append(fpsLine(new File(log.getParentFile(), log.getName().replace(".log", "_uso.log"))))
+                .append('\n');
+        String requested = null, device = null;
+        java.util.ArrayDeque<String> errors = new java.util.ArrayDeque<>();
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(
+                new java.io.FileInputStream(log), StandardCharsets.UTF_8))) {
+            for (String line; (line = reader.readLine()) != null; ) {
+                if (requested == null && line.contains("Vulkan requested driver:")) requested = afterLevel(line);
+                if (device == null && line.contains("Vulkan device '")) device = afterLevel(line);
+                if ((line.contains("[error]") || line.contains("[critical]") || line.contains("FATAL"))
+                        && !IGNORED_ERROR.matcher(line).find()) {
+                    if (errors.size() == 5) errors.removeFirst();
+                    errors.addLast(line.length() > 300 ? line.substring(0, 300) + "…" : line);
+                }
+            }
+        } catch (IOException error) {
+            out.append("  (log ilegível: ").append(error.getMessage()).append(")\n");
+        }
+        out.append("  driver pedido: ").append(requested != null ? requested : "o do sistema").append('\n');
+        out.append("  driver aberto: ").append(device != null ? device : "não registrado").append('\n');
+        out.append("  últimos erros:").append(errors.isEmpty() ? " nenhum\n" : "\n");
+        for (String error : errors) out.append("    ").append(error).append('\n');
+        return out.toString();
+    }
+
+    // The same noise tools/ler_partida.sh leaves out.
+    private static final java.util.regex.Pattern IGNORED_ERROR = java.util.regex.Pattern.compile(
+            "renderdoc|ResolvePath|XMsgStartIORequestEx|Unimplemented XAM", java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    // fh2_<yyyyMMdd>_<HHmmss>.log, GameActivity.sessionLogBase.
+    private static long sessionStart(File log) {
+        try {
+            String name = log.getName();
+            Date date = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).parse(name.substring(4, 19));
+            return date != null ? date.getTime() : 0;
+        } catch (Exception error) {
+            return 0;
+        }
+    }
+
+    private static String formatTime(long ms) {
+        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date(ms));
+    }
+
+    // "[2026-10-17 16:57:48.327] [info] [core] [t31771] text" -> "text".
+    private static String afterLevel(String line) {
+        int at = line.indexOf("] [t");
+        int end = at >= 0 ? line.indexOf("] ", at + 3) : -1;
+        return end >= 0 ? line.substring(end + 2) : line;
+    }
+
+    // The game process's newest exit after the session started (Android 11+).
+    private static String exitLine(Context context, ActivityManager manager, long start) {
+        if (Build.VERSION.SDK_INT < 30 || manager == null) return "desconhecido (Android 10 ou anterior)";
+        try {
+            for (ApplicationExitInfo exit : manager.getHistoricalProcessExitReasons(context.getPackageName(), 0, 10)) {
+                if (!context.getPackageName().equals(exit.getProcessName())) continue;
+                if (start > 0 && exit.getTimestamp() < start) break;
+                return exitReason(exit) + " em " + formatTime(exit.getTimestamp());
+            }
+        } catch (RuntimeException error) {
+            return "indisponível (" + error.getMessage() + ")";
+        }
+        return "sem registro (o jogo ainda estava aberto, ou o sistema não registrou)";
+    }
+
+    private static String exitReason(ApplicationExitInfo exit) {
+        switch (exit.getReason()) {
+            case ApplicationExitInfo.REASON_CRASH_NATIVE: return "CRASH NATIVO (sinal " + exit.getStatus() + ")";
+            case ApplicationExitInfo.REASON_CRASH: return "CRASH JAVA";
+            case ApplicationExitInfo.REASON_ANR: return "TRAVOU (ANR)";
+            case ApplicationExitInfo.REASON_LOW_MEMORY: return "fechado por falta de memória";
+            case ApplicationExitInfo.REASON_SIGNALED: return "morto pelo sinal " + exit.getStatus();
+            case ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE: return "fechado por uso excessivo de recursos";
+            case ApplicationExitInfo.REASON_EXIT_SELF: return "saiu sozinho (código " + exit.getStatus() + ")";
+            case ApplicationExitInfo.REASON_USER_REQUESTED: return "fechado pelo usuário";
+            case ApplicationExitInfo.REASON_USER_STOPPED: return "parado pelo usuário";
+            case ApplicationExitInfo.REASON_PACKAGE_UPDATED: return "fechado por uma atualização do app";
+            default: return "motivo " + exit.getReason() + " (" + exit.getDescription() + ")";
+        }
+    }
+
+    // Usage log lines "HH:MM:SS  27.5 fps  GPU ...", one every 5 s; -1.0 (nothing measured yet) is left out.
+    private static String fpsLine(File usage) {
+        if (!usage.isFile()) return "sem log de uso";
+        double min = Double.MAX_VALUE, max = 0, sum = 0;
+        int count = 0;
+        java.util.regex.Pattern fps = java.util.regex.Pattern.compile("^\\d\\d:\\d\\d:\\d\\d\\s+(-?[0-9.]+) fps");
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(
+                new java.io.FileInputStream(usage), StandardCharsets.UTF_8))) {
+            for (String line; (line = reader.readLine()) != null; ) {
+                java.util.regex.Matcher m = fps.matcher(line);
+                if (!m.find()) continue;
+                double value = Double.parseDouble(m.group(1));
+                if (value <= 0) continue;
+                min = Math.min(min, value);
+                max = Math.max(max, value);
+                sum += value;
+                ++count;
+            }
+        } catch (IOException | NumberFormatException error) {
+            return "log de uso ilegível";
+        }
+        if (count == 0) return "nenhuma medida";
+        return String.format(Locale.US, "mínimo %.1f, médio %.1f, máximo %.1f (%d medidas de 5 s)",
+                min, sum / count, max, count);
+    }
+
     static void recordLaunch(Context context) {
         context.getSharedPreferences("fh2_diagnostics", Context.MODE_PRIVATE).edit()
                 .putLong("last_launch_ms", System.currentTimeMillis()).putInt("last_launch_pid", Process.myPid()).apply();
@@ -115,7 +239,8 @@ final class Diagnostics {
                     .append("\nRAM total: ").append(memory.totalMem).append("\nRAM disponível: ").append(memory.availMem)
                     .append("\nÚltima tentativa de iniciar: ").append(context.getSharedPreferences("fh2_diagnostics", 0)
                             .getLong("last_launch_ms", 0))
-                    .append("\nBiblioteca de shaders: ").append(shaderLibraryLine(context)).append("\n\nOpções:\n");
+                    .append("\nBiblioteca de shaders: ").append(shaderLibraryLine(context))
+                    .append("\n\n").append(lastSessionSummary(context, manager)).append("\nOpções:\n");
             for (java.util.Map.Entry<String, ?> option : new java.util.TreeMap<>(GameOptions.prefs(context).getAll()).entrySet()) {
                 info.append(option.getKey()).append('=').append(option.getValue()).append('\n');
             }
