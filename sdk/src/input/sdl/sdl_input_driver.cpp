@@ -323,7 +323,36 @@ X_RESULT SDLInputDriver::SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION* vibr
   }
 
   if (controller->is_touch) {
-    VIBRATION_LOG("SetDeviceVibration: touch controller, skipping");
+    // Touch controller (on-screen pad): still vibrate the Android phone if the
+    // user enabled it and the mode includes the phone.
+    const char* touch_mode = fx2_android_vibration_mode();
+    bool touch_enabled = fx2_android_vibration_enabled();
+    VIBRATION_LOG("SetDeviceVibration: touch controller enabled=%d mode=%s left=%u right=%u",
+                  touch_enabled, touch_mode ? touch_mode : "null",
+                  vibration->left_motor_speed, vibration->right_motor_speed);
+    if (touch_enabled &&
+        (vibration->left_motor_speed > 0 || vibration->right_motor_speed > 0)) {
+      bool touch_vibrate_phone = touch_mode &&
+          (std::string(touch_mode) == "phone" || std::string(touch_mode) == "both");
+      if (touch_vibrate_phone) {
+        int intensity = 0;
+        if (vibration->left_motor_speed > vibration->right_motor_speed)
+          intensity = (int)vibration->left_motor_speed;
+        else
+          intensity = (int)vibration->right_motor_speed;
+        intensity = (intensity * 100) / 0xFFFF;
+        if (intensity < 1) intensity = 1;
+        if (intensity > 100) intensity = 100;
+        VIBRATION_LOG("SetDeviceVibration: touch calling phone vibrate duration=%u intensity=%d",
+                      kRumbleDurationMs, intensity);
+        fx2_android_vibration_vibrate(kRumbleDurationMs, intensity);
+      } else {
+        VIBRATION_LOG("SetDeviceVibration: touch mode=%s does not include phone, skipping",
+                      touch_mode ? touch_mode : "null");
+      }
+    } else if (!touch_enabled) {
+      VIBRATION_LOG("SetDeviceVibration: touch vibration disabled by user, skipping");
+    }
     return X_ERROR_SUCCESS;
   }
 
