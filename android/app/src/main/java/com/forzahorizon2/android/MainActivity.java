@@ -470,17 +470,7 @@ public final class MainActivity extends AppCompatActivity {
                     library, library ? tr("Encontrada", "Found") : tr("Faltando", "Missing"))));
 
             rendererOptions.addView(ui.header(tr("Imagem do nativo", "Native image")));
-            SegmentedControl aa = new SegmentedControl(this, new String[] {tr("Desligada", "Off"), "FXAA",
-                    "MSAA 2x", "MSAA 4x"});
-            // Stored like the emulated renderer's choice ("msaa" + MSAA_SAMPLES), so switching renderers keeps it.
-            String aaValor = GameOptions.get(this, GameOptions.ANTI_ALIASING);
-            boolean msaa2 = "2".equals(GameOptions.get(this, GameOptions.MSAA_SAMPLES));
-            aa.choose("fxaa".equals(aaValor) ? 1 : "msaa".equals(aaValor) ? (msaa2 ? 2 : 3) : 0, false);
-            aa.setOnChoice(index -> {
-                GameOptions.set(this, GameOptions.ANTI_ALIASING,
-                        index == 1 ? "fxaa" : index >= 2 ? "msaa" : "off");
-                if (index >= 2) GameOptions.set(this, GameOptions.MSAA_SAMPLES, index == 2 ? "2" : "4");
-            });
+            SegmentedControl aa = antiAliasingControl(null);
             rendererOptions.addView(ui.group(
                     renderScaleRow(true, null),
                     ui.stackedRow(tr("Suavização de bordas", "Anti-aliasing"),
@@ -515,33 +505,26 @@ public final class MainActivity extends AppCompatActivity {
             rendererOptions.addView(ui.header(tr("Imagem do emulado", "Emulated image")));
             LinearLayout image = ui.group();
             Runnable[] refreshScale = new Runnable[1];
-            LinearLayout msaa = ui.choiceRow(GameOptions.MSAA_SAMPLES, tr("Amostras do MSAA", "MSAA samples"),
-                    tr("4x é o que o jogo usa. 2x suaviza menos e custa menos (+37 %).",
-                       "4x is what the game uses. 2x smooths less and costs less (+37 %)."),
-                    new String[] {"2x", "4x"}, new String[] {"2", "4"}, v -> refreshScale[0].run());
             LinearLayout fxaa = ui.choiceRow(GameOptions.FXAA_QUALITY, tr("Qualidade do FXAA", "FXAA quality"),
                     tr("Alta suaviza mais bordas, inclusive as fracas, e deixa a imagem um pouco mais suave.",
                        "High smooths more edges, the faint ones too, and softens the image a little."),
                     new String[] {"Normal", tr("Alta", "High")}, new String[] {"normal", "high"});
             Runnable showModes = () -> {
-                String mode = GameOptions.get(this, GameOptions.ANTI_ALIASING);
-                msaa.setVisibility("msaa".equals(mode) ? View.VISIBLE : View.GONE);
-                fxaa.setVisibility("fxaa".equals(mode) ? View.VISIBLE : View.GONE);
+                fxaa.setVisibility("fxaa".equals(GameOptions.get(this, GameOptions.ANTI_ALIASING))
+                        ? View.VISIBLE : View.GONE);
                 Menu.refreshDividers(image);
             };
             image.addView(renderScaleRow(false, refreshScale));
-            image.addView(ui.choiceRow(GameOptions.ANTI_ALIASING, tr("Suavização de bordas", "Anti-aliasing"),
-                    tr("Tira o serrilhado. O MSAA é o do jogo e o mais caro para a GPU (desligado rende +91 %); o " +
-                       "FXAA é um filtro barato sobre a imagem final.",
+            image.addView(ui.stackedRow(tr("Suavização de bordas", "Anti-aliasing"),
+                    tr("Tira o serrilhado. O MSAA é o do jogo e o mais caro para a GPU (desligado rende +91 %; o 2x " +
+                       "custa menos que o 4x, +37 %); o FXAA é um filtro barato sobre a imagem final.",
                        "Smooths jagged edges. MSAA is the game's own and the costliest for the GPU (off gives " +
-                       "+91 %); FXAA is a cheap filter over the final image."),
-                    new String[] {tr("Desligada", "Off"), "MSAA", "FXAA"}, new String[] {"off", "msaa", "fxaa"}, v -> {
+                       "+91 %; 2x costs less than 4x, +37 %); FXAA is a cheap filter over the final image."),
+                    antiAliasingControl(() -> {
                         showModes.run();
-                        if ("msaa".equals(v)) Menu.enter(msaa);
-                        if ("fxaa".equals(v)) Menu.enter(fxaa);
+                        if ("fxaa".equals(GameOptions.get(this, GameOptions.ANTI_ALIASING))) Menu.enter(fxaa);
                         refreshScale[0].run();
-                    }));
-            image.addView(msaa);
+                    })));
             image.addView(fxaa);
             image.addView(anisotropicRow());
             image.addView(scalingRow());
@@ -688,6 +671,25 @@ public final class MainActivity extends AppCompatActivity {
 
     private void refreshFsrModeRows() {
         for (Runnable refresh : fsrModeRefreshers) refresh.run();
+    }
+
+    /**
+     * Off / FXAA / MSAA 2x / MSAA 4x, the same control for both renderers. Stored as "msaa" + MSAA_SAMPLES (the
+     * emulated renderer's form), so switching renderers keeps the choice. onChange (may be null) runs after a
+     * new choice is stored.
+     */
+    private SegmentedControl antiAliasingControl(Runnable onChange) {
+        SegmentedControl aa = new SegmentedControl(this, new String[] {tr("Desligada", "Off"), "FXAA",
+                "MSAA 2x", "MSAA 4x"});
+        String value = GameOptions.get(this, GameOptions.ANTI_ALIASING);
+        boolean msaa2 = "2".equals(GameOptions.get(this, GameOptions.MSAA_SAMPLES));
+        aa.choose("fxaa".equals(value) ? 1 : "msaa".equals(value) ? (msaa2 ? 2 : 3) : 0, false);
+        aa.setOnChoice(index -> {
+            GameOptions.set(this, GameOptions.ANTI_ALIASING, index == 1 ? "fxaa" : index >= 2 ? "msaa" : "off");
+            if (index >= 2) GameOptions.set(this, GameOptions.MSAA_SAMPLES, index == 2 ? "2" : "4");
+            if (onChange != null) onChange.run();
+        });
+        return aa;
     }
 
     private View scalingRow() {
