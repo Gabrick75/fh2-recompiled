@@ -299,7 +299,7 @@ extern "C" void fh2_android_afinidade_iniciar() {
 // submits (80-100 ms per 30 ms frame), not the GPU's busy time.
 //
 // The target is 85 % of the FPS limit's frame time (video_mode_refresh_rate is twice the limit,
-// GameOptions.vblankRate), so a frame's work fits before its vblank; with the limit off (480 Hz) it aims at 60 FPS.
+// GameOptions.vblankRate), so a frame's work fits before its vblank; with the limit off (240 Hz) it aims at 60 FPS.
 //
 //   --fh2_android_adpf=false   turns it off
 REXCVAR_DEFINE_BOOL(fh2_android_adpf, true, "FH2",
@@ -334,7 +334,7 @@ Adpf& AdpfState() {
   return adpf;
 }
 
-// 85 % of the FPS limit's frame time, at most 60 FPS (the limit off is a 480 Hz vblank).
+// 85 % of the FPS limit's frame time, at most 60 FPS (the limit off is a 240 Hz vblank).
 int64_t AdpfTargetNs() {
   double refresh_hz = std::atof(rex::cvar::GetFlagByName("video_mode_refresh_rate").c_str());
   if (!(refresh_hz > 0.0)) refresh_hz = 60.0;

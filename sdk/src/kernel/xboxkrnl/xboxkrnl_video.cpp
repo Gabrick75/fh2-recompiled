@@ -75,7 +75,8 @@ uint32_t GetConfiguredVideoModeHeight() {
 
 float GetConfiguredVideoModeRefreshRate() {
   // Up to 480 Hz: FH2 presents every 2nd vblank in game, so its FPS limit is half the vblank rate
-  // (GameOptions.java on Android: 30 fps = 60 Hz ... unlimited = 480 Hz).
+  // (GameOptions.java on Android: 30 fps = 60 Hz ... 120 fps and unlimited = 240 Hz; at 480 Hz the game stopped
+  // drawing its 3D world in races).
   double refresh_rate_hz = std::clamp(REXCVAR_GET(video_mode_refresh_rate), 24.0, 480.0);
   return float(refresh_rate_hz);
 }

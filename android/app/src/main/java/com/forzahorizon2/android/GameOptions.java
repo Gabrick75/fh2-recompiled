@@ -276,8 +276,9 @@ final class GameOptions {
      * the vblank rate, twice the chosen FPS: on the PC, 120 Hz took the loading screens from 55 to 104 fps and let
      * game frames under 30 ms through, and the game's clock is the real one (KeQueryPerformanceFrequency), so after
      * the same 20 s of throttle the car was at the same speed. Both renderers read the rate (VdQueryVideoMode in
-     * graphics_system.cpp and in BucleVblank). Unlimited is 480 Hz, the SDK's top: 240 fps in game. The start
-     * screens and loadings may go up to twice the limit.
+     * graphics_system.cpp and in BucleVblank). The start screens and loadings may go up to twice the limit.
+     * Unlimited is 240 Hz, the same as 120 fps: at 480 Hz the game stopped drawing its 3D world (black race on the
+     * Moto G9 Play, ~200 draws per frame against ~1,700 at 60 Hz), and no phone reaches 120 fps in a race anyway.
      */
     static int vblankRate(Context context) {
         int fps;
@@ -286,7 +287,7 @@ final class GameOptions {
         } catch (NumberFormatException e) {
             fps = 30;
         }
-        return fps <= 0 ? 480 : Math.max(30, Math.min(240, fps)) * 2;
+        return fps <= 0 ? 240 : Math.max(30, Math.min(120, fps)) * 2;
     }
 
     static GameLanguage gameLanguage(Context context) {
