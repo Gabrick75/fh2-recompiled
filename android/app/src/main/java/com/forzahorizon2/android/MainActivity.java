@@ -1169,27 +1169,44 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private ScrollView soundPage() {
+        // Volume group: choice row followed by its footer note.
+        LinearLayout volumeBox = ui.group(ui.choiceRow(GameOptions.VOLUME, tr("Volume do jogo", "Game volume"), null,
+                new String[] {"Normal", tr("Alto", "Loud"), tr("Muito alto", "Very loud"), tr("Máximo", "Max")},
+                new String[] {"100", "125", "150", "200"}));
+        TextView volumeFooter = ui.footer(tr("Acima de Normal o som pode distorcer nos picos.",
+                "Above Normal the sound may distort at its peaks."));
+
+        // Vibration section: toggle row + mode selector (shown only when vibration is on).
+        LinearLayout vibrationModeRow = ui.choiceRow(GameOptions.VIBRATION_MODE, tr("Modo de vibração", "Vibration mode"),
+                tr("Escolha o que vibra quando o jogo pede rumble.",
+                   "Choose what vibrates when the game requests rumble."),
+                new String[] {tr("Somente o celular", "Phone only"),
+                              tr("Somente o controle", "Gamepad only"),
+                              tr("Celular e controle", "Phone and gamepad")},
+                new String[] {"phone", "gamepad", "both"});
+        boolean vibrationOn = GameOptions.flag(this, GameOptions.VIBRATION_PHONE);
+        vibrationModeRow.setVisibility(vibrationOn ? View.VISIBLE : View.GONE);
+
+        LinearLayout vibrationBox = ui.group();
+        LinearLayout vibrationToggle = ui.toggleRow(tr("Vibração", "Vibration"),
+                tr("Faz o celular vibrar quando o controle do jogo vibrar. " +
+                   "A intensidade segue o jogo.",
+                   "Makes the phone vibrate when the gamepad vibrates. " +
+                   "Intensity follows the game."),
+                GameOptions.flag(this, GameOptions.VIBRATION_PHONE),
+                v -> {
+                    GameOptions.flag(this, GameOptions.VIBRATION_PHONE, v);
+                    vibrationModeRow.setVisibility(v ? View.VISIBLE : View.GONE);
+                });
+        vibrationBox.addView(vibrationToggle);
+        vibrationBox.addView(vibrationModeRow);
+
         return pageScroll(ui.pageTitle(pageName(SOUND), null),
                 ui.header(tr("Volume", "Volume")),
-                ui.group(ui.choiceRow(GameOptions.VOLUME, tr("Volume do jogo", "Game volume"), null,
-                        new String[] {"Normal", tr("Alto", "Loud"), tr("Muito alto", "Very loud"), tr("Máximo", "Max")},
-                        new String[] {"100", "125", "150", "200"}),
-                        ui.toggleRow(tr("Vibração", "Vibration"),
-                                tr("Faz o celular vibrar quando o controle do jogo vibrar. " +
-                                   "A intensidade segue o jogo.",
-                                   "Makes the phone vibrate when the gamepad vibrates. " +
-                                   "Intensity follows the game."),
-                                GameOptions.flag(this, GameOptions.VIBRATION_PHONE),
-                                v -> GameOptions.flag(this, GameOptions.VIBRATION_PHONE, v)),
-                        ui.choiceRow(GameOptions.VIBRATION_MODE, tr("Modo de vibração", "Vibration mode"),
-                                tr("Escolha o que vibra quando o jogo pede rumble.",
-                                   "Choose what vibrates when the game requests rumble."),
-                                new String[] {tr("Somente o celular", "Phone only"),
-                                              tr("Somente o controle", "Gamepad only"),
-                                              tr("Celular e controle", "Phone and gamepad")},
-                                new String[] {"phone", "gamepad", "both"})),
-                ui.footer(tr("Acima de Normal o som pode distorcer nos picos.",
-                        "Above Normal the sound may distort at its peaks.")));
+                volumeBox,
+                volumeFooter,
+                ui.header(tr("Vibração", "Vibration")),
+                vibrationBox);
     }
 
     // ---- Achievements: the game's, unlocked ones in the app's magenta, locked ones grey with a lock ------------
