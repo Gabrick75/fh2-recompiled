@@ -338,6 +338,11 @@ final class Diagnostics {
     }
 
     static File createReport(Context context) throws Exception {
+        return createReport(context, "");
+    }
+
+    /** description: what the player wrote before saving it ("" = nothing). */
+    static File createReport(Context context, String description) throws Exception {
         File directory = new File(context.getCacheDir(), "reports");
         if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Não foi possível criar o relatório.");
         // Leave recent attachments available while a mail app or document picker
@@ -365,7 +370,11 @@ final class Diagnostics {
             }
             info.append("\nArgumentos efetivos:\n");
             for (String argument : GameOptions.arguments(context)) info.append(argument).append('\n');
-            info.append("\nDescreva o que aconteceu e como reproduzir.\n");
+            if (description == null || description.trim().isEmpty()) {
+                info.append("\nDescreva o que aconteceu e como reproduzir.\n");
+            } else {
+                info.append("\nDescrição do jogador:\n").append(description.trim()).append('\n');
+            }
             add(zip, "relatorio.txt", info.toString().getBytes(StandardCharsets.UTF_8));
             add(zip, "gpu.json", gpu().toString(2).getBytes(StandardCharsets.UTF_8));
             addFile(zip, "last-java-crash.txt", new File(context.getFilesDir(), "last-java-crash.txt"));

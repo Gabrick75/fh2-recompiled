@@ -1880,12 +1880,35 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
 
     // ---- Diagnostic report (saved by the player; never sent anywhere) --------------------------------------
 
+    // First what happened, in the player's words: it goes into relatorio.txt, where the report used to end with
+    // an unanswered "describe what happened".
     private void prepareReport() {
+        android.widget.EditText description = new android.widget.EditText(this);
+        description.setHint(tr("O que aconteceu? Como reproduzir? (opcional)",
+                "What happened? How to reproduce it? (optional)"));
+        description.setMinLines(3);
+        description.setMaxLines(8);
+        description.setGravity(Gravity.TOP | Gravity.START);
+        description.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        android.widget.FrameLayout box = new android.widget.FrameLayout(this);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+        box.addView(description);
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(tr("Diagnóstico", "Diagnostics"))
+                .setView(box)
+                .setPositiveButton(tr("Criar relatório", "Create report"),
+                        (dialog, which) -> createReport(description.getText().toString()))
+                .setNegativeButton(tr("Cancelar", "Cancel"), null)
+                .show();
+    }
+
+    private void createReport(String description) {
         Menu.setRowEnabled(saveReport, false);
         Menu.titleOf(saveReport).setText(tr("Preparando diagnóstico…", "Preparing diagnostics…"));
         worker.execute(() -> {
             try {
-                File report = Diagnostics.createReport(this);
+                File report = Diagnostics.createReport(this, description);
                 mainHandler.post(() -> {
                     if (isFinishing() || isDestroyed()) return;
                     Menu.setRowEnabled(saveReport, true);
