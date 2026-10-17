@@ -227,11 +227,17 @@ public final class GameActivity extends SDLActivity
         if (fps <= 0) {
             fps = 240;  // "Unlimited": the fastest mode the panel has.
         }
+        Log.i(TAG, "useWholeScreen: fpsLimit=" + fps);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             Display display = getWindowManager().getDefaultDisplay();
+            Display.Mode current = display.getMode();
+            Log.i(TAG, "useWholeScreen: current display mode=" + current.getPhysicalWidth() + "x" +
+                    current.getPhysicalHeight() + " @" + current.getRefreshRate() + " Hz");
             Display.Mode best = null;
             for (Display.Mode mode : display.getSupportedModes()) {
-                if (mode.getPhysicalWidth() != display.getMode().getPhysicalWidth()) {
+                Log.i(TAG, "useWholeScreen: available mode=" + mode.getPhysicalWidth() + "x" +
+                        mode.getPhysicalHeight() + " @" + mode.getRefreshRate() + " Hz id=" + mode.getModeId());
+                if (mode.getPhysicalWidth() != current.getPhysicalWidth()) {
                     continue;
                 }
                 // The lowest mode that still shows every frame the game makes.
@@ -241,7 +247,32 @@ public final class GameActivity extends SDLActivity
                 }
             }
             if (best != null) {
+                Log.i(TAG, "useWholeScreen: selected mode=" + best.getPhysicalWidth() + "x" +
+                        best.getPhysicalHeight() + " @" + best.getRefreshRate() + " Hz id=" + best.getModeId());
                 attrs.preferredDisplayModeId = best.getModeId();
+            } else {
+                // Fallback: Free (ou um alvo acima do que o painel suporta) - escolhe o modo de refresh mais
+                // alto da mesma largura física, para não deixar a tela presa em 60 Hz.
+                Display.Mode fastest = null;
+                for (Display.Mode mode : display.getSupportedModes()) {
+                    if (mode.getPhysicalWidth() != current.getPhysicalWidth()) {
+                        continue;
+                    }
+                    if (fastest == null || mode.getRefreshRate() > fastest.getRefreshRate()) {
+                        fastest = mode;
+                    }
+                }
+                if (fastest != null) {
+                    Log.w(TAG, "useWholeScreen: NO mode >=" + fps + " Hz at " +
+                            current.getPhysicalWidth() + "px width; falling back to fastest mode " +
+                            fastest.getPhysicalWidth() + "x" + fastest.getPhysicalHeight() +
+                            " @" + fastest.getRefreshRate() + " Hz id=" + fastest.getModeId());
+                    attrs.preferredDisplayModeId = fastest.getModeId();
+                } else {
+                    Log.w(TAG, "useWholeScreen: NO display mode found >=" + fps + " Hz at " +
+                            current.getPhysicalWidth() + "px width; display stays at " +
+                            current.getRefreshRate() + " Hz");
+                }
             }
         }
         getWindow().setAttributes(attrs);
