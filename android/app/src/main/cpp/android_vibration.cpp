@@ -12,7 +12,7 @@ static JavaVM* g_vm = nullptr;
 
 static void vibrate_via_java(int durationMs, int intensity);
 static bool vibration_enabled_via_java(void);
-static const char* vibration_mode_via_java(void);
+static std::string vibration_mode_via_java();
 
 static void app_vibrate_cb(int duration_ms, int intensity) {
     vibrate_via_java(duration_ms, intensity);
@@ -23,7 +23,8 @@ static bool app_vibration_enabled_cb(void) {
 }
 
 static const char* app_vibration_mode_cb(void) {
-    return vibration_mode_via_java();
+    static std::string cached = vibration_mode_via_java();
+    return cached.c_str();
 }
 
 extern "C" jint JNI_OnLoad(JavaVM* vm, void*) {
