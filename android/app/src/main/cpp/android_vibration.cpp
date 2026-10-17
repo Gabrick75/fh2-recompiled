@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <android/log.h>
+#include <string>
 
 #include "android_vibration.h"
 #include "../../../../../sdk/include/rex/input/android_vibration_hook.h"
@@ -235,8 +236,8 @@ static bool vibration_enabled_via_java(void) {
     return enabled == JNI_TRUE;
 }
 
-static const char* vibration_mode_via_java(void) {
-    static const char* mode = "both";
+static std::string vibration_mode_via_java() {
+    std::string mode = "both";
     if (!g_vm) {
         return mode;
     }
@@ -327,7 +328,8 @@ extern "C" bool fh2_android_vibration_enabled(void) {
 }
 
 extern "C" const char* fh2_android_vibration_mode(void) {
-    return vibration_mode_via_java();
+    static std::string cached = vibration_mode_via_java();
+    return cached.c_str();
 }
 
 extern "C" void fh2_android_vibrate(int durationMs, int intensity) {
