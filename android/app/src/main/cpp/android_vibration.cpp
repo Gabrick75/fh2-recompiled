@@ -32,6 +32,7 @@ jclass g_vibration_effect = nullptr;  // global ref, null before API 26
 jmethodID g_create_one_shot = nullptr;
 jmethodID g_vibrate_effect = nullptr;
 jmethodID g_vibrate_ms = nullptr;
+jmethodID g_cancel = nullptr;
 
 // Threads this file attached to the JVM are detached when they exit, not after every call: an attach creates a
 // java.lang.Thread each time. Threads that were already attached (Java's, SDL's) are never detached here.
@@ -91,6 +92,8 @@ void LookUpVibrator(JNIEnv* env) {
   }
   g_vibrate_ms = env->GetMethodID(vibrator_class, "vibrate", "(J)V");
   ClearException(env);
+  g_cancel = env->GetMethodID(vibrator_class, "cancel", "()V");
+  ClearException(env);
   jclass effect = env->FindClass("android/os/VibrationEffect");
   if (!ClearException(env) && effect) {
     g_create_one_shot = env->GetStaticMethodID(effect, "createOneShot", "(JI)Landroid/os/VibrationEffect;");
@@ -110,7 +113,14 @@ void vibrate_via_java(int duration_ms, int intensity) {
   if (!env) {
     return;
   }
-  // amplitude 1-255 from intensity 0-100
+  if (intensity <= 0) {  // the game stopped rumbling
+    if (g_cancel) {
+      env->CallVoidMethod(g_vibrator, g_cancel);
+      ClearException(env);
+    }
+    return;
+  }
+  // amplitude 1-255 from intensity 1-100
   int amplitude = intensity * 255 / 100;
   if (amplitude < 1) amplitude = 1;
   if (amplitude > 255) amplitude = 255;

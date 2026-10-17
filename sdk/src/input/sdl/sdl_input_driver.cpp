@@ -302,23 +302,44 @@ X_RESULT SDLInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
 
 namespace {
 // The Android phone vibrates with the game's rumble when the launcher enabled it and the chosen mode includes
-// the phone; intensity follows the stronger motor. Called once per frame by the game, so it only reads cached
-// settings (android_vibration.cpp).
+// the phone; intensity follows the stronger motor. The game sets the rumble once per frame, so the phone is only
+// told when something changes (another intensity step, a stop) or its short one-shot is about to run out:
+// - stopped as soon as the game zeroes the motors (before, a 65 s one-shot kept buzzing after the rumble ended);
+// - armed for kPhoneRumbleMs and re-armed while the game keeps rumbling, so a game that stops calling (pause,
+//   crash, app in the background) leaves the phone still within a second.
+// Called with the driver's lock held (SetDeviceVibration), which also guards the state below.
+constexpr int kPhoneRumbleMs = 1000;
+constexpr auto kPhoneRumbleRearm = std::chrono::milliseconds(kPhoneRumbleMs - 250);
+constexpr int kPhoneIntensityStep = 10;  // percent; smaller changes keep the running one-shot
+
 void VibratePhone(const X_INPUT_VIBRATION* vibration) {
+  static int phone_intensity = 0;  // what the phone is doing now, 0 = still
+  static std::chrono::steady_clock::time_point phone_armed{};
   if (!fx2_android_vibration_enabled()) {
-    return;
-  }
-  const uint32_t speed = std::max<uint32_t>(vibration->left_motor_speed, vibration->right_motor_speed);
-  if (speed == 0) {
     return;
   }
   const char* mode = fx2_android_vibration_mode();
   if (!mode || (std::strcmp(mode, "phone") != 0 && std::strcmp(mode, "both") != 0)) {
     return;
   }
-  // Scale 0-65535 motor speed to 1-100 intensity.
-  const int intensity = std::clamp(int(speed * 100 / 0xFFFF), 1, 100);
-  fx2_android_vibration_vibrate(kRumbleDurationMs, intensity);
+  const uint32_t speed = std::max<uint32_t>(vibration->left_motor_speed, vibration->right_motor_speed);
+  if (speed == 0) {
+    if (phone_intensity != 0) {
+      phone_intensity = 0;
+      fx2_android_vibration_vibrate(0, 0);  // cancel
+    }
+    return;
+  }
+  // Scale 0-65535 motor speed to 1-100 intensity, in kPhoneIntensityStep steps.
+  const int intensity = std::clamp(
+      (int(speed * 100 / 0xFFFF) + kPhoneIntensityStep / 2) / kPhoneIntensityStep * kPhoneIntensityStep, 1, 100);
+  const auto now = std::chrono::steady_clock::now();
+  if (intensity == phone_intensity && now - phone_armed < kPhoneRumbleRearm) {
+    return;
+  }
+  phone_intensity = intensity;
+  phone_armed = now;
+  fx2_android_vibration_vibrate(kPhoneRumbleMs, intensity);
 }
 }  // namespace
 
