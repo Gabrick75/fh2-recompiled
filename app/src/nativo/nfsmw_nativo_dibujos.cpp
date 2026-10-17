@@ -12333,9 +12333,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       ++n;
     }
 #if defined(FH2_RECOMP)
-    // The resolve attachments (the usual images), after the multisample ones.
+    // The resolve attachments (the usual images), after the multisample ones. Only with samples: a 1x pass
+    // with them declares attachments its framebuffer does not have (Turnip's autotune read past the
+    // framebuffer's views and crashed on the Moto right after the intro video).
     uint32_t n_colores_resueltos = 0;
-    for (uint32_t k = 0; k < n_colores; ++k) {
+    for (uint32_t k = 0; con_ms && k < n_colores; ++k) {
       VkAttachmentDescription& r = adjuntos[n];
       r.format = adjuntos[colores[k].attachment].format;
       r.samples = VK_SAMPLE_COUNT_1_BIT;
