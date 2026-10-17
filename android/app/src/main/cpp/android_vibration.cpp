@@ -34,7 +34,8 @@ extern "C" jint JNI_OnLoad(JavaVM* vm, void*) {
 }
 
 static void vibrate_via_java(int durationMs, int intensity) {
-    LOGV("vibrate_via_java: duration=%d intensity=%d", durationMs, intensity);
+    LOGE("vibrate_via_java: duration=%d intensity=%d g_vm=%p", durationMs, intensity,
+         (void*)g_vm);
     if (!g_vm) {
         LOGE("JavaVM not available");
         return;
