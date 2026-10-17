@@ -1185,12 +1185,17 @@ public final class MainActivity extends AppCompatActivity {
                 new String[] {"phone", "gamepad", "both"},
                 value -> {
                     // Test vibration immediately when the user picks a mode.
-                    int durationMs = 300;
-                    int intensity;
-                    if ("phone".equals(value)) intensity = 100;
-                    else if ("gamepad".equals(value)) intensity = 60;
-                    else intensity = 100; // both
-                    TouchControlsView.nativeVibrate(durationMs, intensity);
+                    try {
+                        int durationMs = 300;
+                        int intensity;
+                        if ("phone".equals(value)) intensity = 100;
+                        else if ("gamepad".equals(value)) intensity = 60;
+                        else intensity = 100; // both
+                        TouchControlsView.nativeVibrate(durationMs, intensity);
+                    } catch (Throwable t) {
+                        // Avoid crashing the app if the native method is not ready yet.
+                        android.util.Log.e("FH2Vibration", "nativeVibrate failed: " + t);
+                    }
                 });
         boolean vibrationOn = GameOptions.flag(this, GameOptions.VIBRATION_PHONE);
         vibrationModeRow.setVisibility(vibrationOn ? View.VISIBLE : View.GONE);
