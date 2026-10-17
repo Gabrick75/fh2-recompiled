@@ -14018,6 +14018,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     precalentado_decidido_ = true;
     biblioteca_precalentado_ = biblioteca;
     precalentado_eds_ = eds_modo_;  // the ring would not request those of another dynamic state mode
+#if defined(FH2_RECOMP)
+    // fh2_nativo_msaa: the sample count the ring draws with this session, decided here (it also loads
+    // vkCreateRenderPass2) before the thread exists, so the thread only reads finished values.
+    precalentado_muestras_ = MuestrasMsaaMax();
+#endif
     precalentado_inicio_ = std::chrono::steady_clock::now();
     try {
       precalentado_hilo_ = std::thread([this] { BuclePrecalentado(); });
@@ -14126,17 +14131,34 @@ class DibujosVulkanImpl final : public DibujosVulkan {
           (r.clave.ps && (!ps || ps->vertices || !ps->shader || ps->shader->huella != r.huella_ps))) {
         estado = kListaSinShader;
         ++sin_shader;
-      } else if (r.clave.relleno2 != precalentado_eds_) {
+      } else if (r.clave.relleno2 != precalentado_eds_
+#if defined(FH2_RECOMP)
+                 // fh2_nativo_msaa: saved with another sample count (MSAA changed or unavailable): the ring would
+                 // never ask for it, and it needs a render pass with that count.
+                 || (r.clave.muestras != 0 && r.clave.muestras != precalentado_muestras_)
+#endif
+      ) {
         estado = kListaOtroModo;
         ++otro_modo;
       } else {
         const VkShaderModule modulo_vs = normal(*vs);
         const VkShaderModule modulo_ps = r.clave.ps ? pixel(r.clave, *ps) : VK_NULL_HANDLE;
+#if defined(FH2_RECOMP)
+        // fh2_nativo_msaa: a pipeline is only compatible with a render pass of its own sample count (and, with
+        // samples, its resolve attachments): one pass per formats and count.
+        const uint64_t clave_pase =
+            XXH3_64bits_withSeed(r.clave.formatos, sizeof(r.clave.formatos), r.clave.muestras);
+        auto it_pase = pases.find(clave_pase);
+        if (it_pase == pases.end()) {
+          it_pase = pases.emplace(clave_pase, CrearPase(r.clave.formatos, kCargaLeer, r.clave.muestras)).first;
+        }
+#else
         const uint64_t clave_pase = XXH3_64bits(r.clave.formatos, sizeof(r.clave.formatos));
         auto it_pase = pases.find(clave_pase);
         if (it_pase == pases.end()) {
           it_pase = pases.emplace(clave_pase, CrearPase(r.clave.formatos, kCargaLeer)).first;
         }
+#endif
         EntradaVertices entrada;
         for (uint32_t k = 0; k < r.n_atributos; ++k) {
           const AtributoRegistro& a = r.atributos[k];
@@ -14192,7 +14214,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         std::chrono::duration<double>(std::chrono::steady_clock::now() - precalentado_inicio_).count();
     REXLOG_INFO("[nativo] C6 precalentado (build 186): {} en {:.1f} s, prioridad {:#x}: {} de {} pipelines "
                 "precalentados, {} compilados de verdad ({:.0f} ms, {:.1f} ms cada uno; el resto ya estaba en la cache), "
-                "{} saltados porque la biblioteca ya no tiene sus shaders, {} de otro modo de estado dinamico y {} "
+                "{} saltados porque la biblioteca ya no tiene sus shaders, {} de otro modo de estado dinamico o de MSAA y {} "
                 "fallidos",
                 precalentado_parar_.load(std::memory_order_relaxed) ? "parado" : "terminado", segundos, prioridad,
                 hechos, n, compilados, double(ns_compilados) / 1e6,
@@ -15324,6 +15346,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   std::thread precalentado_hilo_;
   const ShadersNativos* biblioteca_precalentado_ = nullptr;
   uint32_t precalentado_eds_ = 0;
+#if defined(FH2_RECOMP)
+  uint32_t precalentado_muestras_ = 0;  // fh2_nativo_msaa: the session's sample count, for the prewarm thread
+#endif
   bool precalentado_decidido_ = false;
   bool precalentado_diferencia_ = false;
   std::chrono::steady_clock::time_point precalentado_inicio_{};
