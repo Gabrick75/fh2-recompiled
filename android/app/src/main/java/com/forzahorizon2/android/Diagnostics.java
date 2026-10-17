@@ -78,6 +78,17 @@ final class Diagnostics {
         return edition.supported() ? GameEdition.SUPPORTED_NAME : "incompatível (SHA-256 " + edition.sha256.substring(0, 12) + ")";
     }
 
+    // The native renderer's fh2_shaders.nfsp, where the launcher looks for it: path, size and date, so a report
+    // tells a missing, partial (cut copy) or old library apart.
+    private static String shaderLibraryLine(Context context) {
+        File library = MainActivity.shaderLibrary(context);
+        if (!library.isFile()) return "não encontrada (" + library.getPath() + ")";
+        long bytes = library.length();
+        return library.getPath() + " - " + bytes + " bytes (" + String.format(Locale.US, "%.1f", bytes / 1048576.0)
+                + " MB), modificada em " + new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+                .format(new Date(library.lastModified()));
+    }
+
     static void recordLaunch(Context context) {
         context.getSharedPreferences("fh2_diagnostics", Context.MODE_PRIVATE).edit()
                 .putLong("last_launch_ms", System.currentTimeMillis()).putInt("last_launch_pid", Process.myPid()).apply();
@@ -102,7 +113,8 @@ final class Diagnostics {
             info.append("Data: ").append(new Date()).append("\nABI: ").append(Arrays.toString(Build.SUPPORTED_ABIS))
                     .append("\nRAM total: ").append(memory.totalMem).append("\nRAM disponível: ").append(memory.availMem)
                     .append("\nÚltima tentativa de iniciar: ").append(context.getSharedPreferences("fh2_diagnostics", 0)
-                            .getLong("last_launch_ms", 0)).append("\n\nOpções:\n");
+                            .getLong("last_launch_ms", 0))
+                    .append("\nBiblioteca de shaders: ").append(shaderLibraryLine(context)).append("\n\nOpções:\n");
             for (java.util.Map.Entry<String, ?> option : new java.util.TreeMap<>(GameOptions.prefs(context).getAll()).entrySet()) {
                 info.append(option.getKey()).append('=').append(option.getValue()).append('\n');
             }
