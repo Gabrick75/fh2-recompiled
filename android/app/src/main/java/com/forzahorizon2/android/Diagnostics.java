@@ -131,6 +131,124 @@ final class Diagnostics {
         return out.toString();
     }
 
+    // What the phone and the game files look like when the report is made: storage, thermal and battery state,
+    // display rates, the connected pads and the phone's vibrator. Each part fails on its own.
+    private static String deviceAndGame(Context context) {
+        StringBuilder out = new StringBuilder("Aparelho e jogo:\n");
+        try {
+            File iso = GameIso.chosen(context);
+            if (iso != null) {
+                out.append("  jogo: ISO ").append(iso.getPath()).append(" (")
+                        .append(String.format(Locale.US, "%.2f", iso.length() / 1073741824.0)).append(" GB)\n");
+            } else {
+                File folder = MainActivity.gameRoot();
+                out.append("  jogo: pasta ").append(folder.getPath())
+                        .append(new File(folder, "default.xex").isFile() ? " (default.xex presente)" : " (SEM default.xex)")
+                        .append('\n');
+            }
+            android.os.StatFs storage = new android.os.StatFs(android.os.Environment.getExternalStorageDirectory().getPath());
+            out.append("  armazenamento livre: ")
+                    .append(String.format(Locale.US, "%.1f", storage.getAvailableBytes() / 1073741824.0))
+                    .append(" GB de ").append(String.format(Locale.US, "%.1f", storage.getTotalBytes() / 1073741824.0))
+                    .append(" GB\n");
+            long[] user = folderSize(SaveTransfer.userRoot(context));
+            out.append("  dados do usuário (saves): ").append(user[1]).append(" arquivos, ")
+                    .append(String.format(Locale.US, "%.1f", user[0] / 1048576.0)).append(" MB\n");
+        } catch (RuntimeException error) {
+            out.append("  arquivos: indisponível (").append(error.getMessage()).append(")\n");
+        }
+        try {
+            android.os.PowerManager power = (android.os.PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            if (power != null) {
+                if (Build.VERSION.SDK_INT >= 29) {
+                    out.append("  estado térmico: ").append(thermalName(power.getCurrentThermalStatus())).append('\n');
+                }
+                out.append("  economia de energia: ").append(power.isPowerSaveMode() ? "LIGADA" : "desligada").append('\n');
+            }
+            android.content.Intent battery = context.registerReceiver(null,
+                    new android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED));
+            if (battery != null) {
+                int level = battery.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1);
+                int scale = battery.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100);
+                int tenths = battery.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, 0);
+                int plugged = battery.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0);
+                out.append("  bateria: ").append(scale > 0 ? level * 100 / scale : level).append(" %, ")
+                        .append(tenths / 10.0).append(" °C").append(plugged != 0 ? ", carregando" : "").append('\n');
+            }
+            android.hardware.display.DisplayManager displays =
+                    (android.hardware.display.DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+            android.view.Display display = displays != null ? displays.getDisplay(android.view.Display.DEFAULT_DISPLAY) : null;
+            if (display != null) {
+                java.util.TreeSet<Integer> rates = new java.util.TreeSet<>();
+                for (android.view.Display.Mode mode : display.getSupportedModes()) rates.add(Math.round(mode.getRefreshRate()));
+                out.append("  tela: ").append(Math.round(display.getRefreshRate())).append(" Hz agora, suporta ")
+                        .append(rates).append(" Hz\n");
+            }
+        } catch (RuntimeException error) {
+            out.append("  estado do aparelho: indisponível (").append(error.getMessage()).append(")\n");
+        }
+        try {
+            android.hardware.input.InputManager input =
+                    (android.hardware.input.InputManager) context.getSystemService(Context.INPUT_SERVICE);
+            int pads = 0;
+            if (input != null) {
+                for (int id : input.getInputDeviceIds()) {
+                    android.view.InputDevice device = input.getInputDevice(id);
+                    if (device == null || device.isVirtual()) continue;
+                    int sources = device.getSources();
+                    if ((sources & android.view.InputDevice.SOURCE_GAMEPAD) != android.view.InputDevice.SOURCE_GAMEPAD
+                            && (sources & android.view.InputDevice.SOURCE_JOYSTICK) != android.view.InputDevice.SOURCE_JOYSTICK) {
+                        continue;
+                    }
+                    ++pads;
+                    out.append("  controle: ").append(device.getName())
+                            .append(String.format(Locale.US, " (vendor %04x, product %04x)", device.getVendorId(),
+                                    device.getProductId()))
+                            .append(device.getVibrator().hasVibrator() ? ", vibra" : ", sem vibração").append('\n');
+                }
+            }
+            if (pads == 0) out.append("  controle: nenhum físico conectado (toque)\n");
+            android.os.Vibrator vibrator = (android.os.Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
+            out.append("  vibração do celular: ").append(vibrator == null || !vibrator.hasVibrator() ? "não tem"
+                    : vibrator.hasAmplitudeControl() ? "controla a intensidade" : "só liga e desliga (sem intensidade)")
+                    .append('\n');
+        } catch (RuntimeException error) {
+            out.append("  controles: indisponível (").append(error.getMessage()).append(")\n");
+        }
+        return out.toString();
+    }
+
+    // {bytes, files} under a folder (the saves: small, a few hundred files at most).
+    private static long[] folderSize(File folder) {
+        long[] total = {0, 0};
+        File[] children = folder.listFiles();
+        if (children == null) return total;
+        for (File child : children) {
+            if (child.isDirectory()) {
+                long[] sub = folderSize(child);
+                total[0] += sub[0];
+                total[1] += sub[1];
+            } else {
+                total[0] += child.length();
+                ++total[1];
+            }
+        }
+        return total;
+    }
+
+    private static String thermalName(int status) {
+        switch (status) {
+            case android.os.PowerManager.THERMAL_STATUS_NONE: return "normal";
+            case android.os.PowerManager.THERMAL_STATUS_LIGHT: return "leve";
+            case android.os.PowerManager.THERMAL_STATUS_MODERATE: return "moderado";
+            case android.os.PowerManager.THERMAL_STATUS_SEVERE: return "SEVERO (o sistema corta o desempenho)";
+            case android.os.PowerManager.THERMAL_STATUS_CRITICAL: return "CRÍTICO";
+            case android.os.PowerManager.THERMAL_STATUS_EMERGENCY: return "EMERGÊNCIA";
+            case android.os.PowerManager.THERMAL_STATUS_SHUTDOWN: return "DESLIGANDO";
+            default: return "desconhecido (" + status + ")";
+        }
+    }
+
     // The same noise tools/ler_partida.sh leaves out.
     private static final java.util.regex.Pattern IGNORED_ERROR = java.util.regex.Pattern.compile(
             "renderdoc|ResolvePath|XMsgStartIORequestEx|Unimplemented XAM", java.util.regex.Pattern.CASE_INSENSITIVE);
@@ -240,7 +358,8 @@ final class Diagnostics {
                     .append("\nÚltima tentativa de iniciar: ").append(context.getSharedPreferences("fh2_diagnostics", 0)
                             .getLong("last_launch_ms", 0))
                     .append("\nBiblioteca de shaders: ").append(shaderLibraryLine(context))
-                    .append("\n\n").append(lastSessionSummary(context, manager)).append("\nOpções:\n");
+                    .append("\n\n").append(lastSessionSummary(context, manager))
+                    .append('\n').append(deviceAndGame(context)).append("\nOpções:\n");
             for (java.util.Map.Entry<String, ?> option : new java.util.TreeMap<>(GameOptions.prefs(context).getAll()).entrySet()) {
                 info.append(option.getKey()).append('=').append(option.getValue()).append('\n');
             }
