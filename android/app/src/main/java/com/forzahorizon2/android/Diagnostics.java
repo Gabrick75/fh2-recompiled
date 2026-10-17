@@ -64,7 +64,8 @@ final class Diagnostics {
         try { version = context.getPackageManager().getPackageInfo(context.getPackageName(), 0).versionName; }
         catch (Exception ignored) { }
         JSONObject device = gpu();
-        return "FH2 Recompiled " + version + "\nCelular: " + Build.MANUFACTURER + " " + Build.MODEL
+        return "FH2 Recompiled " + version + " (commit " + BuildConfig.GIT_COMMIT + " de " + BuildConfig.GIT_DATE + ")"
+                + "\nCelular: " + Build.MANUFACTURER + " " + Build.MODEL
                 + "\nAndroid: " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")"
                 + "\nGPU: " + device.optString("gpu", "indisponível")
                 + "\nVulkan: " + device.optString("vulkan", "indisponível")

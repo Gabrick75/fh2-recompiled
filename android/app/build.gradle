@@ -12,6 +12,21 @@ if (releaseKeyFile.exists()) {
     releaseKeyFile.withInputStream { releaseKeyProperties.load(it) }
 }
 
+// The exact build in every report and session log (all APKs of a version share versionName): the git commit,
+// "+alterado" with uncommitted changes, and the commit's date (not the build's, so BuildConfig stays cacheable).
+def gitOutput = { List<String> command ->
+    try {
+        def process = (['git', '-C', rootDir.parentFile.absolutePath] + command).execute()
+        process.waitFor()
+        return process.exitValue() == 0 ? process.text.trim() : ''
+    } catch (Exception ignored) {
+        return ''
+    }
+}
+def gitCommit = gitOutput(['rev-parse', '--short=8', 'HEAD']) ?: 'desconhecido'
+def gitDirty = gitOutput(['status', '--porcelain', '--untracked-files=no']) ? '+alterado' : ''
+def gitDate = gitOutput(['log', '-1', '--format=%cd', '--date=format:%Y-%m-%d %H:%M']) ?: 'desconhecida'
+
 android {
     namespace 'com.forzahorizon2.android'
     compileSdk 35
@@ -26,6 +41,8 @@ android {
         targetSdk 35
         versionCode 3
         versionName '0.3.0'
+        buildConfigField 'String', 'GIT_COMMIT', "\"${gitCommit}${gitDirty}\""
+        buildConfigField 'String', 'GIT_DATE', "\"${gitDate}\""
         ndk {
             abiFilters 'arm64-v8a'
         }
@@ -35,6 +52,10 @@ android {
                 arguments '-DANDROID_STL=c++_shared'
             }
         }
+    }
+
+    buildFeatures {
+        buildConfig true
     }
 
     signingConfigs {
