@@ -11658,6 +11658,51 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     return maximo;
   }
 
+  // fh2_nativo_msaa: a multisample image in lazily allocated memory when the device has it (tilers: the image
+  // stays in tile memory and takes no RAM), else in ordinary device memory (desktop GPUs).
+  bool CrearImagenMsTransitoria(const VkImageCreateInfo& info, VkImage& imagen, VkDeviceMemory& memoria) {
+    if (msaa_tipo_perezoso_ == UINT32_MAX - 1) {
+      // Bits of the memory types with LAZILY_ALLOCATED, read once (0 = none).
+      msaa_tipo_perezoso_ = 0;
+      if (const auto* instancia = dispositivo_->vulkan_instance()) {
+        VkPhysicalDeviceMemoryProperties mp{};
+        instancia->functions().vkGetPhysicalDeviceMemoryProperties(dispositivo_->physical_device(), &mp);
+        for (uint32_t t = 0; t < mp.memoryTypeCount; ++t) {
+          if (mp.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) {
+            msaa_tipo_perezoso_ |= 1u << t;
+          }
+        }
+      }
+      REXLOG_INFO("[fh2 nativo] MSAA: imagenes multimuestra {}",
+                  msaa_tipo_perezoso_ ? "transitorias en memoria perezosa (sin RAM en un tiler)"
+                                      : "en memoria normal (el dispositivo no tiene memoria perezosa)");
+    }
+    if (msaa_tipo_perezoso_) {
+      if (dfn_.vkCreateImage(device_, &info, nullptr, &imagen) == VK_SUCCESS) {
+        VkMemoryRequirements req{};
+        dfn_.vkGetImageMemoryRequirements(device_, imagen, &req);
+        const uint32_t tipos = req.memoryTypeBits & msaa_tipo_perezoso_;
+        if (tipos) {
+          VkMemoryAllocateInfo asignar{};
+          asignar.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+          asignar.allocationSize = req.size;
+          asignar.memoryTypeIndex = uint32_t(__builtin_ctz(tipos));
+          if (dfn_.vkAllocateMemory(device_, &asignar, nullptr, &memoria) == VK_SUCCESS) {
+            if (dfn_.vkBindImageMemory(device_, imagen, memoria, 0) == VK_SUCCESS) {
+              return true;
+            }
+            dfn_.vkFreeMemory(device_, memoria, nullptr);
+          }
+        }
+        dfn_.vkDestroyImage(device_, imagen, nullptr);
+      }
+      imagen = VK_NULL_HANDLE;
+      memoria = VK_NULL_HANDLE;
+    }
+    return rex::ui::vulkan::util::CreateDedicatedAllocationImage(
+        dispositivo_, info, rex::ui::vulkan::util::MemoryPurpose::kDeviceLocal, imagen, memoria);
+  }
+
   // Ensures every present attachment has a multisample image of the same size and format (created lazily).
   // False latches MSAA off for the session; the pass then opens 1x.
   bool PrepararMs(const std::array<ImagenNativa*, 5>& imagenes, uint32_t muestras) {
@@ -11683,14 +11728,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       info.arrayLayers = 1;
       info.samples = conteo;
       info.tiling = VK_IMAGE_TILING_OPTIMAL;
+      // Transient: the multisample images only live inside a pass that clears them (EmpezarPase) and store
+      // nothing (storeOp DONT_CARE), so a tiler keeps them in its tile memory and never backs them with RAM.
       info.usage = (profundidad ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
                                 : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) |
-                   VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+                   VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
       info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
       info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-      bool bien = rex::ui::vulkan::util::CreateDedicatedAllocationImage(
-          dispositivo_, info, rex::ui::vulkan::util::MemoryPurpose::kDeviceLocal, img->ms_imagen,
-          img->ms_memoria);
+      bool bien = CrearImagenMsTransitoria(info, img->ms_imagen, img->ms_memoria);
       if (bien) {
         VkImageAspectFlags aspecto = VK_IMAGE_ASPECT_COLOR_BIT;
         if (profundidad) {
@@ -14907,6 +14952,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   uint32_t muestras_pase_ = 0;  // fh2_nativo_msaa: sample count of the open pass (0 = one sample)
   uint32_t muestras_pedidas_pase_ = 0;  // the count the open pass was asked for (its identity), for the fast path
   uint32_t msaa_max_muestras_ = UINT32_MAX;  // cvar ∩ device caps, evaluated once (0 = MSAA unavailable)
+  uint32_t msaa_tipo_perezoso_ = UINT32_MAX - 1;  // memory types with LAZILY_ALLOCATED (bits), not read yet
   bool msaa_invalido_ = false;  // a multisample image/pass/pipeline failed: stay 1x for the session
   uint64_t msaa_pases_ = 0;
   uint64_t msaa_sin_borrado_ = 0;  // passes that wanted MSAA but load the previous content: opened 1x
