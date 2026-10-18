@@ -3,12 +3,16 @@ package com.forzahorizon2.android;
 import android.content.Context;
 import android.net.Uri;
 import android.os.Environment;
+import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
+import android.system.Os;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static com.forzahorizon2.android.AppLanguage.tr;
 
@@ -59,10 +63,22 @@ final class GameIso {
     }
 
     /**
-     * The file path behind what the system file picker returned, or null. Internal storage and SD cards
-     * ("primary:jogos/fh2.iso", "1234-ABCD:fh2.iso") and the Downloads list when it gives the path ("raw:/...").
+     * The file path behind what the system file picker returned, or null. First from the document id, then from
+     * the file the picker opens, for the ids that carry no path: the Downloads shortcut ("msf:123", "123"), the
+     * media categories ("document:123") and other apps' file managers shown in the picker (issue #1).
      */
-    static File pathOf(Uri uri) {
+    static File pathOf(Context context, Uri uri) {
+        File named = pathInId(uri);
+        if (named != null && named.isFile()) return named;
+        File opened = pathOfOpened(context, uri);
+        return opened != null ? opened : named;
+    }
+
+    /**
+     * The path the document id spells: internal storage and SD cards ("primary:jogos/fh2.iso", "1234-ABCD:fh2.iso"),
+     * the picker's Documents shortcut ("home:fh2.iso") and the Downloads list when it gives the path ("raw:/...").
+     */
+    private static File pathInId(Uri uri) {
         if ("file".equals(uri.getScheme())) return new File(uri.getPath());
         String id;
         try {
@@ -75,13 +91,47 @@ final class GameIso {
             int colon = id.indexOf(':');
             if (colon < 0) return null;
             String volume = id.substring(0, colon), relative = id.substring(colon + 1);
-            File base = "primary".equalsIgnoreCase(volume) ? Environment.getExternalStorageDirectory()
-                    : new File("/storage/" + volume);
+            File base;
+            if ("primary".equalsIgnoreCase(volume)) base = Environment.getExternalStorageDirectory();
+            else if ("home".equalsIgnoreCase(volume)) {
+                base = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
+            } else base = new File("/storage/" + volume);
             return new File(base, relative);
         }
         if ("com.android.providers.downloads.documents".equals(authority) && id.startsWith("raw:")) {
             return new File(id.substring(4));
         }
         return null;
+    }
+
+    /**
+     * The path of the file the picker's provider opens, read from /proc/self/fd, when it is a file this app can
+     * open by path (all-files access) and of the same size. A file served from the cloud or through a pipe has no
+     * such path.
+     */
+    private static File pathOfOpened(Context context, Uri uri) {
+        try (ParcelFileDescriptor descriptor = context.getContentResolver().openFileDescriptor(uri, "r")) {
+            if (descriptor == null) return null;
+            String target = Os.readlink("/proc/self/fd/" + descriptor.getFd());
+            File file = new File(storagePath(target));
+            long size = Os.fstat(descriptor.getFileDescriptor()).st_size;
+            return file.isFile() && file.canRead() && file.length() == size ? file : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * The /storage path of a path seen from the provider's side: MediaStore's FUSE mount (/mnt/user/0/emulated/0/,
+     * /mnt/user/0/1234-ABCD/), its lower file system (/data/media/0/) and SD cards (/mnt/media_rw/1234-ABCD/).
+     */
+    private static String storagePath(String path) {
+        Matcher m = Pattern.compile("^/mnt/user/\\d+/emulated/(\\d+)/(.*)").matcher(path);
+        if (m.matches()) return "/storage/emulated/" + m.group(1) + "/" + m.group(2);
+        m = Pattern.compile("^/data/media/(\\d+)/(.*)").matcher(path);
+        if (m.matches()) return "/storage/emulated/" + m.group(1) + "/" + m.group(2);
+        m = Pattern.compile("^/mnt/(?:user/\\d+|media_rw)/([^/]+)/(.*)").matcher(path);
+        if (m.matches() && !"emulated".equals(m.group(1))) return "/storage/" + m.group(1) + "/" + m.group(2);
+        return path;
     }
 }
