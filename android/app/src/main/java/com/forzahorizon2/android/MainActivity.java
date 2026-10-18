@@ -82,6 +82,7 @@ public final class MainActivity extends AppCompatActivity {
     private MaterialButton launchGame;
     private LinearLayout saveReport;
     private LinearLayout rootReport;
+    private LinearLayout rootProfile;
     private File pendingReport;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -1571,6 +1572,14 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
                 "os crashes completos do jogo, o log do kernel e o logcat inteiro. Só leitura: nada é alterado.",
                 "Asks for root (Magisk, KernelSU) and adds the game's full crash files, the kernel log and the whole " +
                 "logcat to the zip. Read only: nothing is changed."), false, view -> requestRootReport());
+        rootProfile = ui.toggleRow(tr("Gravar perfil de desempenho (root)", "Record a performance profile (root)"),
+                tr("Só na próxima partida: depois de 60 s de jogo, grava 10 s com o simpleperf e salva onde o jogo " +
+                   "gasta a CPU (por thread e por função) no log da sessão, que entra no diagnóstico. Precisa de " +
+                   "root: o pedido de permissão aparece ao ligar, não no meio da partida. Só mede, não muda nada.",
+                   "Next game only: after 60 s of play, records 10 s with simpleperf and saves where the game spends " +
+                   "the CPU (per thread and per function) in the session log, which goes into the report. Needs " +
+                   "root: the permission prompt shows when you turn it on, not during the game. Measures only."),
+                GameOptions.flag(this, GameOptions.ROOT_PROFILE), this::setRootProfile);
         return pageScroll(ui.pageTitle(pageName(ABOUT), null),
                 ui.group(hero),
                 ui.header(tr("Diagnóstico", "Diagnostics")),
@@ -1592,15 +1601,7 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
                         GameOptions.flag(this, GameOptions.VERBOSE_LOG),
                         v -> GameOptions.flag(this, GameOptions.VERBOSE_LOG, v)),
                         rootReport,
-                        ui.toggleRow(tr("Gravar perfil de desempenho (root)", "Record a performance profile (root)"),
-                        tr("Só na próxima partida: depois de 60 s de jogo, grava 10 s com o simpleperf e salva onde " +
-                           "o jogo gasta a CPU (por thread e por função) no log da sessão, que entra no diagnóstico. " +
-                           "Precisa de root: conceda antes pelo diagnóstico com root. Só mede, não muda nada.",
-                           "Next game only: after 60 s of play, records 10 s with simpleperf and saves where the game " +
-                           "spends the CPU (per thread and per function) in the session log, which goes into the " +
-                           "report. Needs root: grant it first through the diagnostics with root. Measures only."),
-                        GameOptions.flag(this, GameOptions.ROOT_PROFILE),
-                        v -> GameOptions.flag(this, GameOptions.ROOT_PROFILE, v))),
+                        rootProfile),
                 ui.footer(tr("Logs e informações do aparelho num .zip, para investigar um problema. Nada é enviado.",
                         "Logs and device information in a .zip, to look into a problem. Nothing is sent.")),
                 ui.header(tr("Projeto", "Project")),
@@ -2013,6 +2014,26 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
                             "continua disponível.", "No root: the phone is not rooted or the permission was denied. " +
                             "The usual diagnostics are still available."));
                 }
+            });
+        });
+    }
+
+    // The profile is recorded through su during the next game: the root manager's prompt is asked for here, when the
+    // option is turned on, not in the middle of a race. Denied, the option goes back off.
+    private void setRootProfile(boolean on) {
+        GameOptions.flag(this, GameOptions.ROOT_PROFILE, on);
+        if (!on) return;
+        Menu.setRowEnabled(rootProfile, false);
+        worker.execute(() -> {
+            boolean granted = RootDiagnostics.available();
+            mainHandler.post(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                Menu.setRowEnabled(rootProfile, true);
+                if (granted) return;
+                Menu.switchOf(rootProfile).setChecked(false);  // saves it off too
+                message(tr("Sem root: o aparelho não tem root ou a permissão foi negada. O perfil de desempenho " +
+                        "não será gravado.", "No root: the phone is not rooted or the permission was denied. The " +
+                        "performance profile will not be recorded."));
             });
         });
     }

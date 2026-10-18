@@ -327,6 +327,12 @@ final class Menu {
         return (TextView) labels.getChildAt(1);
     }
 
+    /** The switch of a row made with toggleRow, to turn it back without a tap. */
+    static MaterialSwitch switchOf(LinearLayout row) {
+        ViewGroup content = (ViewGroup) row.getChildAt(1);
+        return (MaterialSwitch) content.getChildAt(1);
+    }
+
     /** Enables or disables a row made here: it stops taking taps and its texts dim. */
     static void setRowEnabled(LinearLayout row, boolean enabled) {
         View content = row.getChildAt(1);
