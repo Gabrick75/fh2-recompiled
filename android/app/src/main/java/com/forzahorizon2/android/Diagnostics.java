@@ -211,6 +211,8 @@ final class Diagnostics {
                 }
             }
             if (pads == 0) out.append("  controle: nenhum físico conectado (toque)\n");
+            out.append("  arquivos de uso da GPU (o primeiro com valor é o da tela):\n")
+                    .append(UsageMonitor.gpuProbeReport());
             android.os.Vibrator vibrator = (android.os.Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
             out.append("  vibração do celular: ").append(vibrator == null || !vibrator.hasVibrator() ? "não tem"
                     : vibrator.hasAmplitudeControl() ? "controla a intensidade" : "só liga e desliga (sem intensidade)")
