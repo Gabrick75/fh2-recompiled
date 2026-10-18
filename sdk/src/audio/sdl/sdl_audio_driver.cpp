@@ -16,6 +16,7 @@
 #include <cstring>
 #include <fstream>
 #include <thread>
+#include <string>
 #include <vector>
 
 #include <rex/assert.h>
@@ -55,6 +56,13 @@ REXCVAR_DEFINE_BOOL(audio_sdl_bomba, REX_PLATFORM_ANDROID != 0, "Audio",
 REXCVAR_DEFINE_INT32(audio_sdl_bomba_cola, REX_PLATFORM_ANDROID ? 32 : 6, "Audio",
                      "Tramas de reserva de la bomba SDL (32 = 170 ms; necesita audio_sdl_bomba)")
     .range(2, 32);
+// Android 2048 (42.7 ms). SDL's default is 20 ms, and its ring between its own thread and AAudio's callback holds
+// two of those: a late SDL thread longer than ~20 ms already plays a gap. On the Moto G9 Play the SDL callbacks,
+// 20 ms apart, had a 62-117 ms gap in every 10 s while the game's frames were all there.
+REXCVAR_DEFINE_INT32(audio_sdl_tramas_dispositivo, REX_PLATFORM_ANDROID ? 2048 : 0, "Audio",
+                     "Tramas por buffer del dispositivo SDL (SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES); 0 = lo que "
+                     "elija SDL (en Android 20 ms)")
+    .range(0, 8192);
 REXCVAR_DEFINE_INT32(audio_volcado_salida_s, 0, "Audio",
                      "Diagnostico: segundos de lo que el driver SDL entrega al dispositivo (con los "
                      "silencios por falta de tramas) que se guardan en audio_salida.wav; 0 = nada");
@@ -182,6 +190,10 @@ bool SDLAudioDriver::Initialize() {
   SDL_SetHint(SDL_HINT_ANDROID_LOW_LATENCY_AUDIO, "0");
 #endif
 
+  if (const int32_t tramas = REXCVAR_GET(audio_sdl_tramas_dispositivo); tramas > 0) {
+    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, std::to_string(tramas).c_str());
+  }
+
   // Set app name for audio device identification
   SDL_SetAppMetadataProperty(SDL_PROP_APP_METADATA_NAME_STRING, "rexglue");
 
@@ -256,9 +268,12 @@ bool SDLAudioDriver::Initialize() {
   // first thing worth knowing when a report says the balance is wrong on one
   // speaker setup and right on another.
   const char* device_name = SDL_GetAudioDeviceName(sdl_device);
-  REXAPU_INFO("audio endpoint '{}': {} ch, {} Hz, format 0x{:04X}; submitting {} ch",
+  int tramas_dispositivo = 0;
+  SDL_GetAudioDeviceFormat(sdl_device, nullptr, &tramas_dispositivo);
+  REXAPU_INFO("audio endpoint '{}': {} ch, {} Hz, format 0x{:04X}; submitting {} ch; {} frames per device buffer",
               device_name ? device_name : "?", obtained_spec.channels, obtained_spec.freq,
-              static_cast<uint32_t>(obtained_spec.format), static_cast<int>(sdl_device_channels_));
+              static_cast<uint32_t>(obtained_spec.format), static_cast<int>(sdl_device_channels_),
+              tramas_dispositivo);
 
   if (REXCVAR_GET(audio_sdl_bomba)) {
     bomba_activa_ = true;
