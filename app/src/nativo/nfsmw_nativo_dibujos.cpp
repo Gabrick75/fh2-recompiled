@@ -14703,7 +14703,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
     }
     self->fh2_avisos_escritura_.fetch_add(1, std::memory_order_relaxed);
-    return std::make_pair(uint32_t(0), UINT32_MAX);
+    // Only the range just marked dirty may lose its watch (see CacheVerticesEntreFotogramas::EscrituraVigilada).
+    return std::make_pair(inicio, longitud);
   }
   uint32_t fh2_diag_textura_avisos_ = 0;  // the draw's pixel shader number, for the framing diagnostics
 #endif

@@ -258,7 +258,11 @@ class CacheVerticesEntreFotogramas {
       self->ticks_pagina_[p].store(tick, std::memory_order_release);
     }
     self->avisos_.fetch_add(1, std::memory_order_relaxed);
-    return {0u, UINT32_MAX};  // which part to unwatch does not matter here
+    // Exactly the stamped range. The heap unwatches the intersection of what every callback returns, padded up
+    // to a 4 MB block (PhysicalHeap::TriggerCallbacks, kMaxUnwatchExcess): returning everything let one write
+    // drop the watch of every other cached page in its block without stamping them, and later writes there
+    // went unseen (stale copies served).
+    return {inicio, longitud};
   }
 
   // Whether the range can go through the cache at all.
