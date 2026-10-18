@@ -246,6 +246,13 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_cache_indices_comprobar, false, "FH2",
 REXCVAR_DEFINE_BOOL(fh2_nativo_cache_buscas, true, "FH2",
                     "Native renderer: FH2 vertex fetch buffers reused across frames, kept valid by the write watch")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// VS and PS constants are uploaded again whenever their generation changes (a register really changed), 2.0-2.4 and
+// 1.1-1.4 GB per 10 s on the S23 Ultra and the POCO X7 Pro. Draws often go back to a block they already uploaded in
+// the same submission (materials and objects alternate): with this an XXH3 of the block finds that copy and its
+// offset is bound again instead of writing the block to the upload buffer (no CPU cache on Mali and older Adreno).
+REXCVAR_DEFINE_BOOL(fh2_nativo_constantes_por_contenido, true, "FH2",
+                    "Native renderer: reuse an identical VS/PS constant block already uploaded in this submission")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_BOOL(fh2_nativo_cache_buscas_comprobar, false, "FH2",
                     "Native renderer (measurement): fingerprint each fetch cache hit against the guest data and count "
                     "the mismatches (they miss and copy as usual)")
@@ -4120,11 +4127,15 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       ++resubidas_vs_[constantes_vs_generacion_ != p.generacion_constantes_vs ? 0
                       : constantes_vs_epoca_ != epoca_subida_                 ? 1
                                                                               : 2];
-      // With UBOs the block goes whole (the driver may read the full range) and aligned to the device minimum
-      cat_subida_ = 3;
-      Reservar(usar_ubo_ ? std::max<VkDeviceSize>(bytes_vs, kUboBytesVs) : bytes_vs, usar_ubo_ ? alineacion_ubo_ : 16,
-               constantes_vs_offset_);
-      std::memcpy(subida_datos_ + constantes_vs_offset_, r + kRegConstantesVs, bytes_vs);
+      // fh2_nativo_constantes_por_contenido: the same block already uploaded in this submission is bound again.
+      if (!BloqueConstantesRepetido(0, r + kRegConstantesVs, bytes_vs, constantes_vs_offset_)) {
+        // With UBOs the block goes whole (the driver may read the full range) and aligned to the device minimum
+        cat_subida_ = 3;
+        Reservar(usar_ubo_ ? std::max<VkDeviceSize>(bytes_vs, kUboBytesVs) : bytes_vs,
+                 usar_ubo_ ? alineacion_ubo_ : 16, constantes_vs_offset_);
+        std::memcpy(subida_datos_ + constantes_vs_offset_, r + kRegConstantesVs, bytes_vs);
+        AnotarBloqueConstantes(0, bytes_vs, constantes_vs_offset_);
+      }
       constantes_vs_generacion_ = p.generacion_constantes_vs;
       constantes_vs_epoca_ = epoca_subida_;
       constantes_vs_bytes_ = bytes_vs;
@@ -4136,10 +4147,13 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       ++resubidas_ps_[constantes_ps_generacion_ != p.generacion_constantes_ps ? 0
                       : constantes_ps_epoca_ != epoca_subida_                 ? 1
                                                                               : 2];
-      cat_subida_ = 4;
-      Reservar(usar_ubo_ ? std::max<VkDeviceSize>(bytes_ps, kUboBytesPs) : bytes_ps, usar_ubo_ ? alineacion_ubo_ : 16,
-               constantes_ps_offset_);
-      std::memcpy(subida_datos_ + constantes_ps_offset_, r + kRegConstantesPs, bytes_ps);
+      if (!BloqueConstantesRepetido(1, r + kRegConstantesPs, bytes_ps, constantes_ps_offset_)) {
+        cat_subida_ = 4;
+        Reservar(usar_ubo_ ? std::max<VkDeviceSize>(bytes_ps, kUboBytesPs) : bytes_ps,
+                 usar_ubo_ ? alineacion_ubo_ : 16, constantes_ps_offset_);
+        std::memcpy(subida_datos_ + constantes_ps_offset_, r + kRegConstantesPs, bytes_ps);
+        AnotarBloqueConstantes(1, bytes_ps, constantes_ps_offset_);
+      }
       constantes_ps_generacion_ = p.generacion_constantes_ps;
       constantes_ps_epoca_ = epoca_subida_;
       constantes_ps_bytes_ = bytes_ps;
@@ -5410,11 +5424,13 @@ class DibujosVulkanImpl final : public DibujosVulkan {
           "[nativo] C6 set 4: {:.2f} enlaces por dibujo ({} en {} dibujos); cambia solo VS {:.1f} %, solo PS "
           "{:.1f} %, solo compartidas {:.1f} %, VS+PS {:.1f} %, VS+compartidas {:.1f} %, PS+compartidas {:.1f} %, "
           "las tres {:.1f} %, tras bufer, ranura o cielo {:.1f} % | constantes subidas otra vez: VS {} por "
-          "generacion, {} por epoca y {} porque el shader lee mas; PS {}, {} y {}",
+          "generacion, {} por epoca y {} porque el shader lee mas; PS {}, {} y {} | de ellas, ya subidas en el "
+          "envio (fh2_nativo_constantes_por_contenido{}): VS {}, PS {}",
           double(enlaces) / double(set4_dibujos_), enlaces, set4_dibujos_, pct(set4_cambios_[1]),
           pct(set4_cambios_[2]), pct(set4_cambios_[4]), pct(set4_cambios_[3]), pct(set4_cambios_[5]),
           pct(set4_cambios_[6]), pct(set4_cambios_[7]), pct(set4_primeros_), resubidas_vs_[0], resubidas_vs_[1],
-          resubidas_vs_[2], resubidas_ps_[0], resubidas_ps_[1], resubidas_ps_[2]);
+          resubidas_vs_[2], resubidas_ps_[0], resubidas_ps_[1], resubidas_ps_[2],
+          constantes_por_contenido_ ? "" : " APAGADO", constantes_repetidas_[0], constantes_repetidas_[1]);
 #if REX_PLATFORM_SWITCH
       if (NvkSwitchSet4* const nvk = &nvk_switch_set4; nvk != nullptr && nvk->version == 1) {
         const uint64_t cuentas[9] = {__atomic_load_n(&nvk->total.enlaces_diferencia, __ATOMIC_RELAXED),
@@ -9149,7 +9165,32 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 
   // One upload buffer per work slot of the render target code: the previous frame's may still be in use
   // on the GPU while the other is filled.
+  // fh2_nativo_constantes_por_contenido: true if a block equal to these 'bytes' was uploaded in this submission; then
+  // 'offset' is its place. On false the caller uploads it and calls AnotarBloqueConstantes.
+  bool BloqueConstantesRepetido(uint32_t tipo, const uint32_t* datos, uint32_t bytes, VkDeviceSize& offset) {
+    if (!constantes_por_contenido_ || bytes == 0) {
+      return false;
+    }
+    huella_bloque_ = XXH3_64bits(datos, bytes);
+    const BloqueConstantes& e = bloques_constantes_[tipo * kBloquesConstantes + (huella_bloque_ & (kBloquesConstantes - 1))];
+    if (e.epoca != epoca_subida_ || e.huella != huella_bloque_ || e.bytes != bytes) {
+      return false;
+    }
+    offset = e.offset;
+    ++constantes_repetidas_[tipo];
+    return true;
+  }
+
+  void AnotarBloqueConstantes(uint32_t tipo, uint32_t bytes, VkDeviceSize offset) {
+    if (!constantes_por_contenido_ || bytes == 0) {
+      return;
+    }
+    bloques_constantes_[tipo * kBloquesConstantes + (huella_bloque_ & (kBloquesConstantes - 1))] =
+        BloqueConstantes{huella_bloque_, epoca_subida_, offset, bytes};
+  }
+
   bool CrearSubida() {
+    constantes_por_contenido_ = REXCVAR_GET(fh2_nativo_constantes_por_contenido);
     for (BuferSubida& s : subidas_) {
       const bool creado = CrearBuferSubida();
       s = {subida_, subida_memoria_, subida_tamano_real_, subida_datos_, subida_direccion_};
@@ -14667,6 +14708,23 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   std::array<uint64_t, 8> set4_cambios_{};  // binds by what changes: bit 0 VS, bit 1 PS, bit 2 shared
   uint64_t set4_primeros_ = 0;              // binds after a new command buffer, a new slot or the sky
   uint64_t set4_dibujos_ = 0;
+  /*
+   * fh2_nativo_constantes_por_contenido (BloqueConstantesRepetido). Per kind (0 VS, 1 PS), the blocks uploaded in the
+   * current submission by XXH3 and size: a direct-mapped table, an entry only valid in its epoch (the upload buffer
+   * it points into). A 64-bit XXH3 collision would bind another block; the pass key and the texture cache accept the
+   * same odds.
+   */
+  struct BloqueConstantes {
+    uint64_t huella = 0;
+    uint64_t epoca = UINT64_MAX;
+    VkDeviceSize offset = 0;
+    uint32_t bytes = 0;
+  };
+  static constexpr uint32_t kBloquesConstantes = 1024;  // per kind; power of 2
+  std::array<BloqueConstantes, 2 * kBloquesConstantes> bloques_constantes_{};
+  bool constantes_por_contenido_ = false;  // the cvar, read in CrearSubida
+  uint64_t huella_bloque_ = 0;             // of the block BloqueConstantesRepetido just missed, for Anotar
+  std::array<uint64_t, 2> constantes_repetidas_{};  // re-uploads avoided (cumulative, VS and PS)
   std::array<uint64_t, 3> resubidas_vs_{};  // constants uploaded again: by generation, by epoch, because they grow
   std::array<uint64_t, 3> resubidas_ps_{};
   std::chrono::steady_clock::time_point set4_informe_{};
