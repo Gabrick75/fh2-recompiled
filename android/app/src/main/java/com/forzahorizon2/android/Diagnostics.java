@@ -113,7 +113,9 @@ final class Diagnostics {
         try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(
                 new java.io.FileInputStream(log), StandardCharsets.UTF_8))) {
             for (String line; (line = reader.readLine()) != null; ) {
-                if (requested == null && line.contains("Vulkan requested driver:")) requested = afterLevel(line);
+                if (requested == null && line.contains("Vulkan requested driver:")) {
+                    requested = afterLevel(line).replace("Vulkan requested driver:", "").trim();
+                }
                 if (device == null && line.contains("Vulkan device '")) device = afterLevel(line);
                 if ((line.contains("[error]") || line.contains("[critical]") || line.contains("FATAL"))
                         && !IGNORED_ERROR.matcher(line).find()) {
@@ -126,6 +128,7 @@ final class Diagnostics {
         }
         out.append("  driver pedido: ").append(requested != null ? requested : "o do sistema").append('\n');
         out.append("  driver aberto: ").append(device != null ? device : "não registrado").append('\n');
+        out.append("  último crash Java: ").append(javaCrashLine(context, start)).append('\n');
         out.append("  últimos erros:").append(errors.isEmpty() ? " nenhum\n" : "\n");
         for (String error : errors) out.append("    ").append(error).append('\n');
         return out.toString();
@@ -247,6 +250,23 @@ final class Diagnostics {
             case android.os.PowerManager.THERMAL_STATUS_SHUTDOWN: return "DESLIGANDO";
             default: return "desconhecido (" + status + ")";
         }
+    }
+
+    // last-java-crash.txt (attached to every report) with its date, flagged when it comes from before the session:
+    // an old crash otherwise reads like the cause of a new problem.
+    private static String javaCrashLine(Context context, long start) {
+        File crash = new File(context.getFilesDir(), "last-java-crash.txt");
+        if (!crash.isFile()) return "nenhum";
+        long when = crash.lastModified();
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(
+                new java.io.FileInputStream(crash), StandardCharsets.UTF_8))) {
+            String first = reader.readLine();
+            if (first != null && first.startsWith("Timestamp: ")) when = Long.parseLong(first.substring(11).trim());
+        } catch (IOException | NumberFormatException ignored) {
+            // The file's date, then.
+        }
+        return formatTime(when) + (start > 0 && when < start ? " (ANTES desta sessão: antigo)" : " (nesta sessão)")
+                + ", em last-java-crash.txt";
     }
 
     // The same noise tools/ler_partida.sh leaves out.
