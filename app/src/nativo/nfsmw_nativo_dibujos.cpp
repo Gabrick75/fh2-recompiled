@@ -3700,7 +3700,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 #endif
     ) {
       const uint64_t n = ++claves_pase_rapidas_;
-      clave_pase = (n <= kClavesPaseAComprobar || (n & 4095) == 0) ? ComprobarClavePase(claves, n) : pase_clave_;
+      clave_pase = (n <= kClavesPaseAComprobar || (n & 4095) == 0) ? ComprobarClavePase(claves, n, muestras_max)
+                                                                     : pase_clave_;
     } else {
 #if defined(FH2_RECOMP)
       clave_pase = XXH3_64bits_withSeed(claves, sizeof(claves), muestras_max);
@@ -5532,8 +5533,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
    * The C3 guard. With the same render target bytes, the XXH3 must be pase_clave_. Returns the computed
    * one, which is the one that decides for this draw.
    */
-  uint64_t ComprobarClavePase(const uint64_t claves[5], uint64_t n) {
-    const uint64_t calculada = XXH3_64bits(claves, sizeof(uint64_t) * 5);
+  // semilla: the one the key was made with (fh2_nativo_msaa mixes the wanted sample count in; 0 = the plain
+  // XXH3_64bits, as without MSAA). Without it every MSAA session read a false DIFERENCIA and lost the fast key.
+  uint64_t ComprobarClavePase(const uint64_t claves[5], uint64_t n, uint64_t semilla) {
+    const uint64_t calculada = XXH3_64bits_withSeed(claves, sizeof(uint64_t) * 5, semilla);
     if (calculada != pase_clave_) {
       clave_pase_rapida_apagada_ = true;
       clave_pase_rapida_ = false;
