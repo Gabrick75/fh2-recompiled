@@ -1157,6 +1157,30 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_clave_canonica, false, "NFSMW",
  * nothing bound. It removes the repeated vkCmdBindPipeline of a pass's first draw (the counter's "same key
  * after starting a pass"). false = forgotten at every pass, as before.
  */
+/*
+ * The vertex stage of a pass does not wait for the previous passes (fh2_nativo_vertices_sin_espera).
+ *
+ * Every render pass declared external dependencies whose destination included the vertex shader stage
+ * (DependenciasImagenes), on both sides: the vertex work of each pass waited for all the fragment work before it.
+ * On a tiler that is a drain per pass: the next pass's binning cannot overlap the previous pass's shading, and FH2
+ * opens ~88 passes per frame (S23 Ultra, 2026-10-18). The Moto G9 Play stays at 99 % GPU even at 12 % resolution,
+ * where the pixels cost nothing and these bubbles do.
+ *
+ * Only one thing needs that wait: a vertex shader that samples an image written by earlier GPU work (the
+ * composite's exposure reads the adapted luminance in its vertex shader). Vertex, index and fetch data are written
+ * by the CPU and become visible with the submission. So the dependencies leave the vertex stage out, and a draw
+ * whose vertex shader has samplers gets an explicit barrier before its pass (BarreraVertices); one that arrives
+ * inside a pass opened without it closes that pass and reopens it (loadOp = LOAD, nothing lost). The C6 line
+ * "vertices sin espera" counts both. Every render pass of the session must declare the same dependencies (they are
+ * part of render pass compatibility), so this is read once. false = the vertex stage waits, as before.
+ */
+// OFF by default: A/B with the car stopped in the same spot (2026-10-18) gave no measurable gain, S23 Ultra 29.9-34.5
+// vs 29.7-34.0 fps and Moto G9 Play 17.3-17.6 vs 17.0-17.3, GPU at 99-100 % either way. The drivers seem to serialize
+// render passes anyway; kept for later tests (launcher toggle).
+REXCVAR_DEFINE_BOOL(fh2_nativo_vertices_sin_espera, false, "FH2",
+                    "Native renderer: a pass's vertex work does not wait for the previous passes' fragments; vertex "
+                    "shaders that sample images get their own barrier")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_pipeline_entre_pases, true, "NFSMW",
                     "Renderizador nativo (25/09, build 184): el pipeline enlazado se conserva al empezar un pase del "
                     "mismo bufer de comandos (Vulkan lo conserva). false = se vuelve a enlazar en cada pase, como "
@@ -3772,6 +3796,16 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       if (buscas_llenas && bytes_buscas_fh2 + 4 * rangos_buscas_fh2 > kBuscasTransitoria) {
         return Rechazar(14, "buscas mayores que su zona transitoria");
       }
+    }
+    // fh2_nativo_vertices_sin_espera: a vertex shader that samples needs everything written before it visible to the
+    // vertex stage, which the passes' dependencies no longer give. The barrier goes outside a pass: one opened
+    // without it closes here and the draw reopens it below.
+    if (vertices_sin_espera_ && p.vs && !p.vs->samplers.empty() && !(pase_activo_ && pase_vs_sincronizado_)) {
+      if (pase_activo_) {
+        TerminarPase();
+        ++vs_pases_reabiertos_;
+      }
+      BarreraVertices();
     }
 
     // --- Render pass ----------------------------------------------------------------
@@ -9197,6 +9231,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 
   bool CrearSubida() {
     constantes_por_contenido_ = REXCVAR_GET(fh2_nativo_constantes_por_contenido);
+    // Same reading as CrearPase's dependencies (kInitOnly), and only with GPU synchronization on: without it the
+    // passes declare no dependencies and nothing waits anyway.
+    vertices_sin_espera_ =
+        REXCVAR_GET(fh2_nativo_vertices_sin_espera) && REXCVAR_GET(nfsmw_nativo_sincronizacion_gpu);
     for (BuferSubida& s : subidas_) {
       const bool creado = CrearBuferSubida();
       s = {subida_, subida_memoria_, subida_tamano_real_, subida_datos_, subida_direccion_};
@@ -12372,6 +12410,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 #endif
     std::copy(std::begin(formatos), std::end(formatos), std::begin(pase_formatos_));
     pase_rp_ = pase;
+    pase_vs_sincronizado_ = barrera_vs_pendiente_;  // fh2_nativo_vertices_sin_espera (Dibujar)
+    barrera_vs_pendiente_ = false;
     // Phase 0b (nfsmw_nativo_pipeline_entre_pases). Vulkan keeps the bound pipeline across passes of the
     // same buffer: the pass's first draw only binds again if its key differs. A new buffer still starts
     // with nothing bound (Dibujar, grabacion_generacion_).
@@ -12699,7 +12739,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       std::array<VkSubpassDependency2, 2> dependencias2{};
       {
         VkSubpassDependency base[2]{};
-        DependenciasImagenes(base);
+        DependenciasImagenes(base, !REXCVAR_GET(fh2_nativo_vertices_sin_espera));
         for (uint32_t k = 0; k < 2; ++k) {
           dependencias2[k].sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
           dependencias2[k].srcSubpass = base[k].srcSubpass;
@@ -12740,7 +12780,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     info.pSubpasses = &subpase;
     VkSubpassDependency dependencias[2]{};
     if (REXCVAR_GET(nfsmw_nativo_sincronizacion_gpu)) {
-      DependenciasImagenes(dependencias);
+      DependenciasImagenes(dependencias, !REXCVAR_GET(fh2_nativo_vertices_sin_espera));
       info.dependencyCount = 2;
       info.pDependencies = dependencias;
     }
@@ -13482,6 +13522,27 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   }
 
   // Every 20 s, phase 0b (nfsmw_nativo_pipeline_entre_pases).
+  // fh2_nativo_vertices_sin_espera: every earlier write (attachments, copies, compute) visible to the vertex shaders of
+  // what follows. Recorded outside a pass; the pass that opens next is marked as covered.
+  void BarreraVertices() {
+    const VkCommandBuffer cmd = contexto_->ComandosTrabajo();
+    if (!cmd) {
+      return;
+    }
+    VkMemoryBarrier barrera{};
+    barrera.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrera.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                            VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    barrera.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    dfn_.vkCmdPipelineBarrier(cmd,
+                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                  VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                              VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 1, &barrera, 0, nullptr, 0, nullptr);
+    barrera_vs_pendiente_ = true;
+    ++vs_barreras_;
+  }
+
   void InformePipelineEntrePases() {
     const auto ahora = std::chrono::steady_clock::now();
     if (ahora - entre_pases_informe_ < std::chrono::seconds(20)) {
@@ -13500,6 +13561,12 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                          "pipeline enlazado que se conserva (su primer dibujo no vuelve a enlazar si la clave es la "
                          "misma)",
                          pipeline_entre_pases_ ? "se conserva" : "se olvida, como antes", pases, conservados);
+    NFSMW_INFORME_ANILLO("[nativo] C6 vertices sin espera entre pases (fh2_nativo_vertices_sin_espera): {}; en 20 s, {} "
+                         "barreras para vertex shaders que muestrean y {} pases reabiertos por ellas",
+                         vertices_sin_espera_ ? "encendido" : "apagado, los vertices esperan como antes",
+                         vs_barreras_ - vs_barreras_previas_, vs_pases_reabiertos_ - vs_reabiertos_previos_);
+    vs_barreras_previas_ = vs_barreras_;
+    vs_reabiertos_previos_ = vs_pases_reabiertos_;
   }
 
   /*
@@ -14837,6 +14904,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   bool pipeline_entre_pases_ = true;  // the cvar, once per command buffer (UsarRanura)
   bool pipeline_entre_pases_anotado_ = false;
   uint64_t pases_con_pipeline_ = 0;   // passes started with a bound pipeline that is kept
+  // fh2_nativo_vertices_sin_espera (BarreraVertices). The cvar, read with the render passes' first creation.
+  bool vertices_sin_espera_ = false;
+  bool barrera_vs_pendiente_ = false;  // a barrier recorded, for the pass that opens next
+  bool pase_vs_sincronizado_ = false;  // the open pass started after one
+  uint64_t vs_barreras_ = 0, vs_pases_reabiertos_ = 0, vs_barreras_previas_ = 0, vs_reabiertos_previos_ = 0;
   uint64_t entre_pases_pases_previos_ = 0;
   uint64_t entre_pases_conservados_previos_ = 0;
   std::chrono::steady_clock::time_point entre_pases_informe_{};
