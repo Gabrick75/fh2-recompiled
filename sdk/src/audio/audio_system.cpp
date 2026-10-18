@@ -25,6 +25,8 @@
 #include <rex/thread.h>
 #include <rex/cvar.h>
 
+#include <chrono>
+
 REXCVAR_DEFINE_INT32(
     audio_maxqframes, REX_PLATFORM_ANDROID ? 12 : 8, "Audio",
     "Max buffered audio frames (range 4-64). Lower reduces latency but may cause stuttering.");
@@ -114,6 +116,7 @@ X_STATUS AudioSystem::Setup(system::KernelState* kernel_state) {
 }
 
 void AudioSystem::WorkerThreadMain() {
+  PrioridadDeAudio("Audio Worker");
   // Initialize driver and ringbuffer.
   Initialize();
 
@@ -166,8 +169,16 @@ void AudioSystem::WorkerThreadMain() {
         }
         SCOPE_profile_cpu_i("apu", "rex::audio::AudioSystem->client_callback");
         uint64_t args[] = {client_callback_arg};
+        const auto callback_antes = std::chrono::steady_clock::now();
         function_dispatcher_->Execute(worker_thread_->thread_state(), client_callback, args,
                                       rex::countof(args));
+        const uint64_t callback_ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                  std::chrono::steady_clock::now() - callback_antes)
+                                                  .count());
+        auto& medida = g_medida_produccion_audio;
+        medida.callbacks.fetch_add(1, std::memory_order_relaxed);
+        medida.callback_ns.fetch_add(callback_ns, std::memory_order_relaxed);
+        MaximoAtomico(medida.callback_max_ns, callback_ns);
         if (diag_pump_count < 10) {
           REXAPU_DEBUG("AudioWorker: callback returned for client {}", index);
         }

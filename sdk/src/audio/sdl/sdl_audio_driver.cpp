@@ -16,6 +16,7 @@
 #include <cstring>
 #include <fstream>
 #include <thread>
+#include <string>
 #include <vector>
 
 #include <rex/assert.h>
@@ -32,6 +33,10 @@
 #include <rex/platform.h>
 #include <SDL3/SDL.h>
 
+#if REX_PLATFORM_ANDROID || REX_PLATFORM_GNU_LINUX
+#include <pthread.h>
+#endif
+
 REXCVAR_DEFINE_BOOL(audio_mute, false, "Audio", "Mute audio output");
 REXCVAR_DEFINE_INT32(audio_ganancia_pct, 100, "Audio",
                      "Volumen general de la salida en porcentaje (100 = sin cambio). Por encima de 100 puede "
@@ -44,9 +49,20 @@ REXCVAR_DEFINE_INT32(audio_sdl_rafaga_tramas, 0, "Audio",
 REXCVAR_DEFINE_BOOL(audio_sdl_bomba, REX_PLATFORM_ANDROID != 0, "Audio",
                     "Pedir audio a ritmo constante cada 5,333 ms, independiente de las rafagas del "
                     "dispositivo (por defecto en Android)");
-REXCVAR_DEFINE_INT32(audio_sdl_bomba_cola, REX_PLATFORM_ANDROID ? 12 : 6, "Audio",
-                     "Tramas de reserva de la bomba SDL (12 = 64 ms; necesita audio_sdl_bomba)")
+// Android 32 (170 ms): the Moto G9 Play's output stops taking frames for a while and then takes them all at once,
+// more than 12 (64 ms) in a burst: the pump stopped at a full reserve during the pause and the burst came out as
+// silence, ~5 % of the blocks in a ~40 s cycle. The queue only fills after such a pause; otherwise it stays low,
+// since the output takes slightly more than 187.5 frames per second.
+REXCVAR_DEFINE_INT32(audio_sdl_bomba_cola, REX_PLATFORM_ANDROID ? 32 : 6, "Audio",
+                     "Tramas de reserva de la bomba SDL (32 = 170 ms; necesita audio_sdl_bomba)")
     .range(2, 32);
+// Android 2048 (42.7 ms). SDL's default is 20 ms, and its ring between its own thread and AAudio's callback holds
+// two of those: a late SDL thread longer than ~20 ms already plays a gap. On the Moto G9 Play the SDL callbacks,
+// 20 ms apart, had a 62-117 ms gap in every 10 s while the game's frames were all there.
+REXCVAR_DEFINE_INT32(audio_sdl_tramas_dispositivo, REX_PLATFORM_ANDROID ? 2048 : 0, "Audio",
+                     "Tramas por buffer del dispositivo SDL (SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES); 0 = lo que "
+                     "elija SDL (en Android 20 ms)")
+    .range(0, 8192);
 REXCVAR_DEFINE_INT32(audio_volcado_salida_s, 0, "Audio",
                      "Diagnostico: segundos de lo que el driver SDL entrega al dispositivo (con los "
                      "silencios por falta de tramas) que se guardan en audio_salida.wav; 0 = nada");
@@ -66,6 +82,11 @@ struct VolcadoSalida {
 VolcadoSalida volcado_salida;
 uint64_t tramas_con_datos = 0;
 uint64_t tramas_de_silencio = 0;
+// The output's pace: SDL callbacks, the longest time between two and the most frames one asked for.
+uint64_t llamadas_sdl = 0;
+uint64_t hueco_sdl_max_ns = 0;
+int pedido_max_tramas = 0;
+std::chrono::steady_clock::time_point llamada_sdl_anterior{};
 std::chrono::steady_clock::time_point ultimo_informe_salida{};
 
 void GrabarSalida(const float* datos, int bytes, uint32_t canales) {
@@ -115,12 +136,32 @@ void ContarTrama(bool silencio) {
   if (ahora - ultimo_informe_salida < std::chrono::seconds(10)) {
     return;
   }
+  auto& medida = g_medida_produccion_audio;
+  const uint32_t liberadas = medida.liberadas.exchange(0, std::memory_order_relaxed);
+  const uint32_t rechazadas = medida.rechazadas.exchange(0, std::memory_order_relaxed);
+  const uint64_t retraso_max = medida.retraso_max_ns.exchange(0, std::memory_order_relaxed);
+  const uint32_t callbacks = medida.callbacks.exchange(0, std::memory_order_relaxed);
+  const uint64_t callback_ns = medida.callback_ns.exchange(0, std::memory_order_relaxed);
+  const uint64_t callback_max = medida.callback_max_ns.exchange(0, std::memory_order_relaxed);
+  const uint32_t entregadas = medida.entregadas.exchange(0, std::memory_order_relaxed);
+  const uint64_t hueco_max = medida.hueco_max_ns.exchange(0, std::memory_order_relaxed);
   if (ultimo_informe_salida.time_since_epoch().count() != 0) {
-    REXAPU_INFO("[audio] SDL en 10 s: {} tramas con datos y {} de silencio por falta de tramas",
-                tramas_con_datos, tramas_de_silencio);
+    REXAPU_INFO("[audio] SDL en 10 s: {} tramas con datos y {} de silencio por falta de tramas; {} llamadas "
+                "(hueco maximo {:.1f} ms, hasta {} tramas de una vez)",
+                tramas_con_datos, tramas_de_silencio, llamadas_sdl, double(hueco_sdl_max_ns) / 1e6,
+                pedido_max_tramas);
+    // The chain that feeds it: pump -> semaphore -> Audio Worker -> game callback -> SubmitFrame.
+    REXAPU_INFO("[audio] produccion en 10 s: bomba {} liberaciones ({} rechazadas, semaforo lleno; retraso "
+                "maximo {:.2f} ms), {} callbacks del juego ({:.1f} ms, maximo {:.2f} ms), {} tramas "
+                "entregadas (hueco maximo {:.1f} ms)",
+                liberadas, rechazadas, double(retraso_max) / 1e6, callbacks, double(callback_ns) / 1e6,
+                double(callback_max) / 1e6, entregadas, double(hueco_max) / 1e6);
   }
   tramas_con_datos = 0;
   tramas_de_silencio = 0;
+  llamadas_sdl = 0;
+  hueco_sdl_max_ns = 0;
+  pedido_max_tramas = 0;
   ultimo_informe_salida = ahora;
 }
 
@@ -148,6 +189,10 @@ bool SDLAudioDriver::Initialize() {
   // the smallest possible output latency.
   SDL_SetHint(SDL_HINT_ANDROID_LOW_LATENCY_AUDIO, "0");
 #endif
+
+  if (const int32_t tramas = REXCVAR_GET(audio_sdl_tramas_dispositivo); tramas > 0) {
+    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, std::to_string(tramas).c_str());
+  }
 
   // Set app name for audio device identification
   SDL_SetAppMetadataProperty(SDL_PROP_APP_METADATA_NAME_STRING, "rexglue");
@@ -223,9 +268,12 @@ bool SDLAudioDriver::Initialize() {
   // first thing worth knowing when a report says the balance is wrong on one
   // speaker setup and right on another.
   const char* device_name = SDL_GetAudioDeviceName(sdl_device);
-  REXAPU_INFO("audio endpoint '{}': {} ch, {} Hz, format 0x{:04X}; submitting {} ch",
+  int tramas_dispositivo = 0;
+  SDL_GetAudioDeviceFormat(sdl_device, nullptr, &tramas_dispositivo);
+  REXAPU_INFO("audio endpoint '{}': {} ch, {} Hz, format 0x{:04X}; submitting {} ch; {} frames per device buffer",
               device_name ? device_name : "?", obtained_spec.channels, obtained_spec.freq,
-              static_cast<uint32_t>(obtained_spec.format), static_cast<int>(sdl_device_channels_));
+              static_cast<uint32_t>(obtained_spec.format), static_cast<int>(sdl_device_channels_),
+              tramas_dispositivo);
 
   if (REXCVAR_GET(audio_sdl_bomba)) {
     bomba_activa_ = true;
@@ -243,6 +291,11 @@ bool SDLAudioDriver::Initialize() {
 }
 
 void SDLAudioDriver::Bomba() {
+#if REX_PLATFORM_ANDROID || REX_PLATFORM_GNU_LINUX
+  // Its own name, so Android's thread pinning (android_rendimiento.cpp) can tell it is an audio thread.
+  pthread_setname_np(pthread_self(), "Audio bomba");
+#endif
+  PrioridadDeAudio("Audio bomba");
   using Reloj = std::chrono::steady_clock;
   const auto intervalo =
       std::chrono::nanoseconds(1'000'000'000ll * channel_samples_ / frame_frequency_);
@@ -258,18 +311,33 @@ void SDLAudioDriver::Bomba() {
 #endif
       continue;
     }
+    // Every 5.333 ms block that went by since the last wake-up is owed to the game. Releasing one per
+    // wake-up and dropping the rest when late, as before, made the game mix fewer blocks than real time
+    // whenever this thread woke up late: on a POCO X7 Pro with the threads squeezed onto two cores, ~1,355
+    // blocks per 10 s instead of 1,875, and the sound came out slow and robotic. The reserve still caps
+    // it, and more than a reserve behind (a pause, a long stall) is not caught up.
+    const size_t reserva = size_t(REXCVAR_GET(audio_sdl_bomba_cola));
+    const size_t debidas = std::min<size_t>(1 + size_t((ahora - plazo) / intervalo), reserva);
     size_t en_cola;
     {
       std::unique_lock<std::mutex> guard(frames_mutex_);
       en_cola = frames_queued_.size();
     }
-    if (en_cola < size_t(REXCVAR_GET(audio_sdl_bomba_cola))) {
-      semaphore_->Release(1, nullptr);
-    }
+    size_t liberar = en_cola < reserva ? std::min(debidas, reserva - en_cola) : 0;
     if (en_cola < 2) {
-      semaphore_->Release(1, nullptr);
+      liberar = std::max<size_t>(liberar, 2);
     }
-    plazo += intervalo;
+    // One at a time: a release past the semaphore's maximum fails whole, and the game may still hold some.
+    size_t hechas = 0;
+    while (hechas < liberar && semaphore_->Release(1, nullptr)) {
+      ++hechas;
+    }
+    auto& medida = g_medida_produccion_audio;
+    medida.liberadas.fetch_add(uint32_t(hechas), std::memory_order_relaxed);
+    medida.rechazadas.fetch_add(uint32_t(liberar - hechas), std::memory_order_relaxed);
+    MaximoAtomico(medida.retraso_max_ns,
+                  uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(ahora - plazo).count()));
+    plazo += intervalo * debidas;
     if (ahora >= plazo) {
       plazo = ahora + intervalo;
     }
@@ -290,6 +358,19 @@ void SDLAudioDriver::SubmitFrame(uint32_t frame_ptr) {
   }
 
   std::memcpy(output_frame, input_frame, frame_samples_ * sizeof(float));
+
+  {
+    // The game submits from its audio callback, on the Audio Worker; a race here would only skew the report.
+    static std::chrono::steady_clock::time_point anterior{};
+    const auto ahora = std::chrono::steady_clock::now();
+    auto& medida = g_medida_produccion_audio;
+    medida.entregadas.fetch_add(1, std::memory_order_relaxed);
+    if (anterior.time_since_epoch().count() != 0) {
+      MaximoAtomico(medida.hueco_max_ns,
+                    uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(ahora - anterior).count()));
+    }
+    anterior = ahora;
+  }
 
   {
     std::unique_lock<std::mutex> guard(frames_mutex_);
@@ -351,6 +432,17 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
   const bool mute = REXCVAR_GET(audio_mute) || IsGameOutputSuppressed();
   // Android limits after folding, before any hard clipping. Other outputs retain their clamp.
   constexpr bool clamp_fold = REX_PLATFORM_ANDROID == 0;
+  {
+    const auto ahora = std::chrono::steady_clock::now();
+    if (llamada_sdl_anterior.time_since_epoch().count() != 0) {
+      hueco_sdl_max_ns = std::max<uint64_t>(
+          hueco_sdl_max_ns,
+          uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(ahora - llamada_sdl_anterior).count()));
+    }
+    llamada_sdl_anterior = ahora;
+    ++llamadas_sdl;
+    pedido_max_tramas = std::max(pedido_max_tramas, (additional_amount + len - 1) / len);
+  }
   const int32_t rafaga = REXCVAR_GET(audio_sdl_rafaga_tramas);
   if (rafaga > 1) {
     // Diagnostic: up to N frames at once, each with its release, into a private buffer SDL feeds from.

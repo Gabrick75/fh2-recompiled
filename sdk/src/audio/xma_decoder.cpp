@@ -9,6 +9,7 @@
  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
  */
 
+#include <rex/audio/audio_driver.h>
 #include <rex/audio/xma/context.h>
 #include <rex/audio/xma/decoder.h>
 #include <rex/cvar.h>
@@ -22,6 +23,7 @@
 #include <rex/system/function_dispatcher.h>
 #include <rex/system/thread_state.h>
 #include <rex/system/xthread.h>
+#include <rex/thread.h>
 
 #include <atomic>
 #include <chrono>
@@ -226,6 +228,7 @@ MedidaXma g_medida_xma;
 constexpr uint32_t kPalabrasPendientes = 10;  // 320 contextos / 32
 std::atomic<uint32_t> g_pendientes[kPalabrasPendientes];
 std::atomic<int64_t> g_pendiente_desde_ns{0};
+std::atomic<uint32_t> g_hilo_ultimo_kick{0};  // HiloDelUltimoKickXma
 
 int64_t AhoraNs() {
   using namespace std::chrono;
@@ -298,7 +301,12 @@ void InformarXma() {
 
 }  // namespace
 
+uint32_t HiloDelUltimoKickXma() {
+  return g_hilo_ultimo_kick.load(std::memory_order_relaxed);
+}
+
 void XmaDecoder::WorkerThreadMain() {
+  PrioridadDeAudio("XMA Decoder");
   while (worker_running_) {
     // Okay, let's loop through XMA contexts to find ones we need to decode!
     bool did_work = false;
@@ -489,6 +497,8 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
     // The context ID is a bit in the range of the entire context array.
     uint32_t base_context_id = (r - XmaRegister::Context0Kick) * 32;
     uint32_t kicked_value = value;
+    thread_local const uint32_t hilo_kick = rex::thread::current_thread_system_id();
+    g_hilo_ultimo_kick.store(hilo_kick, std::memory_order_relaxed);
     for (int i = 0; value && i < 32; ++i, value >>= 1) {
       if (value & 1) {
         uint32_t context_id = base_context_id + i;

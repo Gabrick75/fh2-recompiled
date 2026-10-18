@@ -29,6 +29,10 @@ namespace rex::audio {
 
 struct XMA_CONTEXT_DATA;
 
+// System id (gettid) of the thread that sent the latest XMA kick: the game's audio server. 0 until the first kick.
+// Android's thread pinning keeps it with the audio threads instead of with the rest of the game's threads.
+uint32_t HiloDelUltimoKickXma();
+
 class XmaDecoder {
  public:
   explicit XmaDecoder(runtime::FunctionDispatcher* function_dispatcher);
