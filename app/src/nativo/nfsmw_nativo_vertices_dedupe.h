@@ -221,6 +221,9 @@ class DedupeVertices {
  * after kSuciasParaVolatil stale finds a range stops being cached.
  *
  * Ring thread only, except EscrituraVigilada (guest threads, with the memory lock held: atomics only).
+ *
+ * A second instance holds FH2's vertex fetch buffers (fh2_nativo_cache_buscas): there every fetch copy lives in its
+ * buffer, cached or not, because the shaders read them all through one binding.
  */
 class CacheVerticesEntreFotogramas {
  public:
@@ -325,6 +328,24 @@ class CacheVerticesEntreFotogramas {
       }
     }
     return false;
+  }
+
+  // Whether 'bytes' in up to 'rangos' reservations fit without a Reservar failing: in the current segment's room,
+  // or in segments the GPU has finished with (each range may need a segment of its own, and none is larger than a
+  // segment). The FH2 fetch cache (fh2_nativo_cache_buscas) has no fallback buffer, so Dibujar asks this before
+  // its render pass and submits first when it says no.
+  bool Cabe(uint64_t bytes, uint32_t rangos) const {
+    const uint64_t libre_actual = segmento_actual_ < segmentos_ ? kTamanoSegmento - cursor_ : 0;
+    if (bytes + uint64_t(rangos) * 4 <= libre_actual) {
+      return true;
+    }
+    uint32_t libres = 0;
+    for (uint32_t s = 0; s < segmentos_; ++s) {
+      if (s != segmento_actual_ && ultimo_uso_[s] <= completado_) {
+        ++libres;
+      }
+    }
+    return libres >= std::min<uint64_t>(rangos, 2 * bytes / kTamanoSegmento + 1);
   }
 
   // Records the copy just queued at 'offset'. Replaces a stale copy of the same range (its old place is dropped
