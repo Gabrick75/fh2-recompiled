@@ -1529,7 +1529,16 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
                            "Writes to the log how long the GPU spends on each part of the frame. For " +
                            "investigating only: it slows the game down, since each measurement makes the GPU wait."),
                         GameOptions.flag(this, GameOptions.GPU_MEASUREMENTS),
-                        v -> GameOptions.flag(this, GameOptions.GPU_MEASUREMENTS, v))),
+                        v -> GameOptions.flag(this, GameOptions.GPU_MEASUREMENTS, v)),
+                        ui.toggleRow(tr("Log detalhado", "Verbose log"),
+                        tr("Grava todas as repetições das mensagens que se repetem várias vezes por segundo (texturas " +
+                           "do renderizador, funções não implementadas). Desligado, cada uma aparece só as 20 " +
+                           "primeiras vezes, e o log guarda mais tempo de jogo. Só para investigar.",
+                           "Writes every repetition of the messages that repeat many times a second (renderer " +
+                           "textures, unimplemented functions). Off, each shows only its first 20 times, and the log " +
+                           "keeps more play time. For investigating only."),
+                        GameOptions.flag(this, GameOptions.VERBOSE_LOG),
+                        v -> GameOptions.flag(this, GameOptions.VERBOSE_LOG, v))),
                 ui.footer(tr("Logs e informações do aparelho num .zip, para investigar um problema. Nada é enviado.",
                         "Logs and device information in a .zip, to look into a problem. Nothing is sent.")),
                 ui.header(tr("Projeto", "Project")),

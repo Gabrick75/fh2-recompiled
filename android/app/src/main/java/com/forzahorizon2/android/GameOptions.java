@@ -51,6 +51,7 @@ final class GameOptions {
     static final String EXACT_TARGETS = "exact_targets";  // fh2_nativo_destinos_exactos (native), off by default
     // Diagnostics (About page)
     static final String GPU_MEASUREMENTS = "gpu_measurements";  // fh2_nativo_medir_gpu: GPU times in the logs
+    static final String VERBOSE_LOG = "verbose_log";  // log_detalhado: every repeated message (stubs, textures)
     static final String ONE_PASS = "one_pass";                // fh2_uma_faixa: the scene in one pass, not 3 tiles
     static final String ADAPTIVE_VBLANK = "adaptive_vblank";  // vblank_adaptativo
     static final String RESOLVE_SHORTCUT = "resolve_shortcut";  // gpu_atalho_resolve
@@ -310,6 +311,8 @@ final class GameOptions {
     static List<String> arguments(Context context) {
         List<String> args = new ArrayList<>();
         args.add("--audio_ganancia_pct=" + get(context, VOLUME));
+        // Repeated messages (kernel stubs, resolved textures): the first 20 of each unless the player asks for all.
+        args.add("--log_detalhado=" + flag(context, VERBOSE_LOG));
         args.add("--audio_xma_en_trabajador=" + (flag(context, AUDIO_WORKER) ? 1 : 2));
         // Phone vibration (android_vibration.cpp): read once at start, never through the JVM per frame.
         args.add("--fh2_android_vibracao=" + flag(context, VIBRATION_PHONE));

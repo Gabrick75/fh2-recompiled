@@ -43,6 +43,11 @@ REXCVAR_DEFINE_STRING(log_level, "info", "Log",
 
 REXCVAR_DEFINE_STRING(log_file, "", "Log", "Log file path (empty = auto sequential naming)");
 
+REXCVAR_DEFINE_BOOL(log_detalhado, false, "Log",
+                    "Every repetition of the messages that repeat many times a second (kernel stubs, the native "
+                    "renderer's resolved textures); off = the first 20 of each, so they do not flood logcat or the "
+                    "session log");
+
 REXCVAR_DEFINE_BOOL(log_verbose, false, "Log", "Enable verbose logging (sets level to trace)")
     .debug_only();
 
@@ -645,6 +650,17 @@ std::map<std::string, std::string> ParseCategoryLevelsFromConfig(
   } catch (const toml::parse_error&) {}
 
   return result;
+}
+
+bool LogRepetido(std::atomic<uint32_t>& vezes, const char* nome) {
+  if (REXCVAR_GET(log_detalhado)) {
+    return true;
+  }
+  const uint32_t n = vezes.fetch_add(1, std::memory_order_relaxed);
+  if (n == 20) {
+    REXLOG_INFO("[log] '{}' repetida: as proximas ficam fora do log (opcao Log detalhado / --log_detalhado)", nome);
+  }
+  return n < 20;
 }
 
 }  // namespace rex
