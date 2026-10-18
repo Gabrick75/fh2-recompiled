@@ -105,6 +105,7 @@ public final class GameActivity extends SDLActivity
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
         super.onCreate(state);
         useWholeScreen();
+        hideSystemBars();
 
         ViewGroup root = findViewById(android.R.id.content);
         controls = new TouchControlsView(this);
@@ -279,9 +280,71 @@ public final class GameActivity extends SDLActivity
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
 
+    /*
+     * The status and navigation bars hidden, the image and the controls under where they were. SDL hides them with
+     * the deprecated setSystemUiVisibility flags, which some phones ignore or undo (POCO F6 with HyperOS: a black
+     * status-bar-high band over the top of the game, controls and FPS included, and the gesture pill shown). Android
+     * 11+ gets the current API; earlier versions keep SDL's flags. Applied again on every return to focus, after SDL.
+     */
+    private void hideSystemBars() {
+        android.view.Window window = getWindow();
+        window.setStatusBarColor(Color.TRANSPARENT);
+        window.setNavigationBarColor(Color.TRANSPARENT);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false);
+            android.view.WindowInsetsController bars = window.getInsetsController();
+            if (bars != null) {
+                bars.setSystemBarsBehavior(android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                bars.hide(android.view.WindowInsets.Type.statusBars() | android.view.WindowInsets.Type.navigationBars());
+            }
+            WindowManager.LayoutParams attrs = window.getAttributes();
+            if (attrs.layoutInDisplayCutoutMode != WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS) {
+                attrs.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+                window.setAttributes(attrs);
+            }
+        }
+        // What the system really did, once it has settled, in the session's usage log.
+        window.getDecorView().postDelayed(this::logScreenInsets, 500);
+    }
+
+    private String lastScreenInsets;
+
+    // "[tela]" line in <session>_uso.log when it changes: whether the bars are visible, the room they take, the
+    // cutout. A report from a phone where the band is still there then says why.
+    private void logScreenInsets() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return;
+        android.view.WindowInsets insets = getWindow().getDecorView().getRootWindowInsets();
+        if (insets == null) return;
+        android.graphics.Insets bars = insets.getInsets(android.view.WindowInsets.Type.systemBars());
+        android.view.DisplayCutout cutout = insets.getDisplayCutout();
+        View decor = getWindow().getDecorView();
+        String line = "[tela] janela " + decor.getWidth() + "x" + decor.getHeight()
+                + ", barra de status " + (insets.isVisible(android.view.WindowInsets.Type.statusBars()) ? "VISÍVEL" : "escondida")
+                + ", navegação " + (insets.isVisible(android.view.WindowInsets.Type.navigationBars()) ? "VISÍVEL" : "escondida")
+                + ", espaço das barras topo " + bars.top + " baixo " + bars.bottom + " esq " + bars.left + " dir " + bars.right
+                + ", recorte " + (cutout == null ? "nenhum" : "topo " + cutout.getSafeInsetTop() + " baixo "
+                + cutout.getSafeInsetBottom() + " esq " + cutout.getSafeInsetLeft() + " dir " + cutout.getSafeInsetRight());
+        if (line.equals(lastScreenInsets)) return;
+        lastScreenInsets = line;
+        Log.i(TAG, line);
+        try (java.io.FileWriter writer = new java.io.FileWriter(sessionLogBase() + "_uso.log", true)) {
+            writer.write(new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT).format(new java.util.Date())
+                    + "  " + line + "\n");
+        } catch (IOException ignored) {
+            // Logcat has it.
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) hideSystemBars();
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
+        hideSystemBars();
         if (inputManager != null) {
             inputManager.registerInputDeviceListener(this, null);
             refreshGamepads();
