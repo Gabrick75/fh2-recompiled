@@ -2381,10 +2381,22 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
           ContarDibujoShaders();
           EmparejarDibujo();
           TrazarDibujo();
-          // In mode 5 (depth only) the VS is enough: Xenos does not run the PS, and D3D leaves
-          // the PS object at 0 in some of the race shadow draws.
-          if (vs_dibujo_ &&
-              (ps_dibujo_ || (Registro(rex::graphics::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 5)) {
+          // Viz query proxy (PA_SC_VIZ_QUERY with viz_query_ena and kill_pix_post_hi_z): Xenos only tests
+          // it and discards the pixels, so nothing reaches the targets. The emulated path drops these
+          // draws (graphics/command_processor.cpp:1755); drawn here they showed up as the magenta wheel
+          // boxes in the car dealer. The record was already matched above, so the queue stays in step.
+          const uint32_t viz = Registro(rex::graphics::XE_GPU_REG_PA_SC_VIZ_QUERY);
+          if ((viz & 0x1) && (viz & 0x80)) {
+            if (++fh2_saltados_viz_ <= 4) {
+              REXLOG_INFO("[nativo] dibujo de viz query descartado: PA_SC_VIZ_QUERY {:08X}, VS {} PS {}, "
+                          "RB_MODECONTROL {}", viz, vs_dibujo_ ? int(vs_dibujo_->numero) : -1,
+                          ps_dibujo_ ? int(ps_dibujo_->numero) : -1,
+                          Registro(rex::graphics::XE_GPU_REG_RB_MODECONTROL) & 0x7);
+            }
+          } else if (vs_dibujo_ &&
+                     // In mode 5 (depth only) the VS is enough: Xenos does not run the PS, and D3D leaves
+                     // the PS object at 0 in some of the race shadow draws.
+                     (ps_dibujo_ || (Registro(rex::graphics::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 5)) {
             DibujarNativo();
           } else {
             // Diagnostic: draws dropped here without any report (no VS or PS identified for the draw).
@@ -5021,6 +5033,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   uint64_t dibujos_identificados_ = 0;
   uint64_t dibujos_sin_vs_ = 0;
   uint64_t fh2_saltados_sin_shader_ = 0;  // diagnostic: draws without VS/PS
+  uint64_t fh2_saltados_viz_ = 0;         // viz query proxies not drawn (Xenos kills their pixels)
   std::unordered_set<uint64_t> fh2_saltados_vistos_;
 #if defined(NFSC_RECOMP) || defined(FH2_RECOMP)
   struct DetalleSinVs {
