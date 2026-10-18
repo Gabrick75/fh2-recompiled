@@ -165,6 +165,43 @@ final class RootDiagnostics {
         return files;
     }
 
+    /**
+     * The performance profile of a running game ("Gravar perfil de desempenho"): after waitSeconds of play, 10 s of
+     * simpleperf on this process, summarized by thread and by function into <session>_perfil.txt. Only measures;
+     * the raw recording is deleted. Runs on a thread of its own.
+     */
+    static void profileLater(int pid, String sessionBase, int waitSeconds) {
+        Thread thread = new Thread(() -> {
+            try {
+                Thread.sleep(waitSeconds * 1000L);
+            } catch (InterruptedException e) {
+                return;
+            }
+            String data = "/data/local/tmp/fh2_perfil.data";
+            StringBuilder out = new StringBuilder("== simpleperf: 10 s do jogo (pid " + pid + ") depois de "
+                    + waitSeconds + " s de partida\n");
+            String record = run("simpleperf record -p " + pid + " --duration 10 -f 1000 -o " + data + " 2>&1", 60,
+                    64 * 1024);
+            out.append(record == null ? "sem root ou sem simpleperf\n" : record).append('\n');
+            if (record != null) {
+                String threads = run("simpleperf report -i " + data + " --sort comm --percent-limit 0.5 2>&1", 60,
+                        256 * 1024);
+                String functions = run("simpleperf report -i " + data
+                        + " --sort comm,dso,symbol --percent-limit 0.3 2>&1", 90, 1024 * 1024);
+                out.append("== por thread\n").append(threads).append("\n== por thread, biblioteca e funcao\n")
+                        .append(functions).append('\n');
+                run("rm -f " + data, 10, 1024);
+            }
+            try (java.io.FileWriter writer = new java.io.FileWriter(sessionBase + "_perfil.txt")) {
+                writer.write(out.toString());
+            } catch (IOException ignored) {
+                // Nowhere to write it.
+            }
+        }, "RootProfile");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
     private static byte[] bytes(String text) {
         return text.getBytes(StandardCharsets.UTF_8);
     }

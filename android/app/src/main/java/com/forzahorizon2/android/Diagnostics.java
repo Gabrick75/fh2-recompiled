@@ -425,6 +425,8 @@ final class Diagnostics {
                 addFile(zip, "sessao/" + session.getName(), session);
                 File usage = new File(session.getParentFile(), session.getName().replace(".log", "_uso.log"));
                 addFile(zip, "sessao/" + usage.getName(), usage);
+                File profile = new File(session.getParentFile(), session.getName().replace(".log", "_perfil.txt"));
+                addFile(zip, "sessao/" + profile.getName(), profile);
             }
             addLogcat(zip);
             if (Build.VERSION.SDK_INT >= 30 && manager != null) addExitInfo(zip, manager, context);

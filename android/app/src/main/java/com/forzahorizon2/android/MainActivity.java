@@ -1570,7 +1570,16 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
                            "keeps more play time. For investigating only."),
                         GameOptions.flag(this, GameOptions.VERBOSE_LOG),
                         v -> GameOptions.flag(this, GameOptions.VERBOSE_LOG, v)),
-                        rootReport),
+                        rootReport,
+                        ui.toggleRow(tr("Gravar perfil de desempenho (root)", "Record a performance profile (root)"),
+                        tr("Só na próxima partida: depois de 60 s de jogo, grava 10 s com o simpleperf e salva onde " +
+                           "o jogo gasta a CPU (por thread e por função) no log da sessão, que entra no diagnóstico. " +
+                           "Precisa de root: conceda antes pelo diagnóstico com root. Só mede, não muda nada.",
+                           "Next game only: after 60 s of play, records 10 s with simpleperf and saves where the game " +
+                           "spends the CPU (per thread and per function) in the session log, which goes into the " +
+                           "report. Needs root: grant it first through the diagnostics with root. Measures only."),
+                        GameOptions.flag(this, GameOptions.ROOT_PROFILE),
+                        v -> GameOptions.flag(this, GameOptions.ROOT_PROFILE, v))),
                 ui.footer(tr("Logs e informações do aparelho num .zip, para investigar um problema. Nada é enviado.",
                         "Logs and device information in a .zip, to look into a problem. Nothing is sent.")),
                 ui.header(tr("Projeto", "Project")),

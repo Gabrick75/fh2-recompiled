@@ -137,6 +137,11 @@ public final class GameActivity extends SDLActivity
         if (!showUsage) {
             startUsageMonitor(null);
         }
+        // "Gravar perfil de desempenho (root)": once, in this game, then the option turns itself off.
+        if (GameOptions.flag(this, GameOptions.ROOT_PROFILE)) {
+            GameOptions.flag(this, GameOptions.ROOT_PROFILE, false);
+            RootDiagnostics.profileLater(android.os.Process.myPid(), sessionLogBase(), 60);
+        }
 
         inputManager = (InputManager) getSystemService(Context.INPUT_SERVICE);
         sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);

@@ -52,6 +52,7 @@ final class GameOptions {
     // Diagnostics (About page)
     static final String GPU_MEASUREMENTS = "gpu_measurements";  // fh2_nativo_medir_gpu: GPU times in the logs
     static final String VERBOSE_LOG = "verbose_log";  // log_detalhado: every repeated message (stubs, textures)
+    static final String ROOT_PROFILE = "root_profile";  // one simpleperf profile in the next game (root)
     static final String ONE_PASS = "one_pass";                // fh2_uma_faixa: the scene in one pass, not 3 tiles
     static final String ADAPTIVE_VBLANK = "adaptive_vblank";  // vblank_adaptativo
     static final String RESOLVE_SHORTCUT = "resolve_shortcut";  // gpu_atalho_resolve
