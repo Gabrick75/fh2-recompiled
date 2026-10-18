@@ -363,8 +363,15 @@ final class Diagnostics {
         return createReport(context, "");
     }
 
-    /** description: what the player wrote before saving it ("" = nothing). */
     static File createReport(Context context, String description) throws Exception {
+        return createReport(context, description, false);
+    }
+
+    /**
+     * description: what the player wrote before saving it ("" = nothing). root: add the root/ folder
+     * (RootDiagnostics.collect; the caller already got the permission with RootDiagnostics.available).
+     */
+    static File createReport(Context context, String description, boolean root) throws Exception {
         File directory = new File(context.getCacheDir(), "reports");
         if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Não foi possível criar o relatório.");
         // Leave recent attachments available while a mail app or document picker
@@ -396,6 +403,12 @@ final class Diagnostics {
                 info.append("\nDescreva o que aconteceu e como reproduzir.\n");
             } else {
                 info.append("\nDescrição do jogador:\n").append(description.trim()).append('\n');
+            }
+            if (root) {
+                java.util.Map<String, byte[]> extra = RootDiagnostics.collect();
+                info.append("\nColeta com root: ").append(new String(extra.remove(""), StandardCharsets.UTF_8))
+                        .append(" (pasta root/ do zip)\n");
+                for (java.util.Map.Entry<String, byte[]> file : extra.entrySet()) add(zip, file.getKey(), file.getValue());
             }
             add(zip, "relatorio.txt", info.toString().getBytes(StandardCharsets.UTF_8));
             add(zip, "gpu.json", gpu().toString(2).getBytes(StandardCharsets.UTF_8));

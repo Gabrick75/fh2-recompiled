@@ -78,6 +78,7 @@ public final class MainActivity extends AppCompatActivity {
     private LinearLayout stopIso;
     private MaterialButton launchGame;
     private LinearLayout saveReport;
+    private LinearLayout rootReport;
     private File pendingReport;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -1544,7 +1545,11 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
         names.addView(versionText);
         hero.addView(names, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
-        saveReport = ui.actionRow(reportLabel(), null, false, view -> prepareReport());
+        saveReport = ui.actionRow(reportLabel(), null, false, view -> prepareReport(false));
+        rootReport = ui.actionRow(rootReportLabel(), tr("Pede permissão de root (Magisk, KernelSU) e junta ao zip " +
+                "os crashes completos do jogo, o log do kernel e o logcat inteiro. Só leitura: nada é alterado.",
+                "Asks for root (Magisk, KernelSU) and adds the game's full crash files, the kernel log and the whole " +
+                "logcat to the zip. Read only: nothing is changed."), false, view -> requestRootReport());
         return pageScroll(ui.pageTitle(pageName(ABOUT), null),
                 ui.group(hero),
                 ui.header(tr("Diagnóstico", "Diagnostics")),
@@ -1564,7 +1569,8 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
                            "textures, unimplemented functions). Off, each shows only its first 20 times, and the log " +
                            "keeps more play time. For investigating only."),
                         GameOptions.flag(this, GameOptions.VERBOSE_LOG),
-                        v -> GameOptions.flag(this, GameOptions.VERBOSE_LOG, v))),
+                        v -> GameOptions.flag(this, GameOptions.VERBOSE_LOG, v)),
+                        rootReport),
                 ui.footer(tr("Logs e informações do aparelho num .zip, para investigar um problema. Nada é enviado.",
                         "Logs and device information in a .zip, to look into a problem. Nothing is sent.")),
                 ui.header(tr("Projeto", "Project")),
@@ -1953,9 +1959,34 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
 
     // ---- Diagnostic report (saved by the player; never sent anywhere) --------------------------------------
 
+    private static String rootReportLabel() {
+        return tr("Diagnóstico com root (ZIP)", "Diagnostics with root (ZIP)");
+    }
+
+    // The root manager's prompt first (off the UI thread, it waits for the player), then the usual report flow.
+    private void requestRootReport() {
+        Menu.setRowEnabled(rootReport, false);
+        Menu.titleOf(rootReport).setText(tr("Pedindo root…", "Asking for root…"));
+        worker.execute(() -> {
+            boolean granted = RootDiagnostics.available();
+            mainHandler.post(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                Menu.setRowEnabled(rootReport, true);
+                Menu.titleOf(rootReport).setText(rootReportLabel());
+                if (granted) {
+                    prepareReport(true);
+                } else {
+                    message(tr("Sem root: o aparelho não tem root ou a permissão foi negada. O diagnóstico comum " +
+                            "continua disponível.", "No root: the phone is not rooted or the permission was denied. " +
+                            "The usual diagnostics are still available."));
+                }
+            });
+        });
+    }
+
     // First what happened, in the player's words: it goes into relatorio.txt, where the report used to end with
     // an unanswered "describe what happened".
-    private void prepareReport() {
+    private void prepareReport(boolean root) {
         android.widget.EditText description = new android.widget.EditText(this);
         description.setHint(tr("O que aconteceu? Como reproduzir? (opcional)",
                 "What happened? How to reproduce it? (optional)"));
@@ -1971,21 +2002,23 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
                 .setTitle(tr("Diagnóstico", "Diagnostics"))
                 .setView(box)
                 .setPositiveButton(tr("Criar relatório", "Create report"),
-                        (dialog, which) -> createReport(description.getText().toString()))
+                        (dialog, which) -> createReport(description.getText().toString(), root))
                 .setNegativeButton(tr("Cancelar", "Cancel"), null)
                 .show();
     }
 
-    private void createReport(String description) {
-        Menu.setRowEnabled(saveReport, false);
-        Menu.titleOf(saveReport).setText(tr("Preparando diagnóstico…", "Preparing diagnostics…"));
+    private void createReport(String description, boolean root) {
+        LinearLayout row = root ? rootReport : saveReport;
+        String label = root ? rootReportLabel() : reportLabel();
+        Menu.setRowEnabled(row, false);
+        Menu.titleOf(row).setText(tr("Preparando diagnóstico…", "Preparing diagnostics…"));
         worker.execute(() -> {
             try {
-                File report = Diagnostics.createReport(this, description);
+                File report = Diagnostics.createReport(this, description, root);
                 mainHandler.post(() -> {
                     if (isFinishing() || isDestroyed()) return;
-                    Menu.setRowEnabled(saveReport, true);
-                    Menu.titleOf(saveReport).setText(reportLabel());
+                    Menu.setRowEnabled(row, true);
+                    Menu.titleOf(row).setText(label);
                     pendingReport = report;
                     Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT);
                     save.addCategory(Intent.CATEGORY_OPENABLE);
@@ -2001,8 +2034,8 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
             } catch (Exception error) {
                 mainHandler.post(() -> {
                     if (isFinishing() || isDestroyed()) return;
-                    Menu.setRowEnabled(saveReport, true);
-                    Menu.titleOf(saveReport).setText(reportLabel());
+                    Menu.setRowEnabled(row, true);
+                    Menu.titleOf(row).setText(label);
                     message(tr("Não foi possível preparar o relatório: ", "Could not prepare the report: ") +
                             error.getMessage());
                 });
