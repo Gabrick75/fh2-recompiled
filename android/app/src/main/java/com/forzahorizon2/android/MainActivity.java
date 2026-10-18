@@ -432,6 +432,17 @@ public final class MainActivity extends AppCompatActivity {
         rendererNote = ui.footer("");
         rendererOptions = ui.column();
         fillRendererOptions(nativeRenderer);
+        if (emulatedUnsupported == null) {
+            worker.execute(() -> {
+                boolean unsupported = emulatedRendererUnsupported(this);
+                mainHandler.post(() -> {
+                    emulatedUnsupported = unsupported;
+                    if (!isFinishing() && !isDestroyed()) {
+                        fillRendererNote(GameOptions.nativeRenderer(this));
+                    }
+                });
+            });
+        }
         renderer.setOnChoice(index -> {
             GameOptions.set(this, GameOptions.RENDERER, index == 1 ? "native" : "emulated");
             fillRendererOptions(index == 1);
@@ -447,15 +458,30 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void fillRendererOptions(boolean nativeRenderer) {
-        rendererNote.setText(nativeRenderer
+        fillRendererNote(nativeRenderer);
+        rendererOptions.removeAllViews();
+        fillRendererOptionsBody(nativeRenderer);
+    }
+
+    // null until the background check (emulatedRendererUnsupported) has answered.
+    private Boolean emulatedUnsupported;
+
+    private void fillRendererNote(boolean nativeRenderer) {
+        String note = nativeRenderer
                 ? tr("Nativo (experimental): desenha os comandos do jogo direto em Vulkan, com os shaders traduzidos. " +
                      "Bem mais rápido, mas ainda tem erros de imagem.",
                      "Native (experimental): draws the game's commands straight in Vulkan, with the translated " +
                      "shaders. Much faster, but it still has image errors.")
                 : tr("Emulado: a GPU do Xbox 360 emulada. É o modo testado e o mais fiel à imagem do console.",
                      "Emulated: the Xbox 360 GPU, emulated. The tested mode, and the most faithful to the console's " +
-                     "image."));
-        rendererOptions.removeAllViews();
+                     "image.");
+        if (!nativeRenderer && Boolean.TRUE.equals(emulatedUnsupported)) {
+            note += "\n\n" + emulatedUnsupportedMessage();
+        }
+        rendererNote.setText(note);
+    }
+
+    private void fillRendererOptionsBody(boolean nativeRenderer) {
         shadersFound = null;
         fsrModeRefreshers.clear();
         if (nativeRenderer) {
@@ -1564,6 +1590,28 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
         });
     }
 
+    /*
+     * The emulated renderer needs vertexPipelineStoresAndAtomics; some GPUs lack it (Mali-G1-Ultra on a Xiaomi with
+     * Android 17: the game stopped at "Graphics presentation setup failed: C0000001", while the native renderer ran).
+     * From the Vulkan test of the chosen driver when it was tested, else of the system's. Slow the first time (it
+     * opens Vulkan): off the UI thread only. false when unknown.
+     */
+    static boolean emulatedRendererUnsupported(android.content.Context context) {
+        JSONObject probe = null;
+        String driver = GameOptions.get(context, GameOptions.DRIVER);
+        if (!driver.isEmpty()) probe = GpuDrivers.lastProbe(context, driver);
+        if (probe == null) probe = Diagnostics.gpu();
+        return probe != null && probe.has("vertexPipelineStoresAndAtomics")
+                && !probe.optBoolean("vertexPipelineStoresAndAtomics", true);
+    }
+
+    private static String emulatedUnsupportedMessage() {
+        return tr("⚠ A GPU deste aparelho não tem um recurso que o renderizador emulado exige " +
+                  "(vertexPipelineStoresAndAtomics): com ele o jogo não abre. Use o renderizador nativo.",
+                  "⚠ This phone's GPU lacks a feature the emulated renderer needs " +
+                  "(vertexPipelineStoresAndAtomics): with it the game does not start. Use the native renderer.");
+    }
+
     // ---- Play ----------------------------------------------------------------------------------------------
 
     private void play() {
@@ -1572,9 +1620,25 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
         worker.execute(() -> {
             // The edition check reads default.xex from the folder; an ISO is mounted as it is (not checked).
             GameEdition edition = GameIso.chosen(this) != null ? null : GameEdition.of(this, gameRoot());
+            boolean emulatedBlocked = !GameOptions.nativeRenderer(this) && emulatedRendererUnsupported(this);
             mainHandler.post(() -> {
                 if (isFinishing() || isDestroyed()) return;
                 launchGame.setEnabled(true);
+                if (emulatedBlocked) {
+                    new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                            .setTitle(tr("Renderizador emulado incompatível", "Emulated renderer not supported"))
+                            .setMessage(emulatedUnsupportedMessage())
+                            .setPositiveButton(tr("Usar o nativo", "Use native"), (dialog, which) -> {
+                                GameOptions.set(this, GameOptions.RENDERER, "native");
+                                rebuildPage(GRAPHICS);
+                                startActivity(new Intent(this, GameActivity.class));
+                            })
+                            .setNeutralButton(tr("Jogar mesmo assim", "Play anyway"),
+                                    (dialog, which) -> startActivity(new Intent(this, GameActivity.class)))
+                            .setNegativeButton(tr("Voltar", "Back"), null)
+                            .show();
+                    return;
+                }
                 if (edition != null && !edition.supported()) {
                     new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                             .setTitle(tr("Edição do jogo incompatível", "Unsupported game edition"))
