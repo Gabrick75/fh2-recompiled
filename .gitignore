@@ -39,3 +39,6 @@ __pycache__/
 # --- Third-party sources -------------------------------------------------------
 # Fetched by tools/fetch_thirdparty.py; only the files this port changed are committed (git add -f).
 sdk/thirdparty/
+
+# Dear ImGui window layout, written by any ImGui program run from here
+imgui.ini
