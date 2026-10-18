@@ -1174,7 +1174,10 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_clave_canonica, false, "NFSMW",
  * "vertices sin espera" counts both. Every render pass of the session must declare the same dependencies (they are
  * part of render pass compatibility), so this is read once. false = the vertex stage waits, as before.
  */
-REXCVAR_DEFINE_BOOL(fh2_nativo_vertices_sin_espera, true, "FH2",
+// OFF by default: A/B with the car stopped in the same spot (2026-10-18) gave no measurable gain, S23 Ultra 29.9-34.5
+// vs 29.7-34.0 fps and Moto G9 Play 17.3-17.6 vs 17.0-17.3, GPU at 99-100 % either way. The drivers seem to serialize
+// render passes anyway; kept for later tests (launcher toggle).
+REXCVAR_DEFINE_BOOL(fh2_nativo_vertices_sin_espera, false, "FH2",
                     "Native renderer: a pass's vertex work does not wait for the previous passes' fragments; vertex "
                     "shaders that sample images get their own barrier")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
