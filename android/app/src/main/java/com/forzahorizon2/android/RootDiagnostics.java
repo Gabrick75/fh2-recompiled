@@ -16,6 +16,18 @@ import java.util.concurrent.TimeUnit;
 final class RootDiagnostics {
     private static final String PACKAGE = "com.forzahorizon2.android";
 
+    // GPU load, clock and limits, one path per line (no brace expansion: it is not in every Android shell).
+    private static final String[] GPU_SENSOR_FILES = {
+            "/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage", "/sys/class/kgsl/kgsl-3d0/gpubusy",
+            "/sys/class/kgsl/kgsl-3d0/devfreq/cur_freq", "/sys/class/kgsl/kgsl-3d0/devfreq/max_freq",
+            "/sys/class/kgsl/kgsl-3d0/devfreq/min_freq", "/sys/class/kgsl/kgsl-3d0/max_gpuclk",
+            "/sys/class/kgsl/kgsl-3d0/thermal_pwrlevel", "/sys/class/kgsl/kgsl-3d0/throttling",
+            "/sys/kernel/ged/hal/gpu_utilization", "/sys/kernel/ged/hal/current_freqency",
+            "/sys/module/ged/parameters/gpu_loading", "/proc/gpufreqv2/gpufreq_status",
+            "/sys/kernel/gpu/gpu_busy", "/sys/kernel/gpu/gpu_clock", "/sys/kernel/gpu/gpu_max_clock",
+            "/sys/class/misc/mali0/device/utilization",
+    };
+
     private RootDiagnostics() {
     }
 
@@ -114,6 +126,40 @@ final class RootDiagnostics {
         } else {
             summary.append(", logcat completo falhou");
         }
+
+        // 4. Sensors without the blocks ordinary apps hit: GPU load and clocks (Adreno, MediaTek GED, Mali), every
+        // thermal zone, each CPU cluster's clock, cap and governor.
+        StringBuilder gpuFiles = new StringBuilder();
+        for (String path : GPU_SENSOR_FILES) {
+            gpuFiles.append("[ -e ").append(path).append(" ] && echo \"").append(path).append(": $(head -c 200 ")
+                    .append(path).append(" 2>&1)\"; ");
+        }
+        String sensors = run("echo '== GPU'; " + gpuFiles
+                + "for d in /sys/class/devfreq/*; do echo \"$d: atual $(cat $d/cur_freq 2>/dev/null) min "
+                + "$(cat $d/min_freq 2>/dev/null) max $(cat $d/max_freq 2>/dev/null) carga $(cat $d/load 2>/dev/null) "
+                + "governador $(cat $d/governor 2>/dev/null)\"; done; "
+                + "echo '== Termico (miligraus)'; for z in /sys/class/thermal/thermal_zone*; do "
+                + "echo \"$(cat $z/type 2>/dev/null): $(cat $z/temp 2>/dev/null)\"; done; "
+                + "echo '== CPU (kHz)'; for p in /sys/devices/system/cpu/cpufreq/policy*; do "
+                + "echo \"$p: nucleos $(cat $p/related_cpus 2>/dev/null) atual $(cat $p/scaling_cur_freq 2>/dev/null) "
+                + "limite $(cat $p/scaling_max_freq 2>/dev/null) de $(cat $p/cpuinfo_max_freq 2>/dev/null) "
+                + "governador $(cat $p/scaling_governor 2>/dev/null)\"; done", 20, 256 * 1024);
+        if (sensors != null) {
+            files.put("root/sensores.txt", bytes(sensors));
+            summary.append(", sensores ok");
+        }
+
+        // 5. The system: every property, the compositor and display modes, GPU and thermal services, this app's
+        // frame and memory stats.
+        String props = run("getprop", 15, 512 * 1024);
+        if (props != null) files.put("root/getprop.txt", bytes(props));
+        String dumpsys = run("for s in 'SurfaceFlinger' 'gpu' 'thermalservice' 'gfxinfo " + PACKAGE + "' 'meminfo "
+                + PACKAGE + "'; do echo \"===== dumpsys $s\"; dumpsys $s 2>&1 | head -c 400000; done", 40,
+                2 * 1024 * 1024);
+        if (dumpsys != null) files.put("root/dumpsys.txt", bytes(dumpsys));
+        String meminfo = run("cat /proc/meminfo", 10, 64 * 1024);
+        if (meminfo != null) files.put("root/meminfo.txt", bytes(meminfo));
+        summary.append(props != null && dumpsys != null ? ", sistema ok" : ", sistema incompleto");
 
         files.put("", bytes(summary.toString()));
         return files;
