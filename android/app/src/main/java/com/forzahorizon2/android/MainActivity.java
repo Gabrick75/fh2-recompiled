@@ -17,6 +17,9 @@ import android.os.Looper;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.provider.Settings;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.style.StyleSpan;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -518,7 +521,12 @@ public final class MainActivity extends AppCompatActivity {
                     tr("Sem MSAA a cena cabe inteira e é desenhada uma vez só, em vez de em 3 faixas: menos trabalho " +
                        "para a CPU (+25 %).",
                        "Without MSAA the scene fits whole and is drawn once, not in 3 tiles: less work for the CPU " +
-                       "(+25 %).")),
+                       "(+25 %)."),
+                    // B19: in 3 tiles the native renderer only shows the bottom one (black and grey bands above).
+                    tr("Desligada, quebra o jogo: só a faixa de baixo da tela aparece, com faixas preta e cinza " +
+                       "em cima.",
+                       "Turned off, it breaks the game: only the bottom band of the screen shows, with black and " +
+                       "grey bands above.")),
                     ui.toggleRow(tr("Cópia adiada da cena", "Deferred scene copy"),
                             tr("Experimental. A cópia da cena pronta (antes do HUD) só é feita se algo for usá-la, " +
                                "como as gotas de chuva; se o jogo não a usar, a GPU economiza a cópia. Desliga " +
@@ -685,8 +693,21 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private LinearLayout onePassRow(String description) {
-        return ui.toggleRow(tr("Cena em uma passada", "Scene in one pass"), description,
+        return onePassRow(description, null);
+    }
+
+    /** With a warning, it follows the description in bold. */
+    private LinearLayout onePassRow(String description, String warning) {
+        LinearLayout row = ui.toggleRow(tr("Cena em uma passada", "Scene in one pass"), description,
                 GameOptions.flag(this, GameOptions.ONE_PASS), v -> GameOptions.flag(this, GameOptions.ONE_PASS, v));
+        if (warning != null) {
+            SpannableStringBuilder text = new SpannableStringBuilder(description).append(' ');
+            int start = text.length();
+            text.append(warning);
+            text.setSpan(new StyleSpan(Typeface.BOLD), start, text.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            Menu.descriptionOf(row).setText(text);
+        }
+        return row;
     }
 
     /**
