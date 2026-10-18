@@ -1007,6 +1007,13 @@ public final class MainActivity extends AppCompatActivity {
                    "in a landscape with a lot of vegetation, from ~30 to ~40 fps."),
                 GameOptions.flag(this, GameOptions.VERTEX_CACHE),
                 v -> GameOptions.flag(this, GameOptions.VERTEX_CACHE, v)));
+        rows.add(ui.toggleRow(tr("Cache de índices entre quadros", "Index cache across frames"),
+                tr("Reaproveita os índices já convertidos que o jogo não mudou desde o quadro anterior, em vez de " +
+                   "convertê-los e copiá-los de novo.",
+                   "Reuses the already converted indices the game has not changed since the previous frame, " +
+                   "instead of converting and copying them again."),
+                GameOptions.flag(this, GameOptions.INDEX_CACHE),
+                v -> GameOptions.flag(this, GameOptions.INDEX_CACHE, v)));
         rows.add(ui.toggleRow(tr("Alvos pequenos em tamanho exato", "Small targets at exact size"),
                 tr("Cria os alvos de render pequenos (cubo de reflexo) na altura exata em vez de 720 linhas: " +
                    "passes menores e menos tráfego de blocos. Se o jogo resolver abaixo da imagem, ela volta " +

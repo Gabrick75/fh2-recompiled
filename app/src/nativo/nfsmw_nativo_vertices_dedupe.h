@@ -221,6 +221,9 @@ class DedupeVertices {
  * after kSuciasParaVolatil stale finds a range stops being cached.
  *
  * Ring thread only, except EscrituraVigilada (guest threads, with the memory lock held: atomics only).
+ *
+ * A second instance holds FH2's vertex fetch buffers (fh2_nativo_cache_buscas): its buffer also has a transient area
+ * per work slot for the copies it does not keep, because the shaders read every fetch through one binding.
  */
 class CacheVerticesEntreFotogramas {
  public:
@@ -258,7 +261,11 @@ class CacheVerticesEntreFotogramas {
       self->ticks_pagina_[p].store(tick, std::memory_order_release);
     }
     self->avisos_.fetch_add(1, std::memory_order_relaxed);
-    return {0u, UINT32_MAX};  // which part to unwatch does not matter here
+    // Exactly the stamped range. The heap unwatches the intersection of what every callback returns, padded up
+    // to a 4 MB block (PhysicalHeap::TriggerCallbacks, kMaxUnwatchExcess): returning everything let one write
+    // drop the watch of every other cached page in its block without stamping them, and later writes there
+    // went unseen (stale copies served).
+    return {inicio, longitud};
   }
 
   // Whether the range can go through the cache at all.
@@ -407,6 +414,253 @@ class CacheVerticesEntreFotogramas {
 
   uint64_t consultas_ = 0, aciertos_ = 0, bytes_ahorrados_ = 0, copias_ = 0, bytes_copiados_ = 0, sucias_ = 0;
   uint64_t discrepancias_ = 0, llenos_ = 0, reciclados_ = 0, volatiles_n_ = 0;
+};
+
+/*
+ * The same across-frames mechanism for indices (fh2_nativo_cache_indices).
+ *
+ * The ring converts every draw's guest indices (byte swap, IndicesDe16 with NEON) and copies the converted
+ * result to the frame's upload buffer, even though static meshes repeat the same guest range with the same
+ * content every frame. This keeps the already converted result in a persistent buffer: a hit skips both the
+ * conversion and the copy. The stored copy also carries the vertex min/max the conversion measured, which
+ * Dibujar uses after it (upload clipping, base-zero path, DrawIndexed's vertexOffset).
+ *
+ * Only the DMA path qualifies: rectangle lists and quads generate or rewrite their indices (they have no
+ * guest address) and never enter. Everything that changes the converted result is in the key: physical
+ * address, count, bytes per index (16/32 bits), byte order, the restart flag and value, and the added offset.
+ */
+class CacheIndicesEntreFotogramas {
+ public:
+  // 4 MB segments: 4 (16 MB) by default, up to 8 (32 MB) with Configurar. Index traffic is about a tenth of
+  // the vertex one (~1.1 GB vs ~12.5 GB per 10 s on the S23 Ultra), so this stays well below the vertex cache
+  // (64/192 MB), respecting phones with 4 GB of RAM.
+  static constexpr uint32_t kMaxSegmentos = 8;
+  static constexpr uint64_t kTamanoSegmento = uint64_t(4) << 20;
+  static constexpr uint32_t kMinBytes = 4096;  // smaller ranges share pages with other data
+  static constexpr uint32_t kMaxBytes = uint32_t(kTamanoSegmento / 4);
+  static constexpr uint32_t kSuciasParaVolatil = 3;
+  static constexpr uint32_t kMaxRanuras = 8;
+
+  struct Clave {
+    uint64_t base = 0;  // physical address of the first guest index byte
+    uint32_t cuenta = 0;
+    uint32_t indice_reinicio = 0;
+    uint32_t desplazamiento = 0;
+    uint8_t bytes_por_indice = 2;  // 2 or 4
+    uint8_t orden = 0;
+    uint8_t reinicio = 0;
+    bool operator==(const Clave& o) const {
+      return base == o.base && cuenta == o.cuenta && indice_reinicio == o.indice_reinicio &&
+             desplazamiento == o.desplazamiento && bytes_por_indice == o.bytes_por_indice &&
+             orden == o.orden && reinicio == o.reinicio;
+    }
+  };
+  struct ClaveHash {
+    // FNV-1a over the raw fields, then the same multiply-and-shift mix as DedupeVertices.
+    size_t operator()(const Clave& c) const {
+      uint64_t x = 1469598103934665603ull;
+      auto Mezclar = [&x](uint64_t v) {
+        x ^= v;
+        x *= 1099511628211ull;
+      };
+      Mezclar(c.base);
+      Mezclar((uint64_t(c.cuenta) << 32) | c.indice_reinicio);
+      Mezclar((uint64_t(c.desplazamiento) << 32) |
+              (uint64_t(c.bytes_por_indice) << 16) | (uint64_t(c.orden) << 8) | c.reinicio);
+      x ^= x >> 30;
+      x *= 0xBF58476D1CE4E5B9ull;
+      x ^= x >> 27;
+      return size_t(x);
+    }
+  };
+
+  CacheIndicesEntreFotogramas() : ticks_pagina_(new std::atomic<uint32_t>[kPaginas]) {
+    for (uint32_t i = 0; i < kPaginas; ++i) ticks_pagina_[i].store(0, std::memory_order_relaxed);
+  }
+
+  // Before the buffer is created: how many segments it has.
+  void Configurar(uint32_t segmentos) { segmentos_ = std::clamp<uint32_t>(segmentos, 2, kMaxSegmentos); }
+  uint64_t Tamano() const { return uint64_t(segmentos_) * kTamanoSegmento; }
+
+  // Each work slot used (UsarRanura): the submission number of what is recorded now, and what the GPU has finished.
+  void NuevaRanura(uint32_t ranura) {
+    ranura %= kMaxRanuras;
+    completado_ = std::max(completado_, serie_de_ranura_[ranura]);
+    serie_de_ranura_[ranura] = ++serie_;
+  }
+
+  // Guest thread, memory lock held: stamps the written pages.
+  static std::pair<uint32_t, uint32_t> EscrituraVigilada(void* contexto, uint32_t inicio, uint32_t longitud, bool) {
+    auto* self = static_cast<CacheIndicesEntreFotogramas*>(contexto);
+    const uint32_t tick = self->tick_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const uint64_t fin = std::min<uint64_t>(uint64_t(inicio) + longitud, kMemoriaFisica);
+    for (uint64_t p = inicio >> kBitsPagina; (p << kBitsPagina) < fin; ++p) {
+      self->ticks_pagina_[p].store(tick, std::memory_order_release);
+    }
+    self->avisos_.fetch_add(1, std::memory_order_relaxed);
+    return {inicio, longitud};  // only the stamped range (see CacheVerticesEntreFotogramas::EscrituraVigilada)
+  }
+
+  // Whether the range can go through the cache at all.
+  bool Admite(const Clave& clave) const {
+    const uint64_t bytes = uint64_t(clave.cuenta) * clave.bytes_por_indice;
+    return bytes >= kMinBytes && bytes <= kMaxBytes && clave.base + bytes <= kMemoriaFisica &&
+           volatiles_.find(clave) == volatiles_.end();
+  }
+
+  // A clean converted copy from an earlier submission or this one. On a hit, 'offset' holds its place in the
+  // buffer and 'vmin'/'vmax'/'de16' describe it, so the conversion (and its min/max pass) is skipped.
+  // 'huella' != 0 compares contents too (fh2_nativo_cache_indices_comprobar); a mismatch counts and misses.
+  // 'huella_copia' (check mode only) returns the fingerprint of the converted copy as it was stored, so the
+  // caller can also prove the persistent buffer still holds it.
+  bool Buscar(const Clave& clave, uint64_t& offset, uint32_t& vmin, uint32_t& vmax,
+              bool& de16, uint64_t huella, uint64_t* huella_copia = nullptr) {
+    ++consultas_;
+    const auto it = entradas_.find(clave);
+    if (it == entradas_.end()) {
+      return false;
+    }
+    Entrada& e = it->second;
+    const uint64_t bytes = uint64_t(clave.cuenta) * clave.bytes_por_indice;
+    const uint64_t ultima = (clave.base + bytes - 1) >> kBitsPagina;
+    for (uint64_t p = clave.base >> kBitsPagina; p <= ultima; ++p) {
+      if (int32_t(ticks_pagina_[p].load(std::memory_order_acquire) - e.tick) > 0) {
+        ++sucias_;
+        if (++e.sucias >= kSuciasParaVolatil) {
+          volatiles_.insert(clave);
+          ++volatiles_n_;
+        }
+        return false;
+      }
+    }
+    if (huella != 0 && huella != e.huella) {
+      ++discrepancias_;
+      return false;
+    }
+    e.sucias = 0;
+    ultimo_uso_[e.segmento] = serie_;
+    ++aciertos_;
+    bytes_ahorrados_ += uint32_t(bytes);
+    offset = e.offset;
+    vmin = e.vmin;
+    vmax = e.vmax;
+    de16 = e.de16;
+    if (huella_copia) {
+      *huella_copia = e.huella_copia;
+    }
+    return true;
+  }
+
+  // Room for a new converted copy, at a multiple of 4. The returned 'tick' must be taken before the range's
+  // write watch is enabled.
+  bool Reservar(uint32_t bytes, uint64_t& offset, uint32_t& tick) {
+    constexpr uint32_t paso = 4;
+    for (int intento = 0; intento < 2; ++intento) {
+      if (segmento_actual_ < segmentos_) {
+        const uint64_t base = uint64_t(segmento_actual_) * kTamanoSegmento;
+        const uint64_t inicio = (base + cursor_ + paso - 1) / paso * paso;
+        if (inicio + bytes <= base + kTamanoSegmento) {
+          cursor_ = inicio + bytes - base;
+          offset = inicio;
+          tick = tick_.load(std::memory_order_acquire);
+          ultimo_uso_[segmento_actual_] = serie_;
+          return true;
+        }
+      }
+      if (!SiguienteSegmento()) {
+        ++llenos_;
+        return false;
+      }
+    }
+    return false;
+  }
+
+  // Records the converted copy just queued at 'offset'. Replaces a stale copy of the same key (its old place
+  // is dropped with its segment).
+  void Anotar(const Clave& clave, uint64_t offset, uint32_t tick, uint64_t huella, uint32_t vmin, uint32_t vmax,
+              bool de16, uint64_t huella_copia = 0) {
+    Entrada& e = entradas_[clave];
+    const uint32_t sucias = e.sucias;
+    e = Entrada{offset, huella, tick, sucias, uint8_t(offset / kTamanoSegmento), vmin, vmax, de16, huella_copia};
+    claves_segmento_[e.segmento].push_back(clave);
+    ++copias_;
+    bytes_copiados_ += uint64_t(clave.cuenta) * clave.bytes_por_indice;
+  }
+
+  uint64_t consultas() const { return consultas_; }
+  uint64_t aciertos() const { return aciertos_; }
+  uint64_t bytes_ahorrados() const { return bytes_ahorrados_; }
+  uint64_t copias() const { return copias_; }
+  uint64_t bytes_copiados() const { return bytes_copiados_; }
+  uint64_t sucias() const { return sucias_; }
+  uint64_t discrepancias() const { return discrepancias_; }
+  uint64_t llenos() const { return llenos_; }
+  uint64_t reciclados() const { return reciclados_; }
+  uint64_t volatiles() const { return volatiles_n_; }
+  uint64_t avisos() const { return avisos_.load(std::memory_order_relaxed); }
+  size_t entradas() const { return entradas_.size(); }
+  // Check mode: a hit whose stored copy no longer matches what was written there (overwritten in the buffer).
+  void Pisada() { ++pisadas_; }
+  uint64_t pisadas() const { return pisadas_; }
+
+ private:
+  static constexpr uint64_t kMemoriaFisica = uint64_t(512) << 20;
+  static constexpr uint32_t kBitsPagina = 12;
+  static constexpr uint32_t kPaginas = uint32_t(kMemoriaFisica >> kBitsPagina);
+
+  struct Entrada {
+    uint64_t offset = 0;
+    uint64_t huella = 0;
+    uint32_t tick = 0;    // tick_ before the watch of its copy was enabled
+    uint32_t sucias = 0;  // stale finds in a row
+    uint8_t segmento = 0;
+    uint32_t vmin = 0;
+    uint32_t vmax = 0;
+    bool de16 = true;
+    uint64_t huella_copia = 0;  // check mode: XXH3 of the converted copy when it was stored
+  };
+
+  // The least recently used segment the GPU has finished with; its copies are dropped.
+  bool SiguienteSegmento() {
+    uint32_t elegido = segmentos_;
+    for (uint32_t s = 0; s < segmentos_; ++s) {
+      if (s != segmento_actual_ && ultimo_uso_[s] <= completado_ &&
+          (elegido == segmentos_ || ultimo_uso_[s] < ultimo_uso_[elegido])) {
+        elegido = s;
+      }
+    }
+    if (elegido == segmentos_) {
+      return false;
+    }
+    for (const Clave& clave : claves_segmento_[elegido]) {
+      const auto it = entradas_.find(clave);
+      if (it != entradas_.end() && it->second.segmento == elegido) {
+        entradas_.erase(it);
+      }
+    }
+    claves_segmento_[elegido].clear();
+    segmento_actual_ = elegido;
+    cursor_ = 0;
+    ultimo_uso_[elegido] = serie_;
+    ++reciclados_;
+    return true;
+  }
+
+  std::unique_ptr<std::atomic<uint32_t>[]> ticks_pagina_;
+  std::atomic<uint32_t> tick_{0};
+  std::atomic<uint64_t> avisos_{0};
+  std::unordered_map<Clave, Entrada, ClaveHash> entradas_;
+  std::unordered_set<Clave, ClaveHash> volatiles_;
+  std::array<std::vector<Clave>, kMaxSegmentos> claves_segmento_{};
+  std::array<uint64_t, kMaxSegmentos> ultimo_uso_{};  // submission number that last used each segment
+  std::array<uint64_t, kMaxRanuras> serie_de_ranura_{};
+  uint64_t serie_ = 0, completado_ = 0;
+  uint32_t segmentos_ = 4;
+  uint32_t segmento_actual_ = 0;
+  uint64_t cursor_ = 0;
+
+  uint64_t consultas_ = 0, aciertos_ = 0, bytes_ahorrados_ = 0, copias_ = 0, bytes_copiados_ = 0, sucias_ = 0;
+  uint64_t discrepancias_ = 0, llenos_ = 0, reciclados_ = 0, volatiles_n_ = 0, pisadas_ = 0;
 };
 
 }  // namespace nfsmw::nativo
