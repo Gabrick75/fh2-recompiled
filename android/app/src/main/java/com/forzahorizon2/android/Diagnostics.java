@@ -64,7 +64,8 @@ final class Diagnostics {
         try { version = context.getPackageManager().getPackageInfo(context.getPackageName(), 0).versionName; }
         catch (Exception ignored) { }
         JSONObject device = gpu();
-        return "FH2 Recompiled " + version + "\nCelular: " + Build.MANUFACTURER + " " + Build.MODEL
+        return "FH2 Recompiled " + version + " (commit " + BuildConfig.GIT_COMMIT + " de " + BuildConfig.GIT_DATE + ")"
+                + "\nCelular: " + Build.MANUFACTURER + " " + Build.MODEL
                 + "\nAndroid: " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")"
                 + "\nGPU: " + device.optString("gpu", "indisponível")
                 + "\nVulkan: " + device.optString("vulkan", "indisponível")
@@ -78,12 +79,270 @@ final class Diagnostics {
         return edition.supported() ? GameEdition.SUPPORTED_NAME : "incompatível (SHA-256 " + edition.sha256.substring(0, 12) + ")";
     }
 
+    // The native renderer's fh2_shaders.nfsp, where the launcher looks for it: path, size and date, so a report
+    // tells a missing, partial (cut copy) or old library apart.
+    private static String shaderLibraryLine(Context context) {
+        File library = MainActivity.shaderLibrary(context);
+        if (!library.isFile()) return "não encontrada (" + library.getPath() + ")";
+        long bytes = library.length();
+        return library.getPath() + " - " + bytes + " bytes (" + String.format(Locale.US, "%.1f", bytes / 1048576.0)
+                + " MB), modificada em " + new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+                .format(new Date(library.lastModified()));
+    }
+
+    // The newest play session at a glance, all read from its logs when the report is made (nothing measured
+    // during the game): when it ran, how the process ended, the FPS of its usage log, the Vulkan driver the game
+    // really opened and its last errors.
+    private static String lastSessionSummary(Context context, ActivityManager manager) {
+        StringBuilder out = new StringBuilder("Última sessão:\n");
+        File[] sessions = newestSessions(1);
+        if (sessions.length == 0) return out.append("  nenhuma em ").append(sessionLogFolder()).append('\n').toString();
+        File log = sessions[0];
+        long start = sessionStart(log);
+        out.append("  arquivo: ").append(log.getName()).append('\n');
+        out.append("  início: ").append(start > 0 ? formatTime(start) : "desconhecido")
+                .append(", último registro: ").append(formatTime(log.lastModified()));
+        if (start > 0 && log.lastModified() >= start) {
+            out.append(" (").append((log.lastModified() - start) / 1000).append(" s)");
+        }
+        out.append('\n').append("  término: ").append(exitLine(context, manager, start)).append('\n');
+        out.append("  FPS: ").append(fpsLine(new File(log.getParentFile(), log.getName().replace(".log", "_uso.log"))))
+                .append('\n');
+        String requested = null, device = null;
+        java.util.ArrayDeque<String> errors = new java.util.ArrayDeque<>();
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(
+                new java.io.FileInputStream(log), StandardCharsets.UTF_8))) {
+            for (String line; (line = reader.readLine()) != null; ) {
+                if (requested == null && line.contains("Vulkan requested driver:")) requested = afterLevel(line);
+                if (device == null && line.contains("Vulkan device '")) device = afterLevel(line);
+                if ((line.contains("[error]") || line.contains("[critical]") || line.contains("FATAL"))
+                        && !IGNORED_ERROR.matcher(line).find()) {
+                    if (errors.size() == 5) errors.removeFirst();
+                    errors.addLast(line.length() > 300 ? line.substring(0, 300) + "…" : line);
+                }
+            }
+        } catch (IOException error) {
+            out.append("  (log ilegível: ").append(error.getMessage()).append(")\n");
+        }
+        out.append("  driver pedido: ").append(requested != null ? requested : "o do sistema").append('\n');
+        out.append("  driver aberto: ").append(device != null ? device : "não registrado").append('\n');
+        out.append("  últimos erros:").append(errors.isEmpty() ? " nenhum\n" : "\n");
+        for (String error : errors) out.append("    ").append(error).append('\n');
+        return out.toString();
+    }
+
+    // What the phone and the game files look like when the report is made: storage, thermal and battery state,
+    // display rates, the connected pads and the phone's vibrator. Each part fails on its own.
+    private static String deviceAndGame(Context context) {
+        StringBuilder out = new StringBuilder("Aparelho e jogo:\n");
+        try {
+            File iso = GameIso.chosen(context);
+            if (iso != null) {
+                out.append("  jogo: ISO ").append(iso.getPath()).append(" (")
+                        .append(String.format(Locale.US, "%.2f", iso.length() / 1073741824.0)).append(" GB)\n");
+            } else {
+                File folder = MainActivity.gameRoot();
+                out.append("  jogo: pasta ").append(folder.getPath())
+                        .append(new File(folder, "default.xex").isFile() ? " (default.xex presente)" : " (SEM default.xex)")
+                        .append('\n');
+            }
+            android.os.StatFs storage = new android.os.StatFs(android.os.Environment.getExternalStorageDirectory().getPath());
+            out.append("  armazenamento livre: ")
+                    .append(String.format(Locale.US, "%.1f", storage.getAvailableBytes() / 1073741824.0))
+                    .append(" GB de ").append(String.format(Locale.US, "%.1f", storage.getTotalBytes() / 1073741824.0))
+                    .append(" GB\n");
+            long[] user = folderSize(SaveTransfer.userRoot(context));
+            out.append("  dados do usuário (saves): ").append(user[1]).append(" arquivos, ")
+                    .append(String.format(Locale.US, "%.1f", user[0] / 1048576.0)).append(" MB\n");
+        } catch (RuntimeException error) {
+            out.append("  arquivos: indisponível (").append(error.getMessage()).append(")\n");
+        }
+        try {
+            android.os.PowerManager power = (android.os.PowerManager) context.getSystemService(Context.POWER_SERVICE);
+            if (power != null) {
+                if (Build.VERSION.SDK_INT >= 29) {
+                    out.append("  estado térmico: ").append(thermalName(power.getCurrentThermalStatus())).append('\n');
+                }
+                out.append("  economia de energia: ").append(power.isPowerSaveMode() ? "LIGADA" : "desligada").append('\n');
+            }
+            android.content.Intent battery = context.registerReceiver(null,
+                    new android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED));
+            if (battery != null) {
+                int level = battery.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1);
+                int scale = battery.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100);
+                int tenths = battery.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, 0);
+                int plugged = battery.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0);
+                out.append("  bateria: ").append(scale > 0 ? level * 100 / scale : level).append(" %, ")
+                        .append(tenths / 10.0).append(" °C").append(plugged != 0 ? ", carregando" : "").append('\n');
+            }
+            android.hardware.display.DisplayManager displays =
+                    (android.hardware.display.DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+            android.view.Display display = displays != null ? displays.getDisplay(android.view.Display.DEFAULT_DISPLAY) : null;
+            if (display != null) {
+                java.util.TreeSet<Integer> rates = new java.util.TreeSet<>();
+                for (android.view.Display.Mode mode : display.getSupportedModes()) rates.add(Math.round(mode.getRefreshRate()));
+                out.append("  tela: ").append(Math.round(display.getRefreshRate())).append(" Hz agora, suporta ")
+                        .append(rates).append(" Hz\n");
+            }
+        } catch (RuntimeException error) {
+            out.append("  estado do aparelho: indisponível (").append(error.getMessage()).append(")\n");
+        }
+        try {
+            android.hardware.input.InputManager input =
+                    (android.hardware.input.InputManager) context.getSystemService(Context.INPUT_SERVICE);
+            int pads = 0;
+            if (input != null) {
+                for (int id : input.getInputDeviceIds()) {
+                    android.view.InputDevice device = input.getInputDevice(id);
+                    if (device == null || device.isVirtual()) continue;
+                    int sources = device.getSources();
+                    if ((sources & android.view.InputDevice.SOURCE_GAMEPAD) != android.view.InputDevice.SOURCE_GAMEPAD
+                            && (sources & android.view.InputDevice.SOURCE_JOYSTICK) != android.view.InputDevice.SOURCE_JOYSTICK) {
+                        continue;
+                    }
+                    ++pads;
+                    out.append("  controle: ").append(device.getName())
+                            .append(String.format(Locale.US, " (vendor %04x, product %04x)", device.getVendorId(),
+                                    device.getProductId()))
+                            .append(device.getVibrator().hasVibrator() ? ", vibra" : ", sem vibração").append('\n');
+                }
+            }
+            if (pads == 0) out.append("  controle: nenhum físico conectado (toque)\n");
+            android.os.Vibrator vibrator = (android.os.Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
+            out.append("  vibração do celular: ").append(vibrator == null || !vibrator.hasVibrator() ? "não tem"
+                    : vibrator.hasAmplitudeControl() ? "controla a intensidade" : "só liga e desliga (sem intensidade)")
+                    .append('\n');
+        } catch (RuntimeException error) {
+            out.append("  controles: indisponível (").append(error.getMessage()).append(")\n");
+        }
+        return out.toString();
+    }
+
+    // {bytes, files} under a folder (the saves: small, a few hundred files at most).
+    private static long[] folderSize(File folder) {
+        long[] total = {0, 0};
+        File[] children = folder.listFiles();
+        if (children == null) return total;
+        for (File child : children) {
+            if (child.isDirectory()) {
+                long[] sub = folderSize(child);
+                total[0] += sub[0];
+                total[1] += sub[1];
+            } else {
+                total[0] += child.length();
+                ++total[1];
+            }
+        }
+        return total;
+    }
+
+    private static String thermalName(int status) {
+        switch (status) {
+            case android.os.PowerManager.THERMAL_STATUS_NONE: return "normal";
+            case android.os.PowerManager.THERMAL_STATUS_LIGHT: return "leve";
+            case android.os.PowerManager.THERMAL_STATUS_MODERATE: return "moderado";
+            case android.os.PowerManager.THERMAL_STATUS_SEVERE: return "SEVERO (o sistema corta o desempenho)";
+            case android.os.PowerManager.THERMAL_STATUS_CRITICAL: return "CRÍTICO";
+            case android.os.PowerManager.THERMAL_STATUS_EMERGENCY: return "EMERGÊNCIA";
+            case android.os.PowerManager.THERMAL_STATUS_SHUTDOWN: return "DESLIGANDO";
+            default: return "desconhecido (" + status + ")";
+        }
+    }
+
+    // The same noise tools/ler_partida.sh leaves out.
+    private static final java.util.regex.Pattern IGNORED_ERROR = java.util.regex.Pattern.compile(
+            "renderdoc|ResolvePath|XMsgStartIORequestEx|Unimplemented XAM", java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    // fh2_<yyyyMMdd>_<HHmmss>.log, GameActivity.sessionLogBase.
+    private static long sessionStart(File log) {
+        try {
+            String name = log.getName();
+            Date date = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).parse(name.substring(4, 19));
+            return date != null ? date.getTime() : 0;
+        } catch (Exception error) {
+            return 0;
+        }
+    }
+
+    private static String formatTime(long ms) {
+        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date(ms));
+    }
+
+    // "[2026-10-17 16:57:48.327] [info] [core] [t31771] text" -> "text".
+    private static String afterLevel(String line) {
+        int at = line.indexOf("] [t");
+        int end = at >= 0 ? line.indexOf("] ", at + 3) : -1;
+        return end >= 0 ? line.substring(end + 2) : line;
+    }
+
+    // The game process's newest exit after the session started (Android 11+).
+    private static String exitLine(Context context, ActivityManager manager, long start) {
+        if (Build.VERSION.SDK_INT < 30 || manager == null) return "desconhecido (Android 10 ou anterior)";
+        try {
+            for (ApplicationExitInfo exit : manager.getHistoricalProcessExitReasons(context.getPackageName(), 0, 10)) {
+                if (!context.getPackageName().equals(exit.getProcessName())) continue;
+                if (start > 0 && exit.getTimestamp() < start) break;
+                return exitReason(exit) + " em " + formatTime(exit.getTimestamp());
+            }
+        } catch (RuntimeException error) {
+            return "indisponível (" + error.getMessage() + ")";
+        }
+        return "sem registro (o jogo ainda estava aberto, ou o sistema não registrou)";
+    }
+
+    private static String exitReason(ApplicationExitInfo exit) {
+        switch (exit.getReason()) {
+            case ApplicationExitInfo.REASON_CRASH_NATIVE: return "CRASH NATIVO (sinal " + exit.getStatus() + ")";
+            case ApplicationExitInfo.REASON_CRASH: return "CRASH JAVA";
+            case ApplicationExitInfo.REASON_ANR: return "TRAVOU (ANR)";
+            case ApplicationExitInfo.REASON_LOW_MEMORY: return "fechado por falta de memória";
+            case ApplicationExitInfo.REASON_SIGNALED: return "morto pelo sinal " + exit.getStatus();
+            case ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE: return "fechado por uso excessivo de recursos";
+            case ApplicationExitInfo.REASON_EXIT_SELF: return "saiu sozinho (código " + exit.getStatus() + ")";
+            case ApplicationExitInfo.REASON_USER_REQUESTED: return "fechado pelo usuário";
+            case ApplicationExitInfo.REASON_USER_STOPPED: return "parado pelo usuário";
+            case ApplicationExitInfo.REASON_PACKAGE_UPDATED: return "fechado por uma atualização do app";
+            default: return "motivo " + exit.getReason() + " (" + exit.getDescription() + ")";
+        }
+    }
+
+    // Usage log lines "HH:MM:SS  27.5 fps  GPU ...", one every 5 s; -1.0 (nothing measured yet) is left out.
+    private static String fpsLine(File usage) {
+        if (!usage.isFile()) return "sem log de uso";
+        double min = Double.MAX_VALUE, max = 0, sum = 0;
+        int count = 0;
+        java.util.regex.Pattern fps = java.util.regex.Pattern.compile("^\\d\\d:\\d\\d:\\d\\d\\s+(-?[0-9.]+) fps");
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(
+                new java.io.FileInputStream(usage), StandardCharsets.UTF_8))) {
+            for (String line; (line = reader.readLine()) != null; ) {
+                java.util.regex.Matcher m = fps.matcher(line);
+                if (!m.find()) continue;
+                double value = Double.parseDouble(m.group(1));
+                if (value <= 0) continue;
+                min = Math.min(min, value);
+                max = Math.max(max, value);
+                sum += value;
+                ++count;
+            }
+        } catch (IOException | NumberFormatException error) {
+            return "log de uso ilegível";
+        }
+        if (count == 0) return "nenhuma medida";
+        return String.format(Locale.US, "mínimo %.1f, médio %.1f, máximo %.1f (%d medidas de 5 s)",
+                min, sum / count, max, count);
+    }
+
     static void recordLaunch(Context context) {
         context.getSharedPreferences("fh2_diagnostics", Context.MODE_PRIVATE).edit()
                 .putLong("last_launch_ms", System.currentTimeMillis()).putInt("last_launch_pid", Process.myPid()).apply();
     }
 
     static File createReport(Context context) throws Exception {
+        return createReport(context, "");
+    }
+
+    /** description: what the player wrote before saving it ("" = nothing). */
+    static File createReport(Context context, String description) throws Exception {
         File directory = new File(context.getCacheDir(), "reports");
         if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Não foi possível criar o relatório.");
         // Leave recent attachments available while a mail app or document picker
@@ -102,13 +361,20 @@ final class Diagnostics {
             info.append("Data: ").append(new Date()).append("\nABI: ").append(Arrays.toString(Build.SUPPORTED_ABIS))
                     .append("\nRAM total: ").append(memory.totalMem).append("\nRAM disponível: ").append(memory.availMem)
                     .append("\nÚltima tentativa de iniciar: ").append(context.getSharedPreferences("fh2_diagnostics", 0)
-                            .getLong("last_launch_ms", 0)).append("\n\nOpções:\n");
+                            .getLong("last_launch_ms", 0))
+                    .append("\nBiblioteca de shaders: ").append(shaderLibraryLine(context))
+                    .append("\n\n").append(lastSessionSummary(context, manager))
+                    .append('\n').append(deviceAndGame(context)).append("\nOpções:\n");
             for (java.util.Map.Entry<String, ?> option : new java.util.TreeMap<>(GameOptions.prefs(context).getAll()).entrySet()) {
                 info.append(option.getKey()).append('=').append(option.getValue()).append('\n');
             }
             info.append("\nArgumentos efetivos:\n");
             for (String argument : GameOptions.arguments(context)) info.append(argument).append('\n');
-            info.append("\nDescreva o que aconteceu e como reproduzir.\n");
+            if (description == null || description.trim().isEmpty()) {
+                info.append("\nDescreva o que aconteceu e como reproduzir.\n");
+            } else {
+                info.append("\nDescrição do jogador:\n").append(description.trim()).append('\n');
+            }
             add(zip, "relatorio.txt", info.toString().getBytes(StandardCharsets.UTF_8));
             add(zip, "gpu.json", gpu().toString(2).getBytes(StandardCharsets.UTF_8));
             addFile(zip, "last-java-crash.txt", new File(context.getFilesDir(), "last-java-crash.txt"));
@@ -118,6 +384,13 @@ final class Diagnostics {
                 Arrays.sort(nativeLogs, Comparator.comparingLong(File::lastModified).reversed());
                 for (int i = 0; i < Math.min(2, nativeLogs.length); i++) addFile(zip, "native/" + nativeLogs[i].getName(), nativeLogs[i]);
             }
+            // The play sessions' own logs (GameActivity.sessionLogBase): the game log and the usage log of the
+            // newest two, recut at their start and end like the others.
+            for (File session : newestSessions(2)) {
+                addFile(zip, "sessao/" + session.getName(), session);
+                File usage = new File(session.getParentFile(), session.getName().replace(".log", "_uso.log"));
+                addFile(zip, "sessao/" + usage.getName(), usage);
+            }
             addLogcat(zip);
             if (Build.VERSION.SDK_INT >= 30 && manager != null) addExitInfo(zip, manager, context);
         } catch (Exception error) {
@@ -125,6 +398,20 @@ final class Diagnostics {
             throw error;
         }
         return report;
+    }
+
+    // Internal storage/jogos/fh2-logs, where GameActivity writes one game log per session (fh2_<date>_<time>.log,
+    // next to its _uso.log). Newest first.
+    static File sessionLogFolder() {
+        return new File(android.os.Environment.getExternalStorageDirectory(), "jogos/fh2-logs");
+    }
+
+    static File[] newestSessions(int count) {
+        File[] logs = sessionLogFolder().listFiles(file -> file.isFile() && file.getName().startsWith("fh2_")
+                && file.getName().endsWith(".log") && !file.getName().endsWith("_uso.log"));
+        if (logs == null) return new File[0];
+        Arrays.sort(logs, Comparator.comparingLong(File::lastModified).reversed());
+        return Arrays.copyOf(logs, Math.min(count, logs.length));
     }
 
     private static void add(ZipOutputStream zip, String name, byte[] data) throws IOException {

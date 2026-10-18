@@ -459,7 +459,7 @@ public final class MainActivity extends AppCompatActivity {
         shadersFound = null;
         fsrModeRefreshers.clear();
         if (nativeRenderer) {
-            boolean library = shaderLibrary().isFile();
+            boolean library = shaderLibrary(this).isFile();
             shadersFound = library;
             rendererOptions.addView(ui.header(tr("Requisito", "Requirement")));
             rendererOptions.addView(ui.group(ui.statusRow(tr("Biblioteca de shaders", "Shader library"),
@@ -585,8 +585,8 @@ public final class MainActivity extends AppCompatActivity {
 
     // The native renderer's translated shaders (nfsmw_nativo_sistema.cpp also looks next to the executable).
     // With the game read from an ISO: next to the ISO, else in the game folder (fh2_nativo_biblioteca_dir).
-    private File shaderLibrary() {
-        File iso = GameIso.chosen(this);
+    static File shaderLibrary(android.content.Context context) {
+        File iso = GameIso.chosen(context);
         if (iso != null) {
             File junto = new File(iso.getParentFile(), "fh2_shaders.nfsp");
             if (junto.isFile()) return junto;
@@ -1662,7 +1662,7 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
         Menu.setRowEnabled(selectFolder, true);
         launchGame.setEnabled(true);
         // The native renderer's requirement row follows the shader library copied in (or removed) meanwhile.
-        if (shadersFound != null && shadersFound != shaderLibrary().isFile()) rebuildPage(GRAPHICS);
+        if (shadersFound != null && shadersFound != shaderLibrary(this).isFile()) rebuildPage(GRAPHICS);
         File iso = GameIso.chosen(this);
         selectIso.setVisibility(View.VISIBLE);
         stopIso.setVisibility(iso != null ? View.VISIBLE : View.GONE);
@@ -1831,7 +1831,7 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
                 }
                 GameOptions.set(this, GameOptions.GAME_ISO, iso.getAbsolutePath());
                 showGameFolder(tr("ISO escolhida.", "ISO chosen."));
-                if (shadersFound != null && shadersFound != shaderLibrary().isFile()) rebuildPage(GRAPHICS);
+                if (shadersFound != null && shadersFound != shaderLibrary(this).isFile()) rebuildPage(GRAPHICS);
             });
         });
     }
@@ -1880,12 +1880,35 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
 
     // ---- Diagnostic report (saved by the player; never sent anywhere) --------------------------------------
 
+    // First what happened, in the player's words: it goes into relatorio.txt, where the report used to end with
+    // an unanswered "describe what happened".
     private void prepareReport() {
+        android.widget.EditText description = new android.widget.EditText(this);
+        description.setHint(tr("O que aconteceu? Como reproduzir? (opcional)",
+                "What happened? How to reproduce it? (optional)"));
+        description.setMinLines(3);
+        description.setMaxLines(8);
+        description.setGravity(Gravity.TOP | Gravity.START);
+        description.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE | android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        android.widget.FrameLayout box = new android.widget.FrameLayout(this);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+        box.addView(description);
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(tr("Diagnóstico", "Diagnostics"))
+                .setView(box)
+                .setPositiveButton(tr("Criar relatório", "Create report"),
+                        (dialog, which) -> createReport(description.getText().toString()))
+                .setNegativeButton(tr("Cancelar", "Cancel"), null)
+                .show();
+    }
+
+    private void createReport(String description) {
         Menu.setRowEnabled(saveReport, false);
         Menu.titleOf(saveReport).setText(tr("Preparando diagnóstico…", "Preparing diagnostics…"));
         worker.execute(() -> {
             try {
-                File report = Diagnostics.createReport(this);
+                File report = Diagnostics.createReport(this, description);
                 mainHandler.post(() -> {
                     if (isFinishing() || isDestroyed()) return;
                     Menu.setRowEnabled(saveReport, true);
