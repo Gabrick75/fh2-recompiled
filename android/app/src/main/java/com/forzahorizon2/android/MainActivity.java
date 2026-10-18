@@ -1833,19 +1833,22 @@ ui.footer(tr("Uma ISO do disco (a imagem do Xbox 360) é lida direto, sem ocupar
     }
 
     // Keeps the path of the chosen ISO after checking it is an Xbox 360 disc image; the game mounts it in place.
+    // The path is found on the worker: it may open the file through the picker's provider.
     private void useIso(Uri uri) {
-        File iso = GameIso.pathOf(uri);
-        if (iso == null || !iso.isFile()) {
-            message(tr("Não foi possível achar o caminho dessa ISO. Escolha o arquivo pelo armazenamento interno ou " +
-                       "pelo cartão de memória (no seletor, menu ☰ → nome do aparelho), não por \"Recentes\".",
-                       "Could not find that ISO's path. Pick the file through the internal storage or the memory " +
-                       "card (in the picker, menu ☰ → the device name), not through \"Recent\"."));
-            return;
-        }
         worker.execute(() -> {
-            String problem = GameIso.check(iso);
+            File iso = GameIso.pathOf(this, uri);
+            boolean found = iso != null && iso.isFile();
+            String problem = found ? GameIso.check(iso) : null;
             mainHandler.post(() -> {
                 if (isFinishing() || isDestroyed()) return;
+                if (!found) {
+                    message(tr("Não foi possível achar o caminho dessa ISO. Escolha o arquivo pelo armazenamento " +
+                               "interno ou pelo cartão de memória (no seletor, menu ☰ → nome do aparelho), não por " +
+                               "\"Recentes\".",
+                               "Could not find that ISO's path. Pick the file through the internal storage or the " +
+                               "memory card (in the picker, menu ☰ → the device name), not through \"Recent\"."));
+                    return;
+                }
                 if (problem != null) {
                     message(iso.getName() + ": " + problem);
                     return;
