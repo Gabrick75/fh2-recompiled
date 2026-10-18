@@ -13,6 +13,7 @@
 
 #include <rex/logging/types.h>
 
+#include <atomic>
 #include <filesystem>
 #include <span>
 
@@ -23,11 +24,19 @@ REXCVAR_DECLARE(std::string, log_level);
 REXCVAR_DECLARE(std::string, log_file);
 REXCVAR_DECLARE(bool, log_verbose);
 REXCVAR_DECLARE(bool, log_noisy);
+REXCVAR_DECLARE(bool, log_detalhado);
 REXCVAR_DECLARE(int32_t, log_flush_interval);
 REXCVAR_DECLARE(int32_t, log_max_file_size_mb);
 REXCVAR_DECLARE(int32_t, log_max_files);
 
 namespace rex {
+
+/**
+ * Messages that repeat many times a second (a kernel stub called every frame, the native renderer's resolved
+ * textures): true for the first 20 times, then one note that the rest are left out, then false. With
+ * log_detalhado every one goes through. vezes: a counter of its own per message, zero-initialized.
+ */
+bool LogRepetido(std::atomic<uint32_t>& vezes, const char* nome);
 
 /* =========================================================================
    Log Level Guidelines

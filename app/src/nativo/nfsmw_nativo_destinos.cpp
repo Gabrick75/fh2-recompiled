@@ -5122,8 +5122,11 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 #if defined(FH2_RECOMP)
     resuelta.imagen.fh2_almacenamiento = almacenamiento;
 #endif
-    REXLOG_INFO("[nativo] C2: textura resuelta en {:08X}, {}x{}, formato {}", base, ancho, alto,
-                formato);
+    // Several per frame, the same ones every frame (64 % of a session log): the first 20 unless log_detalhado.
+    static std::atomic<uint32_t> resueltas_registradas{0};
+    if (rex::LogRepetido(resueltas_registradas, "[nativo] C2: textura resuelta")) {
+      REXLOG_INFO("[nativo] C2: textura resuelta en {:08X}, {}x{}, formato {}", base, ancho, alto, formato);
+    }
     if (dibujos_) {
       dibujos_->InvalidarTexturas();  // that address is now sampled from the resolved texture
     }
