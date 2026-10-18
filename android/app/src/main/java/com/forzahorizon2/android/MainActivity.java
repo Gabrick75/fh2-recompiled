@@ -1014,6 +1014,13 @@ public final class MainActivity extends AppCompatActivity {
                    "instead of converting and copying them again."),
                 GameOptions.flag(this, GameOptions.INDEX_CACHE),
                 v -> GameOptions.flag(this, GameOptions.INDEX_CACHE, v)));
+        rows.add(ui.toggleRow(tr("Vértices sem espera entre passadas", "Vertices without waiting between passes"),
+                tr("A GPU começa a geometria de uma passada enquanto ainda pinta a anterior, em vez de esperar " +
+                   "cada passada terminar. A imagem é a mesma.",
+                   "The GPU starts a pass's geometry while it still shades the previous one, instead of waiting " +
+                   "for every pass to finish. The image is the same."),
+                GameOptions.flag(this, GameOptions.VERTEX_NO_WAIT),
+                v -> GameOptions.flag(this, GameOptions.VERTEX_NO_WAIT, v)));
         rows.add(ui.toggleRow(tr("Alvos pequenos em tamanho exato", "Small targets at exact size"),
                 tr("Cria os alvos de render pequenos (cubo de reflexo) na altura exata em vez de 720 linhas: " +
                    "passes menores e menos tráfego de blocos. Se o jogo resolver abaixo da imagem, ela volta " +
