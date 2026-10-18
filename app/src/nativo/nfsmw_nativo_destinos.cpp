@@ -1939,10 +1939,13 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                                 dx == 0 && dy == 0 && ancho == resuelta->imagen.ancho && alto == resuelta->imagen.alto);
 #if defined(FH2_RECOMP)
         // 2_10_10_10_FLOAT (3) and its AS_16_16_16_16 view (12) are 7e3 on the console: nothing above 31.875. The host
-        // render target is float16 and keeps more; without the clamp the sun and the sky lowered the exposure.
+        // render target is float16 and keeps more; without the clamp the sun and the sky lowered the exposure. The
+        // fixed point 16_16 (4) and 16_16_16_16 (5) stop at 32.
         if (fh2_sesgo != 0 && Fh2CopiarConEscala(*destino_render, resuelta->imagen, x0, y0, dx, dy, ancho, alto,
                                                   std::ldexp(1.0f, fh2_sesgo),
-                                                  formato_color == 3 || formato_color == 12 ? 31.875f : 65504.0f)) {
+                                                  formato_color == 3 || formato_color == 12 ? 31.875f
+                                                  : formato_color == 4 || formato_color == 5 ? 32.0f
+                                                                                             : 65504.0f)) {
           ++copias_;
           AnotarCopia(ancho, alto);
           ResueltaEscrita(base_resuelta, uint64_t(ancho) * alto);
@@ -2093,6 +2096,16 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                           color.float32[1], color.float32[2], color.float32[3]);
             }
 #endif
+          } else if (formato_color == 4 || formato_color == 5) {
+            // k_16_16 (RB_COLOR_CLEAR) and k_16_16_16_16 (RB_COLOR_CLEAR_LO the low dword, red and green): signed
+            // 16-bit channels from -32 to 32, as the render target stores them.
+            const uint64_t canales =
+                formato_color == 4 ? uint64_t(reg.rb_color_clear)
+                                   : uint64_t(reg.rb_color_clear_lo) | (uint64_t(reg.rb_color_clear) << 32);
+            for (uint32_t j = 0; j < (formato_color == 4 ? 2u : 4u); ++j) {
+              const int16_t c = int16_t(uint16_t(canales >> (j * 16)));
+              color.float32[j] = std::max(float(c), -32767.0f) * (32.0f / 32767.0f);
+            }
           } else {
             for (uint32_t j = 0; j < 4; ++j) {
               color.float32[j] = float((valor_crudo >> (j * 8)) & 0xFF) * (1.0f / 255.0f);
