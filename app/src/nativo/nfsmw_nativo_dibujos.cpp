@@ -15073,19 +15073,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   }
 
   // fh2_nativo_cache_buscas: its persistent buffer, storage usage (binding 3), of the upload buffer's memory type and
-  // mapped for good, and its write watch. 64 MB on phones with 8 GB of RAM or more, 32 MB on the others: the upload
-  // buffer bound whole there is 64 MB, so that size is known to fit maxStorageBufferRange. If anything fails, the
-  // fetches stay in the upload buffer as before.
+  // mapped for good, and its write watch. 64 MB on every phone: the upload buffer bound whole there is 64 MB, so that
+  // size is known to fit maxStorageBufferRange, and 32 MB on the Moto G9 Play refused 256 draws in 4 minutes (every
+  // segment still in use after a submission; cause 14). If anything fails, the fetches stay in the upload buffer.
   void CrearCacheBuscas() {
     if (!REXCVAR_GET(fh2_nativo_cache_buscas) || memoria_ == nullptr) {
       return;
     }
-#if defined(__linux__)
-    const uint64_t ram = uint64_t(sysconf(_SC_PHYS_PAGES)) * uint64_t(sysconf(_SC_PAGESIZE));
-#else
-    const uint64_t ram = 0;
-#endif
-    cache_buscas_.Configurar(ram >= (uint64_t(7) << 30) ? 16 : 8);
+    cache_buscas_.Configurar(16);
     VkBufferCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     info.size = cache_buscas_.Tamano();
