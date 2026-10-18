@@ -27,6 +27,10 @@
 #endif
 
 #include <imgui.h>
+#include <imgui_internal.h>
+
+#include <rex/system/flags.h>
+#include <rex/system/xcontent.h>
 
 namespace rex {
 namespace ui {
@@ -194,6 +198,24 @@ void ImGuiDrawer::Initialize() {
   nx::ConfigurarNavegacion(io);
 #endif
 
+  LoadFonts();
+
+  auto& style = ImGui::GetStyle();
+  ApplyDefaultStyle(style);
+  if (style_setup_) {
+    style_setup_(style, style_);
+  }
+
+  frame_time_tick_frequency_ = double(rex::chrono::Clock::QueryHostTickFrequency());
+  last_frame_time_ticks_ = rex::chrono::Clock::QueryHostTickCount();
+
+  touch_pointer_id_ = TouchEvent::kPointerIDNone;
+  reset_mouse_position_after_next_frame_ = false;
+}
+
+void ImGuiDrawer::LoadFonts() {
+  ImGuiIO& io = ImGui::GetIO();
+
   // Setup the font glyphs.
   ImFontConfig font_config;
   font_config.OversampleH = font_config.OversampleV = 1;
@@ -205,6 +227,55 @@ void ImGuiDrawer::Initialize() {
   };
   io.Fonts->AddFontFromMemoryCompressedBase85TTF(kProggyTinyCompressedDataBase85, 10.0f,
                                                  &font_config, font_glyph_ranges);
+
+  /*
+   * ProggyTiny only has Latin-1, so the achievement names the game gives in Russian or Polish (XDBF, in the
+   * user_language) came out as one '?' per letter in the toast, while the launcher showed them fine. The letters
+   * Latin-1 lacks are merged from a system font; the first one found wins.
+   */
+  static const ImWchar extra_glyph_ranges[] = {
+      0x0100, 0x024F,  // Latin Extended-A and B (Polish)
+      0x0370, 0x03FF,  // Greek
+      0x0400, 0x04FF,  // Cyrillic
+      0x2000, 0x206F,  // General Punctuation (typographic quotes, dashes, ellipsis)
+      0x20A0, 0x20CF,  // Currency Symbols
+      0x2100, 0x214F,  // Letterlike Symbols (trademark)
+      0,
+  };
+  static const char* const extra_font_paths[] = {
+#if REX_PLATFORM_ANDROID
+      "/system/fonts/Roboto-Regular.ttf",
+      "/system/fonts/NotoSans-Regular.ttf",
+      "/system/fonts/DroidSans.ttf",
+#elif REX_PLATFORM_WIN32
+      "C:\\Windows\\Fonts\\segoeui.ttf",
+      "C:\\Windows\\Fonts\\arial.ttf",
+#elif REX_PLATFORM_LINUX
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+      "/usr/share/fonts/TTF/DejaVuSans.ttf",
+      "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+      "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+#endif
+      nullptr,
+  };
+  bool extra_font_loaded = false;
+  for (const char* const* path = extra_font_paths; *path; ++path) {
+    std::error_code ec;
+    if (!std::filesystem::exists(*path, ec)) {
+      continue;
+    }
+    ImFontConfig extra_font_config;
+    extra_font_config.MergeMode = true;
+    extra_font_config.OversampleH = extra_font_config.OversampleV = 1;
+    extra_font_config.PixelSnapH = true;
+    if (io.Fonts->AddFontFromFileTTF(*path, 11.0f, &extra_font_config, extra_glyph_ranges)) {
+      extra_font_loaded = true;
+      break;
+    }
+  }
+  if (!extra_font_loaded) {
+    REXLOG_WARN("No system font with Cyrillic found; Russian and Polish letters will show as '?'");
+  }
 
 #if REX_PLATFORM_WIN32
   // TODO(benvanik): jp font on other platforms?
@@ -223,23 +294,117 @@ void ImGuiDrawer::Initialize() {
   }
 #endif
 
+  LoadRequestedGlyphs();
+
   if (font_setup_) {
     font_setup_(io.Fonts);
   }
-
-  auto& style = ImGui::GetStyle();
-  ApplyDefaultStyle(style);
-  if (style_setup_) {
-    style_setup_(style, style_);
-  }
-
-  frame_time_tick_frequency_ = double(rex::chrono::Clock::QueryHostTickFrequency());
-  last_frame_time_ticks_ = rex::chrono::Clock::QueryHostTickCount();
-
-  touch_pointer_id_ = TouchEvent::kPointerIDNone;
-  reset_mouse_position_after_next_frame_ = false;
 }
 
+/*
+ * Japanese, Korean and Chinese have tens of thousands of characters, too many to bake up front: this backend has no
+ * dynamic font texture, so every glyph in the ranges is rasterized when the atlas is built. Instead the dialogs that
+ * show game text ask for the characters they will draw (RequestGlyphs), only those are merged from a system CJK font,
+ * and the atlas is rebuilt before the next frame when new ones arrive. Without a CJK font they stay '?'.
+ */
+namespace {
+
+// Characters LoadFonts always has (ProggyTiny plus the ranges of the Latin/Cyrillic system font).
+bool IsBaseGlyph(unsigned int c) {
+  return c < 0x0250 || (c >= 0x0370 && c <= 0x04FF) || (c >= 0x2000 && c <= 0x206F) ||
+         (c >= 0x20A0 && c <= 0x20CF) || (c >= 0x2100 && c <= 0x214F);
+}
+
+struct CjkFontFile {
+  const char* path;
+  int font_no;
+};
+
+std::vector<CjkFontFile> CjkFontFiles() {
+  using rex::system::XLanguage;
+  const auto language = static_cast<XLanguage>(REXCVAR_GET(user_language));
+  // NotoSansCJK .ttc faces: 0 Japanese, 1 Korean, 2 Simplified Chinese, 3 Traditional Chinese. Every face has all
+  // the CJK glyphs; the face only picks the regional shapes.
+  const int noto_face = language == XLanguage::kKorean     ? 1
+                        : language == XLanguage::kSChinese ? 2
+                        : language == XLanguage::kTChinese ? 3
+                                                           : 0;
+  std::vector<CjkFontFile> files;
+#if REX_PLATFORM_ANDROID
+  files.push_back({"/system/fonts/NotoSansCJK-Regular.ttc", noto_face});
+  files.push_back({"/system/fonts/DroidSansFallbackFull.ttf", 0});
+  files.push_back({"/system/fonts/DroidSansFallback.ttf", 0});
+#elif REX_PLATFORM_WIN32
+  if (language == XLanguage::kKorean) {
+    files.push_back({"C:\\Windows\\Fonts\\malgun.ttf", 0});
+  } else if (language == XLanguage::kSChinese) {
+    files.push_back({"C:\\Windows\\Fonts\\msyh.ttc", 0});
+  } else if (language == XLanguage::kTChinese) {
+    files.push_back({"C:\\Windows\\Fonts\\msjh.ttc", 0});
+  }
+  files.push_back({"C:\\Windows\\Fonts\\msgothic.ttc", 0});
+  files.push_back({"C:\\Windows\\Fonts\\malgun.ttf", 0});
+  files.push_back({"C:\\Windows\\Fonts\\msyh.ttc", 0});
+#elif REX_PLATFORM_LINUX
+  files.push_back({"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", noto_face});
+  files.push_back({"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", noto_face});
+  files.push_back({"/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", noto_face});
+  files.push_back({"/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", 0});
+#endif
+  return files;
+}
+
+}  // namespace
+
+void ImGuiDrawer::RequestGlyphs(std::string_view text) {
+  const char* p = text.data();
+  const char* const end = p + text.size();
+  while (p < end) {
+    unsigned int c = 0;
+    const int length = ImTextCharFromUtf8(&c, p, end);
+    if (length <= 0) {
+      break;
+    }
+    p += length;
+    if (IsBaseGlyph(c) || c > IM_UNICODE_CODEPOINT_MAX) {
+      continue;
+    }
+    if (requested_glyphs_.insert(static_cast<ImWchar>(c)).second) {
+      glyphs_changed_ = true;
+    }
+  }
+}
+
+void ImGuiDrawer::LoadRequestedGlyphs() {
+  glyphs_changed_ = false;
+  if (requested_glyphs_.empty()) {
+    return;
+  }
+  ImFontGlyphRangesBuilder builder;
+  for (ImWchar c : requested_glyphs_) {
+    builder.AddChar(c);
+  }
+  requested_glyph_ranges_.clear();
+  builder.BuildRanges(&requested_glyph_ranges_);
+
+  ImGuiIO& io = ImGui::GetIO();
+  for (const CjkFontFile& file : CjkFontFiles()) {
+    std::error_code ec;
+    if (!std::filesystem::exists(file.path, ec)) {
+      continue;
+    }
+    ImFontConfig config;
+    config.MergeMode = true;
+    config.OversampleH = config.OversampleV = 1;
+    config.PixelSnapH = true;
+    config.FontNo = file.font_no;
+    if (io.Fonts->AddFontFromFileTTF(file.path, 11.0f, &config, requested_glyph_ranges_.Data)) {
+      REXLOG_INFO("Overlay font: {} extra glyphs from {}", requested_glyphs_.size(), file.path);
+      return;
+    }
+  }
+  REXLOG_WARN("No system CJK font found; Japanese, Korean and Chinese letters will show as '?'");
+}
 std::optional<ImGuiKey> ImGuiDrawer::VirtualKeyToImGuiKey(VirtualKey vkey) {
   static const std::map<VirtualKey, ImGuiKey> map = {
       // Navigation
@@ -365,6 +530,15 @@ void ImGuiDrawer::SetupFontTexture() {
   font_texture_ = immediate_drawer_->CreateTexture(width, height, ImmediateTextureFilter::kLinear,
                                                    true, reinterpret_cast<uint8_t*>(pixels));
   io.Fonts->TexID = reinterpret_cast<ImTextureID>(font_texture_.get());
+
+  // This backend has every glyph baked by now and the atlas stays locked while drawing, so the font files are never
+  // read again: free them (the CJK one alone is 32 MB on Android). A rebuild loads them anew.
+  for (ImFont* font : io.Fonts->Fonts) {
+    font->Flags |= ImFontFlags_NoLoadGlyphs;
+  }
+  for (ImFontConfig& source : io.Fonts->Sources) {
+    ImFontAtlasFontDestroySourceData(io.Fonts, &source);
+  }
 }
 
 void ImGuiDrawer::SetPresenter(Presenter* new_presenter) {
@@ -414,6 +588,14 @@ void ImGuiDrawer::Draw(UIDrawContext& ui_draw_context) {
   // backing it) may only become usable on the first frame, after the guest
   // creates its D3D device. Upload the font atlas lazily and idempotently;
   // SetupFontTexture early-returns once font_texture_ is set.
+  if (glyphs_changed_) {
+    // New characters from RequestGlyphs: rebuild the atlas between frames. The immediate drawer frees the old
+    // texture once the GPU is done with it.
+    ImGui::SetCurrentContext(internal_state_);
+    ImGui::GetIO().Fonts->Clear();
+    LoadFonts();
+    font_texture_.reset();
+  }
   SetupFontTexture();
 
   if (dialogs_.empty()) {

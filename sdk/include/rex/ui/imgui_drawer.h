@@ -17,6 +17,8 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <set>
+#include <string_view>
 #include <vector>
 
 #include <rex/ui/immediate_drawer.h>
@@ -63,6 +65,11 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
 
   void Draw(UIDrawContext& ui_draw_context) override;
 
+  // Makes sure the overlay font can draw every character of this UTF-8 text (game text such as achievement names,
+  // which may be Japanese, Korean or Chinese). Characters the atlas lacks are taken from a system font, rebuilding
+  // the atlas before the next frame. UI thread only, like Draw.
+  void RequestGlyphs(std::string_view text);
+
  protected:
   void OnKeyDown(KeyEvent& e) override;
   void OnKeyUp(KeyEvent& e) override;
@@ -77,6 +84,8 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
  private:
   void Initialize();
 
+  void LoadFonts();
+  void LoadRequestedGlyphs();
   void SetupFontTexture();
 
   void RenderDrawLists(ImDrawData* data, UIDrawContext& ui_draw_context);
@@ -113,6 +122,12 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
   // Resources specific to an immediate drawer - must be destroyed before
   // detaching the presenter.
   std::unique_ptr<ImmediateTexture> font_texture_;
+
+  // Characters asked for with RequestGlyphs that the base fonts lack, and the ranges built from them (the atlas
+  // keeps pointing at these until it is cleared).
+  std::set<ImWchar> requested_glyphs_;
+  ImVector<ImWchar> requested_glyph_ranges_;
+  bool glyphs_changed_ = false;
 
   // If there's an active pointer, the ImGui mouse is controlled by this touch.
   // If it's TouchEvent::kPointerIDNone, the ImGui mouse is controlled by the
