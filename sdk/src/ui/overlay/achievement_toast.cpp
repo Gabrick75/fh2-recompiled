@@ -15,12 +15,42 @@
 #include <cfloat>
 
 #include <rex/cvar.h>
+#include <rex/system/flags.h>
+#include <rex/system/xcontent.h>
 #include <rex/ui/immediate_drawer.h>
 
 REXCVAR_DEFINE_BOOL(achievement_toast_test, false, "UI",
                     "Debug: keep showing a sample achievement toast, to check its size and place on screen");
 
 namespace rex::ui {
+
+namespace {
+
+// The toast title in the game language, like the name under it. Japanese, Korean and Chinese stay in English: the
+// overlay font has no glyphs for them.
+const char* ToastTitle() {
+  using rex::system::XLanguage;
+  switch (static_cast<XLanguage>(REXCVAR_GET(user_language))) {
+    case XLanguage::kGerman:
+      return "Erfolg freigeschaltet";
+    case XLanguage::kFrench:
+      return "Succès déverrouillé";
+    case XLanguage::kSpanish:
+      return "Logro desbloqueado";
+    case XLanguage::kItalian:
+      return "Obiettivo sbloccato";
+    case XLanguage::kPortuguese:
+      return "Conquista desbloqueada";
+    case XLanguage::kPolish:
+      return "Osiągnięcie odblokowane";
+    case XLanguage::kRussian:
+      return "Достижение разблокировано";
+    default:
+      return "Achievement Unlocked";
+  }
+}
+
+}  // namespace
 
 AchievementToastDialog::AchievementToastDialog(ImGuiDrawer* drawer,
                                                ImmediateDrawer* immediate_drawer,
@@ -108,7 +138,7 @@ void AchievementToastDialog::OnDraw(ImGuiIO& io) {
 
     ImGui::BeginGroup();
     ImGui::PushStyleColor(ImGuiCol_Text, faded(s.title));
-    ImGui::TextUnformatted("Achievement Unlocked");
+    ImGui::TextUnformatted(ToastTitle());
     ImGui::PopStyleColor();
     // The name wraps inside the toast's width, with the gamerscore after it.
     ImGui::PushTextWrapPos(max_width - margen.x);

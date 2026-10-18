@@ -206,6 +206,51 @@ void ImGuiDrawer::Initialize() {
   io.Fonts->AddFontFromMemoryCompressedBase85TTF(kProggyTinyCompressedDataBase85, 10.0f,
                                                  &font_config, font_glyph_ranges);
 
+  /*
+   * ProggyTiny only has Latin-1, so the achievement names the game gives in Russian or Polish (XDBF, in the
+   * user_language) came out as one '?' per letter in the toast, while the launcher showed them fine. The letters
+   * Latin-1 lacks are merged from a system font; the first one found wins.
+   */
+  static const ImWchar extra_glyph_ranges[] = {
+      0x0100, 0x017F,  // Latin Extended-A (Polish)
+      0x0400, 0x04FF,  // Cyrillic
+      0,
+  };
+  static const char* const extra_font_paths[] = {
+#if REX_PLATFORM_ANDROID
+      "/system/fonts/Roboto-Regular.ttf",
+      "/system/fonts/NotoSans-Regular.ttf",
+      "/system/fonts/DroidSans.ttf",
+#elif REX_PLATFORM_WIN32
+      "C:\\Windows\\Fonts\\segoeui.ttf",
+      "C:\\Windows\\Fonts\\arial.ttf",
+#elif REX_PLATFORM_LINUX
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+      "/usr/share/fonts/TTF/DejaVuSans.ttf",
+      "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+      "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+#endif
+      nullptr,
+  };
+  bool extra_font_loaded = false;
+  for (const char* const* path = extra_font_paths; *path; ++path) {
+    std::error_code ec;
+    if (!std::filesystem::exists(*path, ec)) {
+      continue;
+    }
+    ImFontConfig extra_font_config;
+    extra_font_config.MergeMode = true;
+    extra_font_config.OversampleH = extra_font_config.OversampleV = 1;
+    extra_font_config.PixelSnapH = true;
+    if (io.Fonts->AddFontFromFileTTF(*path, 11.0f, &extra_font_config, extra_glyph_ranges)) {
+      extra_font_loaded = true;
+      break;
+    }
+  }
+  if (!extra_font_loaded) {
+    REXLOG_WARN("No system font with Cyrillic found; Russian and Polish letters will show as '?'");
+  }
+
 #if REX_PLATFORM_WIN32
   // TODO(benvanik): jp font on other platforms?
   // https://github.com/Koruri/kibitaki looks really good, but is 1.5MiB.
