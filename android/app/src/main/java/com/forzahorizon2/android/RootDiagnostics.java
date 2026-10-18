@@ -188,8 +188,9 @@ final class RootDiagnostics {
                         256 * 1024);
                 String functions = run("simpleperf report -i " + data
                         + " --sort comm,dso,symbol --percent-limit 0.3 2>&1", 90, 1024 * 1024);
-                out.append("== por thread\n").append(threads).append("\n== por thread, biblioteca e funcao\n")
-                        .append(functions).append('\n');
+                out.append("== por thread\n").append(threads != null ? threads : "falhou (simpleperf report)\n")
+                        .append("\n== por thread, biblioteca e funcao\n")
+                        .append(functions != null ? functions : "falhou (simpleperf report)\n").append('\n');
                 run("rm -f " + data, 10, 1024);
             }
             try (java.io.FileWriter writer = new java.io.FileWriter(sessionBase + "_perfil.txt")) {
