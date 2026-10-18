@@ -48,8 +48,12 @@ REXCVAR_DEFINE_INT32(audio_sdl_rafaga_tramas, 0, "Audio",
 REXCVAR_DEFINE_BOOL(audio_sdl_bomba, REX_PLATFORM_ANDROID != 0, "Audio",
                     "Pedir audio a ritmo constante cada 5,333 ms, independiente de las rafagas del "
                     "dispositivo (por defecto en Android)");
-REXCVAR_DEFINE_INT32(audio_sdl_bomba_cola, REX_PLATFORM_ANDROID ? 12 : 6, "Audio",
-                     "Tramas de reserva de la bomba SDL (12 = 64 ms; necesita audio_sdl_bomba)")
+// Android 32 (170 ms): the Moto G9 Play's output stops taking frames for a while and then takes them all at once,
+// more than 12 (64 ms) in a burst: the pump stopped at a full reserve during the pause and the burst came out as
+// silence, ~5 % of the blocks in a ~40 s cycle. The queue only fills after such a pause; otherwise it stays low,
+// since the output takes slightly more than 187.5 frames per second.
+REXCVAR_DEFINE_INT32(audio_sdl_bomba_cola, REX_PLATFORM_ANDROID ? 32 : 6, "Audio",
+                     "Tramas de reserva de la bomba SDL (32 = 170 ms; necesita audio_sdl_bomba)")
     .range(2, 32);
 REXCVAR_DEFINE_INT32(audio_volcado_salida_s, 0, "Audio",
                      "Diagnostico: segundos de lo que el driver SDL entrega al dispositivo (con los "
@@ -70,6 +74,11 @@ struct VolcadoSalida {
 VolcadoSalida volcado_salida;
 uint64_t tramas_con_datos = 0;
 uint64_t tramas_de_silencio = 0;
+// The output's pace: SDL callbacks, the longest time between two and the most frames one asked for.
+uint64_t llamadas_sdl = 0;
+uint64_t hueco_sdl_max_ns = 0;
+int pedido_max_tramas = 0;
+std::chrono::steady_clock::time_point llamada_sdl_anterior{};
 std::chrono::steady_clock::time_point ultimo_informe_salida{};
 
 void GrabarSalida(const float* datos, int bytes, uint32_t canales) {
@@ -129,8 +138,10 @@ void ContarTrama(bool silencio) {
   const uint32_t entregadas = medida.entregadas.exchange(0, std::memory_order_relaxed);
   const uint64_t hueco_max = medida.hueco_max_ns.exchange(0, std::memory_order_relaxed);
   if (ultimo_informe_salida.time_since_epoch().count() != 0) {
-    REXAPU_INFO("[audio] SDL en 10 s: {} tramas con datos y {} de silencio por falta de tramas",
-                tramas_con_datos, tramas_de_silencio);
+    REXAPU_INFO("[audio] SDL en 10 s: {} tramas con datos y {} de silencio por falta de tramas; {} llamadas "
+                "(hueco maximo {:.1f} ms, hasta {} tramas de una vez)",
+                tramas_con_datos, tramas_de_silencio, llamadas_sdl, double(hueco_sdl_max_ns) / 1e6,
+                pedido_max_tramas);
     // The chain that feeds it: pump -> semaphore -> Audio Worker -> game callback -> SubmitFrame.
     REXAPU_INFO("[audio] produccion en 10 s: bomba {} liberaciones ({} rechazadas, semaforo lleno; retraso "
                 "maximo {:.2f} ms), {} callbacks del juego ({:.1f} ms, maximo {:.2f} ms), {} tramas "
@@ -140,6 +151,9 @@ void ContarTrama(bool silencio) {
   }
   tramas_con_datos = 0;
   tramas_de_silencio = 0;
+  llamadas_sdl = 0;
+  hueco_sdl_max_ns = 0;
+  pedido_max_tramas = 0;
   ultimo_informe_salida = ahora;
 }
 
@@ -403,6 +417,17 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
   const bool mute = REXCVAR_GET(audio_mute) || IsGameOutputSuppressed();
   // Android limits after folding, before any hard clipping. Other outputs retain their clamp.
   constexpr bool clamp_fold = REX_PLATFORM_ANDROID == 0;
+  {
+    const auto ahora = std::chrono::steady_clock::now();
+    if (llamada_sdl_anterior.time_since_epoch().count() != 0) {
+      hueco_sdl_max_ns = std::max<uint64_t>(
+          hueco_sdl_max_ns,
+          uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(ahora - llamada_sdl_anterior).count()));
+    }
+    llamada_sdl_anterior = ahora;
+    ++llamadas_sdl;
+    pedido_max_tramas = std::max(pedido_max_tramas, (additional_amount + len - 1) / len);
+  }
   const int32_t rafaga = REXCVAR_GET(audio_sdl_rafaga_tramas);
   if (rafaga > 1) {
     // Diagnostic: up to N frames at once, each with its release, into a private buffer SDL feeds from.
