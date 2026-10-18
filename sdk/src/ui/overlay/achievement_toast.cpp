@@ -15,8 +15,11 @@
 #include <cfloat>
 
 #include <rex/cvar.h>
+#include <rex/runtime.h>
+#include <rex/system/kernel_state.h>
 #include <rex/system/flags.h>
 #include <rex/system/xcontent.h>
+#include <rex/ui/imgui_drawer.h>
 #include <rex/ui/immediate_drawer.h>
 
 REXCVAR_DEFINE_BOOL(achievement_toast_test, false, "UI",
@@ -26,8 +29,7 @@ namespace rex::ui {
 
 namespace {
 
-// The toast title in the game language, like the name under it. Japanese, Korean and Chinese stay in English: the
-// overlay font has no glyphs for them.
+// The toast title in the game language, like the name under it.
 const char* ToastTitle() {
   using rex::system::XLanguage;
   switch (static_cast<XLanguage>(REXCVAR_GET(user_language))) {
@@ -45,6 +47,14 @@ const char* ToastTitle() {
       return "Osiągnięcie odblokowane";
     case XLanguage::kRussian:
       return "Достижение разблокировано";
+    case XLanguage::kJapanese:
+      return "実績のロックが解除されました";
+    case XLanguage::kKorean:
+      return "도전 과제 달성";
+    case XLanguage::kSChinese:
+      return "成就已解锁";
+    case XLanguage::kTChinese:
+      return "成就已解鎖";
     default:
       return "Achievement Unlocked";
   }
@@ -55,11 +65,20 @@ const char* ToastTitle() {
 AchievementToastDialog::AchievementToastDialog(ImGuiDrawer* drawer,
                                                ImmediateDrawer* immediate_drawer,
                                                rex::Runtime* runtime)
-    : AchievementNotificationDialog(drawer), icon_cache_(immediate_drawer, runtime) {}
+    : AchievementNotificationDialog(drawer), icon_cache_(immediate_drawer, runtime) {
+  // Every name at once, so the font atlas is rebuilt once here and not on each unlock.
+  drawer->RequestGlyphs(ToastTitle());
+  if (runtime && runtime->kernel_state()) {
+    for (const auto& achievement : runtime->kernel_state()->achievements().ListAchievements()) {
+      drawer->RequestGlyphs(achievement.label);
+    }
+  }
+}
 
 AchievementToastDialog::~AchievementToastDialog() {}
 
 void AchievementToastDialog::Push(const rex::system::AchievementEvent& event) {
+  imgui_drawer()->RequestGlyphs(event.achievement.label);
   std::lock_guard<std::mutex> lock(mutex_);
   queue_.push_back({event, std::chrono::steady_clock::now()});
 }

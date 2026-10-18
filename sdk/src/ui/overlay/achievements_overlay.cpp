@@ -13,6 +13,7 @@
 #include <imgui.h>
 
 #include <rex/runtime.h>
+#include <rex/ui/imgui_drawer.h>
 #include <rex/ui/immediate_drawer.h>
 
 namespace rex::ui {
@@ -23,7 +24,15 @@ AchievementsOverlayDialog::AchievementsOverlayDialog(ImGuiDrawer* imgui_drawer,
                                                      rex::system::AchievementManager* achievements)
     : ImGuiDialog(imgui_drawer),
       achievements_(achievements),
-      icon_cache_(immediate_drawer, runtime) {}
+      icon_cache_(immediate_drawer, runtime) {
+  if (achievements_) {
+    for (const auto& a : achievements_->ListAchievements()) {
+      imgui_drawer->RequestGlyphs(a.label);
+      imgui_drawer->RequestGlyphs(a.description);
+      imgui_drawer->RequestGlyphs(a.unachieved_description);
+    }
+  }
+}
 
 AchievementsOverlayDialog::~AchievementsOverlayDialog() {}
 
