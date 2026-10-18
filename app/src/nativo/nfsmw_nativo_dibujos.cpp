@@ -3743,10 +3743,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     const bool compartidas_llenas =
         compartidas_aparte_ && usar_ubo_ &&
         compartidas_usado_ + kUboBytesCompartidas + alineacion_ubo_ > kTamanoCompartidas;
-    // fh2_nativo_cache_buscas has no fallback buffer: when its segments are all still in use by the GPU, submit
-    // first like a full upload buffer (the next slot's fence frees the oldest ones).
-    const bool buscas_llenas =
-        cache_buscas_activo_ && rangos_buscas_fh2 && !cache_buscas_.Cabe(bytes_buscas_fh2, rangos_buscas_fh2);
+    // fh2_nativo_cache_buscas: every copy of this draw may end up in the slot's transient area (BuscaTransitoria);
+    // when it has no room left, submit first, as with a full upload buffer (the next slot starts with an empty one).
+    const bool buscas_llenas = cache_buscas_activo_ && rangos_buscas_fh2 &&
+                               buscas_transitoria_usado_ + bytes_buscas_fh2 + 4 * rangos_buscas_fh2 >
+                                   kBuscasTransitoria;
     if (subida_usado_ + necesarios > kTamanoSubida || compartidas_llenas || buscas_llenas) {
       const auto antes_envio = std::chrono::steady_clock::now();
       const bool enviado = contexto_->EnviarYEsperar();
@@ -3761,8 +3762,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       if (!enviado) {
         return Fh2DiagSalida(p, __LINE__, false);
       }
-      if (buscas_llenas && !cache_buscas_.Cabe(bytes_buscas_fh2, rangos_buscas_fh2)) {
-        return Rechazar(14, "buscas sin sitio en su bufer persistente");
+      if (buscas_llenas && bytes_buscas_fh2 + 4 * rangos_buscas_fh2 > kBuscasTransitoria) {
+        return Rechazar(14, "buscas mayores que su zona transitoria");
       }
     }
 
@@ -3962,7 +3963,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         // frames; the others take the per-submission path below, copied into the same persistent buffer.
         if (cache_buscas_activo_ && cache_buscas_.Admite(b.direccion, bytes_busca)) {
           if (!CopiarBuscaEnCache(b.direccion, b.palabras, b.orden, datos_busca, offset)) {
-            continue;  // no room (cannot happen after Cabe above): the fetch reads nothing, counted
+            continue;  // no room (cannot happen after the check above): the fetch reads nothing, counted
           }
           w[0] = uint32_t(offset / 4);  // in dwords from the start of the fetch cache's buffer (binding 3)
           w[1] = b.palabras;
@@ -4026,18 +4027,15 @@ class DibujosVulkanImpl final : public DibujosVulkan {
             memoria_->EnablePhysicalMemoryAccessCallbacks(b.direccion, bytes_busca, true, false);
           }
           if (cache_buscas_activo_) {
-            // Binding 3 points at the fetch cache's buffer: the copy goes to its current segment, which stays alive
-            // until the GPU finishes this submission, so the per-submission reuse above holds.
-            uint64_t offset_cache = 0;
-            uint32_t tick = 0;
-            if (!cache_buscas_.Reservar(bytes_busca, 4, offset_cache, tick)) {
+            // Binding 3 points at the fetch cache's buffer: the copy goes to this slot's transient area, alive until
+            // the GPU finishes this submission, so the per-submission reuse above holds.
+            if (!BuscaTransitoria(bytes_busca, offset)) {
               ++buscas_sin_sitio_;
               if (vigilado) {
                 vigilado->fotograma = 0;  // its old offset holds what the guest has since rewritten
               }
               continue;
             }
-            offset = VkDeviceSize(offset_cache);
             CopiarVertices(TrabajoCopia{datos_busca, cache_buscas_datos_ + offset, b.palabras, b.orden});
             AnotarCopiaBusca(offset, bytes_busca);
           } else {
@@ -6146,6 +6144,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     }
     if (cache_buscas_activo_) {
       cache_buscas_.NuevaRanura(ranura);
+      buscas_transitoria_usado_ = 0;
     }
     enviado_tras_sombras_ = false;  // the post-shadow submission is once per frame
     /*
@@ -15005,17 +15004,35 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     // guest since its copy.
     fh2_bytes_busca_motivo_[cache_buscas_.sucias() != sucias_antes ? 4 : 1] += bytes;
     uint32_t tick = 0;
-    if (!cache_buscas_.Reservar(bytes, 4, offset_cache, tick)) {
-      ++buscas_sin_sitio_;
-      return false;
+    if (cache_buscas_.Reservar(bytes, 4, offset_cache, tick)) {
+      memoria_->EnablePhysicalMemoryAccessCallbacks(direccion, bytes, true, false);
+      CopiarVertices(TrabajoCopia{datos, cache_buscas_datos_ + offset_cache, palabras, orden});
+      cache_buscas_.Anotar(direccion, bytes, uint32_t(orden), offset_cache, tick, huella);
+      offset = VkDeviceSize(offset_cache);
+    } else {
+      // Every cache segment still in use by the GPU (hits keep them busy): this submission's copy goes to the
+      // slot's transient area, not remembered. The cache's llenos() counts these.
+      if (!BuscaTransitoria(bytes, offset)) {
+        ++buscas_sin_sitio_;
+        return false;
+      }
+      CopiarVertices(TrabajoCopia{datos, cache_buscas_datos_ + offset, palabras, orden});
     }
-    memoria_->EnablePhysicalMemoryAccessCallbacks(direccion, bytes, true, false);
-    CopiarVertices(TrabajoCopia{datos, cache_buscas_datos_ + offset_cache, palabras, orden});
-    cache_buscas_.Anotar(direccion, bytes, uint32_t(orden), offset_cache, tick, huella);
-    offset = VkDeviceSize(offset_cache);
     AnotarCopiaBusca(offset, bytes);
     ++fh2_vigilados_copiados_;
     InformeBuscas();
+    return true;
+  }
+
+  // Room in the current slot's transient area of the fetch cache's buffer (after the cache's segments; reset by
+  // UsarRanura, whose slot fence has been waited, like the upload buffer).
+  bool BuscaTransitoria(uint32_t bytes, VkDeviceSize& offset) {
+    const VkDeviceSize inicio = (buscas_transitoria_usado_ + 3) & ~VkDeviceSize(3);
+    if (inicio + bytes > kBuscasTransitoria) {
+      return false;
+    }
+    buscas_transitoria_usado_ = inicio + bytes;
+    offset = cache_buscas_.Tamano() + VkDeviceSize(ranura_actual_) * kBuscasTransitoria + inicio;
     return true;
   }
 
@@ -15045,7 +15062,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       const CacheVerticesEntreFotogramas& c = cache_buscas_;
       REXLOG_INFO("[fh2 nativo] cache de buscas: {} consultas, {} aciertos ({:.1f} MB sin copiar), {} copias ({:.1f} "
                   "MB), {} sucias, {} volatiles, {} entradas, {} segmentos reciclados, {} veces lleno, {} avisos de "
-                  "escritura, {} discrepancias{}; {} envios por falta de sitio, {} sin sitio",
+                  "escritura, {} discrepancias{}; {} envios por zona transitoria llena, {} sin sitio",
                   c.consultas(), c.aciertos(), double(c.bytes_ahorrados()) / 1048576.0, c.copias(),
                   double(c.bytes_copiados()) / 1048576.0, c.sucias(), c.volatiles(), c.entradas(), c.reciclados(),
                   c.llenos(), c.avisos(), c.discrepancias(), cache_buscas_comprobar_ ? " (comprobando)" : "",
@@ -15073,17 +15090,19 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   }
 
   // fh2_nativo_cache_buscas: its persistent buffer, storage usage (binding 3), of the upload buffer's memory type and
-  // mapped for good, and its write watch. 64 MB on every phone: the upload buffer bound whole there is 64 MB, so that
-  // size is known to fit maxStorageBufferRange, and 32 MB on the Moto G9 Play refused 256 draws in 4 minutes (every
-  // segment still in use after a submission; cause 14). If anything fails, the fetches stay in the upload buffer.
+  // mapped for good, and its write watch. 58 MB on every phone, under the 64 MB the upload buffer already binds whole
+  // there (so it fits maxStorageBufferRange): 40 MB of cache segments and a 6 MB transient area per work slot. The
+  // transient areas take what is not cached, so a submission is only forced when one fills, like the upload buffer.
+  // Before them, hits kept every segment busy and the S23 Ultra forced ~110 submissions a second. If anything fails,
+  // the fetches stay in the upload buffer.
   void CrearCacheBuscas() {
     if (!REXCVAR_GET(fh2_nativo_cache_buscas) || memoria_ == nullptr) {
       return;
     }
-    cache_buscas_.Configurar(16);
+    cache_buscas_.Configurar(kSegmentosCacheBuscas);
     VkBufferCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    info.size = cache_buscas_.Tamano();
+    info.size = cache_buscas_.Tamano() + kRanurasDeTrabajo * kBuscasTransitoria;
     info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     bool bien = dfn_.vkCreateBuffer(device_, &info, nullptr, &cache_buscas_bufer_) == VK_SUCCESS;
@@ -15172,6 +15191,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   VkDeviceSize cache_buscas_escrito_min_ = ~VkDeviceSize(0), cache_buscas_escrito_max_ = 0;
   uint64_t envios_llenos_buscas_ = 0;  // submissions forced because its segments were all in use
   uint64_t buscas_sin_sitio_ = 0;      // fetches left empty for want of room (expected 0)
+  static constexpr uint32_t kSegmentosCacheBuscas = 10;                  // 40 MB of 4 MB segments
+  static constexpr VkDeviceSize kBuscasTransitoria = VkDeviceSize(6) << 20;  // per work slot
+  VkDeviceSize buscas_transitoria_usado_ = 0;  // in the current slot's area
   // fh2_nativo_cache_vertices (CrearCacheVertices). Ring only, except the write watch (CacheVerticesEntreFotogramas).
   CacheVerticesEntreFotogramas cache_vertices_;
   bool cache_activo_ = false;
