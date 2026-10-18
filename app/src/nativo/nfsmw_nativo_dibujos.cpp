@@ -3033,8 +3033,16 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       const CacheIndicesEntreFotogramas::Clave clave_indices{
           uint64_t(base & 0x1FFFFFFF), cuenta, indice_reinicio, desplazamiento,
           uint8_t(bytes_por_indice), uint8_t(uint32_t(orden)), uint8_t(reinicio ? 1 : 0)};
+      // The conversion below writes 16-bit indices only on this path; restart, an added offset or 32-bit guest
+      // indices come out as 32 bits, twice the guest size for 16-bit ones.
+      const bool salida_de_16 = !indices32 && !reinicio && !desplazamiento && !cuadrilateros &&
+                                (orden == xenos::Endian::k8in16 || orden == xenos::Endian::kNone);
       if (cache_indices_activo_ && !cuadrilateros && cache_indices_.Admite(clave_indices)) {
-        const uint64_t bytes_cache = uint64_t(cuenta) * bytes_por_indice;
+        const uint64_t bytes_cache = uint64_t(cuenta) * bytes_por_indice;  // guest bytes (watch, fingerprint)
+        // What the converted copy takes in the cache's buffer. Reserving the guest size here let the 32-bit
+        // conversion of 16-bit indices overflow into the next cached range (its draw then used another mesh's
+        // indices: shards out of the player's car, 2026-10-18; very likely the 2026-10-14 green wall too).
+        const uint64_t bytes_convertidos = uint64_t(cuenta) * (salida_de_16 ? 2 : 4);
         const uint64_t huella = cache_indices_comprobar_ ? XXH3_64bits(datos, size_t(bytes_cache)) : 0;
         uint64_t offset_cache = 0;
         uint64_t huella_copia = 0;
@@ -3046,14 +3054,14 @@ class DibujosVulkanImpl final : public DibujosVulkan {
           // written there. A mismatch means the persistent buffer was overwritten: counted, and this draw
           // converts and uploads as usual.
           if (cache_indices_comprobar_ &&
-              XXH3_64bits(cache_indices_datos_ + offset_cache, size_t(bytes_cache)) != huella_copia) {
+              XXH3_64bits(cache_indices_datos_ + offset_cache, size_t(bytes_convertidos)) != huella_copia) {
             cache_indices_.Pisada();
             indices_en_cache = false;
             vmin = UINT32_MAX;
             vmax = 0;
             indices_de_16 = false;
           }
-        } else if (cache_indices_.Reservar(uint32_t(bytes_cache), offset_cache, tick_indices_cache)) {
+        } else if (cache_indices_.Reservar(uint32_t(bytes_convertidos), offset_cache, tick_indices_cache)) {
           // A miss with room: the watch is enabled before the conversion reads the guest range below (a
           // write from here on makes this copy stale), like the vertex cache before its copy.
           memoria_->EnablePhysicalMemoryAccessCallbacks(uint32_t(base & 0x1FFFFFFF), uint32_t(bytes_cache),
@@ -3064,8 +3072,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
           reserva_indices_cache = true;
         }
       }
-      if (!indices_en_cache && !indices32 && !reinicio && !desplazamiento && !cuadrilateros &&
-          (orden == xenos::Endian::k8in16 || orden == xenos::Endian::kNone)) {
+      if (!indices_en_cache && salida_de_16) {
         // The normal case in NFSMW: 16 bits without restart or offset. They are uploaded as 16 bits, with a
         // branch-free loop the compiler can vectorize.
         indices16_.resize(cuenta);
