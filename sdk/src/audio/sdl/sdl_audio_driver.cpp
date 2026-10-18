@@ -32,6 +32,10 @@
 #include <rex/platform.h>
 #include <SDL3/SDL.h>
 
+#if REX_PLATFORM_ANDROID || REX_PLATFORM_GNU_LINUX
+#include <pthread.h>
+#endif
+
 REXCVAR_DEFINE_BOOL(audio_mute, false, "Audio", "Mute audio output");
 REXCVAR_DEFINE_INT32(audio_ganancia_pct, 100, "Audio",
                      "Volumen general de la salida en porcentaje (100 = sin cambio). Por encima de 100 puede "
@@ -243,6 +247,11 @@ bool SDLAudioDriver::Initialize() {
 }
 
 void SDLAudioDriver::Bomba() {
+#if REX_PLATFORM_ANDROID || REX_PLATFORM_GNU_LINUX
+  // Its own name, so Android's thread pinning (android_rendimiento.cpp) can tell it is an audio thread.
+  pthread_setname_np(pthread_self(), "Audio bomba");
+#endif
+  PrioridadDeAudio("Audio bomba");
   using Reloj = std::chrono::steady_clock;
   const auto intervalo =
       std::chrono::nanoseconds(1'000'000'000ll * channel_samples_ / frame_frequency_);
@@ -258,18 +267,26 @@ void SDLAudioDriver::Bomba() {
 #endif
       continue;
     }
+    // Every 5.333 ms block that went by since the last wake-up is owed to the game. Releasing one per
+    // wake-up and dropping the rest when late, as before, made the game mix fewer blocks than real time
+    // whenever this thread woke up late: on a POCO X7 Pro with the threads squeezed onto two cores, ~1,355
+    // blocks per 10 s instead of 1,875, and the sound came out slow and robotic. The reserve still caps
+    // it, and more than a reserve behind (a pause, a long stall) is not caught up.
+    const size_t reserva = size_t(REXCVAR_GET(audio_sdl_bomba_cola));
+    const size_t debidas = std::min<size_t>(1 + size_t((ahora - plazo) / intervalo), reserva);
     size_t en_cola;
     {
       std::unique_lock<std::mutex> guard(frames_mutex_);
       en_cola = frames_queued_.size();
     }
-    if (en_cola < size_t(REXCVAR_GET(audio_sdl_bomba_cola))) {
-      semaphore_->Release(1, nullptr);
-    }
+    size_t liberar = en_cola < reserva ? std::min(debidas, reserva - en_cola) : 0;
     if (en_cola < 2) {
-      semaphore_->Release(1, nullptr);
+      liberar = std::max<size_t>(liberar, 2);
     }
-    plazo += intervalo;
+    // One at a time: a release past the semaphore's maximum fails whole, and the game may still hold some.
+    for (size_t i = 0; i < liberar && semaphore_->Release(1, nullptr); ++i) {
+    }
+    plazo += intervalo * debidas;
     if (ahora >= plazo) {
       plazo = ahora + intervalo;
     }

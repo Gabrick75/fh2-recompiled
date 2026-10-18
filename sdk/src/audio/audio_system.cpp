@@ -114,6 +114,7 @@ X_STATUS AudioSystem::Setup(system::KernelState* kernel_state) {
 }
 
 void AudioSystem::WorkerThreadMain() {
+  PrioridadDeAudio("Audio Worker");
   // Initialize driver and ringbuffer.
   Initialize();
 

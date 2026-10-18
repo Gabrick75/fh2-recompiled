@@ -30,6 +30,7 @@
 #include <map>
 
 #include <rex/cvar.h>
+#include <rex/audio/xma/decoder.h>
 #include <rex/logging.h>
 
 REXCVAR_DEFINE_BOOL(fh2_android_nucleos_grandes, true, "FH2",
@@ -479,6 +480,16 @@ bool IsGameThread(const std::string& name) {
   return name.rfind("XThread", 0) == 0 || name.rfind("Main XThread", 0) == 0;
 }
 
+// The threads that keep the sound going: AAudio's callback thread ("AudioTrack", or "AAudio_N" on the MMAP path),
+// SDL's playback thread ("SDLAudioP1"), the Audio Worker that runs the game's audio callback, the XMA Decoder and
+// the SDL pump ("Audio bomba"). Each is light, but it has to run within its 5.3 ms block. Squeezed onto the 'rest'
+// cores with every other game thread (two cores on a POCO X7 Pro), they ran late and the sound came out slow and
+// robotic: ~1,355 blocks per 10 s instead of 1,875, against 1,875 with 'auto'.
+bool IsAudioThread(const std::string& name) {
+  return name.rfind("Audio", 0) == 0 || name.rfind("AAudio", 0) == 0 || name.rfind("SDLAudio", 0) == 0 ||
+         name.rfind("XMA Decoder", 0) == 0;
+}
+
 bool IsRingThread(const std::string& name) {
   return name.rfind("GPU Commands", 0) == 0 || name.rfind("GPU anillo", 0) == 0 ||
          name.rfind("GPU VSync", 0) == 0;
@@ -493,6 +504,11 @@ void SetMask(pid_t tid, const cpu_set_t& mask) {
 
 void Loop(int fastest, cpu_set_t mask_fastest, cpu_set_t mask_ring, cpu_set_t mask_rest) {
   pthread_setname_np(pthread_self(), "fh2 jogo-rapido");
+  // Audio threads, and the game's audio server (the thread sending the XMA kicks), get the ring's core as well
+  // as the rest: every fast core but the one the busiest game thread has to itself.
+  cpu_set_t mask_audio;
+  CPU_OR(&mask_audio, &mask_ring, &mask_rest);
+  std::map<pid_t, std::string> audio_avisados;
   auto before = ThreadTicks();
   pid_t elegido = -1;
   std::string elegido_nombre;
@@ -560,6 +576,14 @@ void Loop(int fastest, cpu_set_t mask_fastest, cpu_set_t mask_ring, cpu_set_t ma
       std::ifstream comm(entry.path() / "comm");
       std::string name;
       std::getline(comm, name);
+      if (IsAudioThread(name) || uint32_t(tid) == rex::audio::HiloDelUltimoKickXma()) {
+        if (audio_avisados.emplace(tid, name).second) {
+          REXLOG_INFO("[afinidade] juego-rapido: '{}' (tid {}) es de audio: nucleos del anillo y del resto", name,
+                      tid);
+        }
+        SetMask(tid, mask_audio);
+        continue;
+      }
       SetMask(tid, IsRingThread(name) ? mask_ring : mask_rest);
     }
   }

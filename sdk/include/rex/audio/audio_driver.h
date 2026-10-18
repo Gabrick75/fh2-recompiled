@@ -16,6 +16,10 @@
 
 namespace rex::audio {
 
+// Android: the calling thread to THREAD_PRIORITY_AUDIO (nice -16), the level AudioTrack's own threads use, so
+// the threads that keep the output fed are not left waiting behind the game's busy threads. Elsewhere nothing.
+void PrioridadDeAudio(const char* hilo);
+
 class AudioDriver {
  public:
   explicit AudioDriver(memory::Memory* memory);
