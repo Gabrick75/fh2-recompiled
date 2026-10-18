@@ -25,6 +25,8 @@ AudioDriver::AudioDriver(memory::Memory* memory) : memory_(memory) {}
 
 AudioDriver::~AudioDriver() = default;
 
+MedidaProduccionAudio g_medida_produccion_audio;
+
 void PrioridadDeAudio([[maybe_unused]] const char* hilo) {
 #if REX_PLATFORM_ANDROID
   // On Linux the "process" priority of who = 0 is the calling thread's. Android lets apps go down to -20.

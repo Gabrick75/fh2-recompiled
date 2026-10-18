@@ -119,9 +119,24 @@ void ContarTrama(bool silencio) {
   if (ahora - ultimo_informe_salida < std::chrono::seconds(10)) {
     return;
   }
+  auto& medida = g_medida_produccion_audio;
+  const uint32_t liberadas = medida.liberadas.exchange(0, std::memory_order_relaxed);
+  const uint32_t rechazadas = medida.rechazadas.exchange(0, std::memory_order_relaxed);
+  const uint64_t retraso_max = medida.retraso_max_ns.exchange(0, std::memory_order_relaxed);
+  const uint32_t callbacks = medida.callbacks.exchange(0, std::memory_order_relaxed);
+  const uint64_t callback_ns = medida.callback_ns.exchange(0, std::memory_order_relaxed);
+  const uint64_t callback_max = medida.callback_max_ns.exchange(0, std::memory_order_relaxed);
+  const uint32_t entregadas = medida.entregadas.exchange(0, std::memory_order_relaxed);
+  const uint64_t hueco_max = medida.hueco_max_ns.exchange(0, std::memory_order_relaxed);
   if (ultimo_informe_salida.time_since_epoch().count() != 0) {
     REXAPU_INFO("[audio] SDL en 10 s: {} tramas con datos y {} de silencio por falta de tramas",
                 tramas_con_datos, tramas_de_silencio);
+    // The chain that feeds it: pump -> semaphore -> Audio Worker -> game callback -> SubmitFrame.
+    REXAPU_INFO("[audio] produccion en 10 s: bomba {} liberaciones ({} rechazadas, semaforo lleno; retraso "
+                "maximo {:.2f} ms), {} callbacks del juego ({:.1f} ms, maximo {:.2f} ms), {} tramas "
+                "entregadas (hueco maximo {:.1f} ms)",
+                liberadas, rechazadas, double(retraso_max) / 1e6, callbacks, double(callback_ns) / 1e6,
+                double(callback_max) / 1e6, entregadas, double(hueco_max) / 1e6);
   }
   tramas_con_datos = 0;
   tramas_de_silencio = 0;
@@ -284,8 +299,15 @@ void SDLAudioDriver::Bomba() {
       liberar = std::max<size_t>(liberar, 2);
     }
     // One at a time: a release past the semaphore's maximum fails whole, and the game may still hold some.
-    for (size_t i = 0; i < liberar && semaphore_->Release(1, nullptr); ++i) {
+    size_t hechas = 0;
+    while (hechas < liberar && semaphore_->Release(1, nullptr)) {
+      ++hechas;
     }
+    auto& medida = g_medida_produccion_audio;
+    medida.liberadas.fetch_add(uint32_t(hechas), std::memory_order_relaxed);
+    medida.rechazadas.fetch_add(uint32_t(liberar - hechas), std::memory_order_relaxed);
+    MaximoAtomico(medida.retraso_max_ns,
+                  uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(ahora - plazo).count()));
     plazo += intervalo * debidas;
     if (ahora >= plazo) {
       plazo = ahora + intervalo;
@@ -307,6 +329,19 @@ void SDLAudioDriver::SubmitFrame(uint32_t frame_ptr) {
   }
 
   std::memcpy(output_frame, input_frame, frame_samples_ * sizeof(float));
+
+  {
+    // The game submits from its audio callback, on the Audio Worker; a race here would only skew the report.
+    static std::chrono::steady_clock::time_point anterior{};
+    const auto ahora = std::chrono::steady_clock::now();
+    auto& medida = g_medida_produccion_audio;
+    medida.entregadas.fetch_add(1, std::memory_order_relaxed);
+    if (anterior.time_since_epoch().count() != 0) {
+      MaximoAtomico(medida.hueco_max_ns,
+                    uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(ahora - anterior).count()));
+    }
+    anterior = ahora;
+  }
 
   {
     std::unique_lock<std::mutex> guard(frames_mutex_);
