@@ -22,10 +22,14 @@ inline constexpr VkPipelineStageFlags kEtapasPase =
 inline constexpr VkAccessFlags kAccesosPase =
     kAccesosImagenes & ~(VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
 
-inline void DependenciasImagenes(VkSubpassDependency (&dependencias)[2]) {
-  dependencias[0] = {VK_SUBPASS_EXTERNAL, 0, kEtapasImagenes, kEtapasPase,
+// vertices_esperan = false (fh2_nativo_vertices_sin_espera): the vertex stage is left out of what waits, on both
+// sides, so a tiler can bin the next pass's geometry while it still shades the previous pass. A vertex shader that
+// samples an image written before then needs its own barrier (DibujosVulkanImpl::BarreraVertices).
+inline void DependenciasImagenes(VkSubpassDependency (&dependencias)[2], bool vertices_esperan = true) {
+  const VkPipelineStageFlags sin_vertices = vertices_esperan ? 0u : VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+  dependencias[0] = {VK_SUBPASS_EXTERNAL, 0, kEtapasImagenes, kEtapasPase & ~sin_vertices,
                      kAccesosImagenes, kAccesosPase, 0};
-  dependencias[1] = {0, VK_SUBPASS_EXTERNAL, kEtapasPase, kEtapasImagenes,
+  dependencias[1] = {0, VK_SUBPASS_EXTERNAL, kEtapasPase, kEtapasImagenes & ~sin_vertices,
                      kAccesosPase, kAccesosImagenes, 0};
 }
 
