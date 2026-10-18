@@ -321,7 +321,7 @@ public final class MainActivity extends AppCompatActivity {
 
     private ImageView appIcon(int sizeDp) {
         ImageView icon = new ImageView(this);
-        icon.setImageResource(R.mipmap.ic_launcher);
+        icon.setImageResource(R.mipmap.ic_logo);
         icon.setScaleType(ImageView.ScaleType.CENTER_CROP);
         icon.setBackground(Menu.rounded(Menu.GROUP, dp(sizeDp * 0.24f)));
         icon.setClipToOutline(true);
