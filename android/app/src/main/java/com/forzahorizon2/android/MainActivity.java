@@ -210,12 +210,12 @@ public final class MainActivity extends AppCompatActivity {
     // it are the chosen renderer's own, so the emulated and the native ones never mix. Every text is in the app's
     // three languages (AppLanguage.tr); changing the language builds the screen again.
 
-    private static final int GRAPHICS = 0, DISPLAY = 1, PERFORMANCE = 2, SOUND = 3, ACHIEVEMENTS = 4, LANGUAGE = 5,
-            GAME = 6, ABOUT = 7;
+    private static final int ACHIEVEMENTS = 0, GAME = 1, LANGUAGE = 2, DISPLAY = 3, GRAPHICS = 4, PERFORMANCE = 5,
+            SOUND = 6, ABOUT = 7;
     private static final int HOME = 8;  // not in the sidebar's list: its name at the top opens it
-    private static final int[] PAGE_ICONS = {R.drawable.ic_menu_graficos, R.drawable.ic_menu_tela,
-            R.drawable.ic_menu_desempenho, R.drawable.ic_menu_outros, R.drawable.ic_menu_conquistas,
-            R.drawable.ic_menu_idioma, R.drawable.ic_menu_jogo, R.drawable.ic_menu_sobre};
+    private static final int[] PAGE_ICONS = {R.drawable.ic_menu_conquistas, R.drawable.ic_menu_jogo,
+            R.drawable.ic_menu_idioma, R.drawable.ic_menu_tela, R.drawable.ic_menu_graficos,
+            R.drawable.ic_menu_desempenho, R.drawable.ic_menu_outros, R.drawable.ic_menu_sobre};
     private static final String STATE_PAGE = "page";
 
     private Menu ui;
