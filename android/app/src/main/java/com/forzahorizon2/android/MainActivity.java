@@ -254,45 +254,68 @@ public final class MainActivity extends AppCompatActivity {
     private View buildScreen(int page) {
         ui = new Menu(this);
         currentPage = -1;
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.HORIZONTAL);
+        // The page under the sidebar: the home page's video runs behind its see-through panel, the other pages
+        // start past its slanted edge (showPage).
+        FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Menu.BACKGROUND);
-        root.addView(sidebar(), new LinearLayout.LayoutParams(dp(244), LinearLayout.LayoutParams.MATCH_PARENT));
-        View line = new View(this);
-        line.setBackgroundColor(Menu.SEPARATOR);
-        root.addView(line, new LinearLayout.LayoutParams(1, LinearLayout.LayoutParams.MATCH_PARENT));
         content = new FrameLayout(this);
-        root.addView(content, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f));
+        root.addView(content, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        root.addView(sidebar(), new FrameLayout.LayoutParams(dp(SIDEBAR_WIDTH), FrameLayout.LayoutParams.MATCH_PARENT));
         for (int i = 0; i < pages.length; i++) pages[i] = buildPage(i);
         homeView = homePage();
         showPage(page == HOME || (page >= 0 && page < pages.length) ? page : HOME, false);
         return root;
     }
 
+    private static final int SIDEBAR_WIDTH = 292, SIDEBAR_SLANT = 88;  // dp: the top's width, and how much the foot loses
+
     private View sidebar() {
-        LinearLayout bar = ui.column();
-        bar.setBackgroundColor(Menu.SIDEBAR);
-        bar.setPadding(dp(12), dp(14), dp(12), dp(12));
+        NeonShapes.SlantedPanel panel =
+                new NeonShapes.SlantedPanel(dp(SIDEBAR_SLANT), getResources().getDisplayMetrics().density);
+        // The rows run the panel's whole width and are cut along its slanted edge.
+        LinearLayout bar = new LinearLayout(this) {
+            @Override
+            protected void dispatchDraw(android.graphics.Canvas canvas) {
+                canvas.save();
+                canvas.clipPath(panel.shape());
+                super.dispatchDraw(canvas);
+                canvas.restore();
+            }
+        };
+        bar.setOrientation(LinearLayout.VERTICAL);
+        bar.setBackground(panel);
+        bar.setPadding(0, dp(14), 0, dp(12));
 
         // The name, and under it whether the game is ready to play: all of it one button, to the home page.
         brand = new LinearLayout(this);
         brand.setOrientation(LinearLayout.HORIZONTAL);
         brand.setGravity(Gravity.CENTER_VERTICAL);
-        brand.setPadding(dp(8), dp(8), dp(8), dp(8));
+        brand.setPadding(dp(24), dp(12), dp(12), dp(12));
         brand.setContentDescription(tr(R.string.home));
         brand.setOnClickListener(v -> showPage(HOME, true));
         Menu.pressable(brand);
-        brand.addView(appIcon(34), new LinearLayout.LayoutParams(dp(34), dp(34)));
+        ImageView logo = appIcon(42);
+        logo.setForeground(stroked(Color.TRANSPARENT, 0x99E6007E, dp(42 * 0.24f)));  // the speedometer, ringed in magenta
+        brand.addView(logo, new LinearLayout.LayoutParams(dp(42), dp(42)));
         LinearLayout names = ui.column();
-        names.setPadding(dp(10), 0, 0, 0);
-        names.addView(ui.text("FH2 Recompiled", 16, Menu.PRIMARY, true));
+        names.setPadding(dp(12), 0, 0, 0);
+        SpannableStringBuilder title = new SpannableStringBuilder("FH2 RECOMPILED");
+        title.setSpan(new android.text.style.ForegroundColorSpan(Menu.ACCENT_TEXT), 4, title.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        TextView titleView = ui.text("", 16, Menu.PRIMARY, true);
+        titleView.setText(title);
+        titleView.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD_ITALIC));
+        titleView.setLetterSpacing(0.02f);
+        titleView.setSingleLine(true);
+        names.addView(titleView);
         LinearLayout status = new LinearLayout(this);
         status.setOrientation(LinearLayout.HORIZONTAL);
         status.setGravity(Gravity.CENTER_VERTICAL);
         playDot = ui.dot(Menu.TERTIARY);
         LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(7), dp(7));
         status.addView(playDot, dotParams);
-        playStatus = ui.text("", 12, Menu.SECONDARY, false);
+        playStatus = ui.text("", 12, 0xFFB4B4BC, false);
         playStatus.setPadding(dp(6), 0, 0, 0);
         playStatus.setSingleLine(true);
         status.addView(playStatus);
@@ -300,13 +323,13 @@ public final class MainActivity extends AppCompatActivity {
         brand.addView(names);
         LinearLayout.LayoutParams brandParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        brandParams.bottomMargin = dp(8);
+        brandParams.bottomMargin = dp(10);
         bar.addView(brand, brandParams);
 
         LinearLayout nav = ui.column();
         for (int i = 0; i < navRows.length; i++) {
             navRows[i] = navRow(i);
-            nav.addView(navRows[i], new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40)));
+            nav.addView(navRows[i], new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(46)));
         }
         ScrollView navScroll = new ScrollView(this);
         navScroll.setVerticalScrollBarEnabled(false);
@@ -316,24 +339,17 @@ public final class MainActivity extends AppCompatActivity {
         bar.addView(navScroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
         launchGame = new MaterialButton(this);
-        launchGame.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
-        launchGame.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
-        launchGame.setAllCaps(false);
-        launchGame.setCornerRadius(dp(14));
-        launchGame.setInsetTop(0);
-        launchGame.setInsetBottom(0);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            launchGame.setOutlineSpotShadowColor(Menu.ACCENT);  // a magenta glow instead of a grey shadow
-            launchGame.setOutlineAmbientShadowColor(Menu.ACCENT);
-        }
+        stylePlay(launchGame, 17, 20);
         launchGame.setOnClickListener(view -> {
             if (gameReady) play();
             else showPage(GAME, true);
         });
         Menu.pressable(launchGame);
         LinearLayout.LayoutParams playParams =
-                new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48));
-        playParams.topMargin = dp(8);
+                new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(SIDE_PLAY_HEIGHT));
+        // The glow's room hangs into the margins; the plate stays clear of the slanted edge at the foot.
+        playParams.setMargins(dp(14 - SIDE_PLAY_GLOW), dp(8 - SIDE_PLAY_GLOW), dp(SIDEBAR_SLANT + 6 - SIDE_PLAY_GLOW),
+                -dp(SIDE_PLAY_GLOW));
         bar.addView(launchGame, playParams);
         setGameReady(false);
         return bar;
@@ -352,12 +368,13 @@ public final class MainActivity extends AppCompatActivity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(10), 0, dp(10), 0);
+        row.setPadding(dp(24), 0, dp(12), 0);
         ImageView icon = new ImageView(this);
         icon.setImageResource(PAGE_ICONS[page]);
-        row.addView(icon, new LinearLayout.LayoutParams(dp(20), dp(20)));
+        row.addView(icon, new LinearLayout.LayoutParams(dp(22), dp(22)));
         TextView label = ui.text(pageName(page), 15, Menu.PRIMARY, false);
-        label.setPadding(dp(12), 0, 0, 0);
+        label.setPadding(dp(16), 0, 0, 0);
+        label.setSingleLine(true);
         row.addView(label);
         row.setOnClickListener(v -> showPage(page, true));
         Menu.pressable(row);
@@ -372,20 +389,77 @@ public final class MainActivity extends AppCompatActivity {
         content.addView(shown);
         if (animate) Menu.enter(shown);
         boolean home = page == HOME;
-        brand.setBackground(Menu.rounded(home ? Menu.ACCENT_SOFT : Color.TRANSPARENT, dp(12)));
+        brand.setBackground(home ? chosenRow() : null);  // chosen as the pages' rows are
+        content.setPadding(home ? 0 : dp(SIDEBAR_WIDTH), 0, 0, 0);
         launchGame.setVisibility(home ? View.GONE : View.VISIBLE);
         if (home && resumed) homeVideo.resume();
         else homeVideo.pause();
         for (int i = 0; i < navRows.length; i++) {
             boolean chosen = i == page;
             LinearLayout row = navRows[i];
-            row.setBackground(Menu.rounded(chosen ? Menu.ACCENT_SOFT : Color.TRANSPARENT, dp(10)));
+            row.setBackground(chosen ? chosenRow() : null);
             ((ImageView) row.getChildAt(0)).setImageTintList(
-                    ColorStateList.valueOf(chosen ? Menu.ACCENT_TEXT : Menu.SECONDARY));
+                    ColorStateList.valueOf(chosen ? Menu.ACCENT_TEXT : 0xFFA1A1A9));
             TextView label = (TextView) row.getChildAt(1);
-            label.setTextColor(chosen ? Menu.PRIMARY : 0xFFC7C7CC);
+            label.setTextColor(chosen ? Menu.PRIMARY : 0xFFD1D1D6);
             label.setTypeface(Typeface.create("sans-serif-medium", chosen ? Typeface.BOLD : Typeface.NORMAL));
         }
+    }
+
+    /** The chosen sidebar row: a neon magenta strip at its left edge over a faint magenta wash fading right. */
+    private android.graphics.drawable.Drawable chosenRow() {
+        android.graphics.drawable.GradientDrawable wash = new android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
+                new int[] {0x59E6007E, 0x24E6007E, 0x00E6007E});  // out to the slanted edge, fading all the way
+        android.graphics.drawable.GradientDrawable strip = new android.graphics.drawable.GradientDrawable();
+        strip.setColor(0xFFFF2E9A);
+        android.graphics.drawable.LayerDrawable layers =
+                new android.graphics.drawable.LayerDrawable(new android.graphics.drawable.Drawable[] {wash, strip});
+        layers.setLayerWidth(1, dp(3));
+        layers.setLayerGravity(1, Gravity.START | Gravity.FILL_VERTICAL);
+        return layers;
+    }
+
+    /** A rounded plate with a hairline border. */
+    private static android.graphics.drawable.GradientDrawable stroked(int color, int border, float radius) {
+        android.graphics.drawable.GradientDrawable shape = Menu.rounded(color, radius);
+        shape.setStroke(1, border);
+        return shape;
+    }
+
+    /** A Play button's text: bold italic capitals, the play mark at their left (PlayBackground draws the rest). */
+    private void stylePlay(MaterialButton button, float sp, int iconDp) {
+        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        button.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD_ITALIC));
+        button.setAllCaps(true);
+        button.setLetterSpacing(0.04f);
+        button.setIconSize(dp(iconDp));
+        button.setIconPadding(dp(10));
+        button.setIconGravity(MaterialButton.ICON_GRAVITY_TEXT_START);
+        button.setIconTint(ColorStateList.valueOf(Color.WHITE));
+        button.setSingleLine(true);
+        button.setAllCaps(true);  // again: setSingleLine took the capitals away
+        button.setInsetTop(0);
+        button.setInsetBottom(0);
+        button.setLayerType(View.LAYER_TYPE_SOFTWARE, null);  // PlayBackground's blurred glow
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            button.setOutlineSpotShadowColor(Menu.ACCENT);  // a magenta glow instead of a grey shadow
+            button.setOutlineAmbientShadowColor(Menu.ACCENT);
+        }
+    }
+
+    /** A Play button's look with the game present or missing (its click is the same as before). */
+    private void showPlay(MaterialButton button, boolean ready, int glowDp, int heightDp) {
+        button.setBackgroundTintList(null);
+        PlayBackground background = new PlayBackground(getResources().getDisplayMetrics().density, ready, glowDp);
+        button.setBackground(background);
+        // Centred on the plate, not on the bands or the glow's room around it.
+        int height = dp(heightDp);
+        button.setPaddingRelative(Math.round(background.inset() + background.lean(height) / 2), 0,
+                Math.round(background.inset() + background.stripesWidth(height) + background.rightLean(height) / 2), 0);
+        button.setIcon(ready ? getDrawable(R.drawable.ic_jogar) : null);
+        button.setTextColor(byEnabled(0xCCD1D1D6, ready ? Color.WHITE : Menu.ACCENT_TEXT));
+        button.setElevation(0);  // PlayBackground glows by itself
     }
 
     @Override
@@ -398,9 +472,7 @@ public final class MainActivity extends AppCompatActivity {
     private void setGameReady(boolean ready) {
         gameReady = ready;
         launchGame.setText(ready ? tr(R.string.play) : tr(R.string.install_the_game));
-        launchGame.setBackgroundTintList(byEnabled(Menu.FILL, ready ? Menu.ACCENT : Menu.FILL));
-        launchGame.setTextColor(byEnabled(Menu.TERTIARY, ready ? Color.WHITE : Menu.ACCENT_TEXT));
-        launchGame.setElevation(ready ? dp(6) : 0);
+        showPlay(launchGame, ready, SIDE_PLAY_GLOW, SIDE_PLAY_HEIGHT);
         playStatus.setText(ready ? tr(R.string.ready_to_play) : tr(R.string.game_not_found));
         ((android.graphics.drawable.GradientDrawable) playDot.getBackground()).setColor(ready ? Menu.GREEN : Menu.AMBER);
         if (homePlay != null) showHomeReady();
@@ -409,7 +481,9 @@ public final class MainActivity extends AppCompatActivity {
     // ---- Home: the game's video behind the player's name and a big Play -----------------------------------------
 
     private static final int HOME_GREY = 0xFF3A3A3F;  // the home page with no video: no game, or not read yet
-    private static final int HOME_CARD = 0xCC1B1B1F;  // Menu.GROUP, a little see-through over the video
+    private static final int HOME_CARD = 0x9E17171B;  // see-through over the video
+    // dp: the Play buttons' heights, a plate and the glow's room around it (72 + 2 × 14 and 48 + 2 × 8)
+    private static final int HOME_PLAY_HEIGHT = 100, HOME_PLAY_GLOW = 14, SIDE_PLAY_HEIGHT = 64, SIDE_PLAY_GLOW = 8;
 
     private View homePage() {
         FrameLayout home = new FrameLayout(this);
@@ -435,7 +509,7 @@ public final class MainActivity extends AppCompatActivity {
         homeSound = new ImageView(this);
         homeSound.setScaleType(ImageView.ScaleType.CENTER);
         homeSound.setImageTintList(ColorStateList.valueOf(Color.WHITE));
-        homeSound.setBackground(Menu.rounded(0x59000000, dp(20)));
+        homeSound.setBackground(stroked(0x99000000, 0x33FFFFFF, dp(22)));
         homeSound.setOnClickListener(v -> {
             boolean sound = !GameOptions.flag(this, GameOptions.HOME_VIDEO_SOUND);
             GameOptions.flag(this, GameOptions.HOME_VIDEO_SOUND, sound);
@@ -443,8 +517,8 @@ public final class MainActivity extends AppCompatActivity {
             showHomeSound();
         });
         Menu.pressable(homeSound);
-        FrameLayout.LayoutParams soundParams = new FrameLayout.LayoutParams(dp(40), dp(40), Gravity.TOP | Gravity.END);
-        soundParams.setMargins(0, dp(16), dp(16), 0);
+        FrameLayout.LayoutParams soundParams = new FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP | Gravity.END);
+        soundParams.setMargins(0, dp(20), dp(24), 0);
         home.addView(homeSound, soundParams);
         showHomeSound();
 
@@ -453,17 +527,20 @@ public final class MainActivity extends AppCompatActivity {
         LinearLayout nameCard = new LinearLayout(this);
         nameCard.setOrientation(LinearLayout.HORIZONTAL);
         nameCard.setGravity(Gravity.CENTER_VERTICAL);
-        nameCard.setPadding(dp(12), dp(10), dp(14), dp(10));
-        nameCard.setBackground(Menu.rounded(HOME_CARD, dp(16)));
+        nameCard.setPadding(dp(22), dp(10), dp(26), dp(10));  // clear of its slanted sides
+        nameCard.setBackground(new NeonShapes.FadedBorderCard(HOME_CARD, dp(14), getResources().getDisplayMetrics().density));
         ImageView avatar = new ImageView(this);
         avatar.setImageResource(R.drawable.ic_usuario);
         avatar.setImageTintList(ColorStateList.valueOf(Menu.ACCENT_TEXT));
         avatar.setScaleType(ImageView.ScaleType.CENTER);
-        avatar.setBackground(Menu.rounded(Menu.ACCENT_SOFT, dp(19)));
-        nameCard.addView(avatar, new LinearLayout.LayoutParams(dp(38), dp(38)));
+        avatar.setBackground(stroked(Menu.ACCENT_SOFT, 0x80E6007E, dp(22)));
+        nameCard.addView(avatar, new LinearLayout.LayoutParams(dp(44), dp(44)));
         LinearLayout nameText = ui.column();
-        nameText.setPadding(dp(12), 0, dp(8), 0);
-        nameText.addView(ui.text(tr(R.string.player_name), 12, Menu.SECONDARY, false));
+        nameText.setPadding(dp(14), 0, dp(8), 0);
+        TextView nameLabel = ui.text(tr(R.string.player_name).toUpperCase(java.util.Locale.getDefault()), 11,
+                0xFFA1A1A9, false);
+        nameLabel.setLetterSpacing(0.08f);
+        nameText.addView(nameLabel);
         homeName = ui.text(GameOptions.gamertag(this), 17, Menu.PRIMARY, true);
         homeName.setSingleLine(true);
         homeName.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -471,41 +548,40 @@ public final class MainActivity extends AppCompatActivity {
         nameCard.addView(nameText, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         ImageView edit = new ImageView(this);
         edit.setImageResource(R.drawable.ic_editar);
-        edit.setImageTintList(ColorStateList.valueOf(Menu.SECONDARY));
-        nameCard.addView(edit, new LinearLayout.LayoutParams(dp(20), dp(20)));
+        edit.setImageTintList(ColorStateList.valueOf(0xFFD1D1D6));
+        nameCard.addView(edit, new LinearLayout.LayoutParams(dp(22), dp(22)));
         nameCard.setContentDescription(tr(R.string.edit_player_name));
         nameCard.setOnClickListener(v -> editPlayerName());
         Menu.pressable(nameCard);
-        cards.addView(nameCard);
+        LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        nameParams.leftMargin = dp(32);  // a little narrower than Play, starting where its plate's top does
+        cards.addView(nameCard, nameParams);
 
         homePlay = new MaterialButton(this);
-        homePlay.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
-        homePlay.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
-        homePlay.setAllCaps(false);
-        homePlay.setCornerRadius(dp(16));
-        homePlay.setInsetTop(0);
-        homePlay.setInsetBottom(0);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            homePlay.setOutlineSpotShadowColor(Menu.ACCENT);
-            homePlay.setOutlineAmbientShadowColor(Menu.ACCENT);
-        }
+        stylePlay(homePlay, 26, 30);
         homePlay.setOnClickListener(view -> {
             if (gameReady) play();
             else showPage(GAME, true);
         });
         Menu.pressable(homePlay);
         LinearLayout.LayoutParams playParams =
-                new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(68));
-        playParams.topMargin = dp(10);
+                new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(HOME_PLAY_HEIGHT));
+        // The glow's margin hangs outside the column: the plate lines up with the name card.
+        int glowRoom = dp(HOME_PLAY_GLOW);
+        playParams.setMargins(-glowRoom, dp(12) - glowRoom, -glowRoom, -glowRoom);
+        cards.setClipChildren(false);
+        cards.setClipToPadding(false);
+        home.setClipChildren(false);
         cards.addView(homePlay, playParams);
 
-        FrameLayout.LayoutParams cardsParams = new FrameLayout.LayoutParams(dp(300),
+        FrameLayout.LayoutParams cardsParams = new FrameLayout.LayoutParams(dp(340),
                 FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
         cardsParams.setMargins(dp(24), dp(24), dp(24), dp(24));
         home.addView(cards, cardsParams);
         // On a narrow screen the cards take what is left beside the margins.
         home.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
-            int width = Math.min(dp(300), r - l - dp(48));
+            int width = Math.min(dp(340), r - l - dp(48));
             if (width > 0 && cards.getLayoutParams().width != width) {
                 cards.getLayoutParams().width = width;
                 cards.post(cards::requestLayout);
@@ -518,9 +594,7 @@ public final class MainActivity extends AppCompatActivity {
     /** The big Play follows the sidebar's, and the video follows the game files (none: the grey). */
     private void showHomeReady() {
         homePlay.setText(gameReady ? tr(R.string.play) : tr(R.string.install_the_game));
-        homePlay.setBackgroundTintList(byEnabled(Menu.FILL, gameReady ? Menu.ACCENT : Menu.FILL));
-        homePlay.setTextColor(byEnabled(Menu.TERTIARY, gameReady ? Color.WHITE : Menu.ACCENT_TEXT));
-        homePlay.setElevation(gameReady ? dp(8) : 0);
+        showPlay(homePlay, gameReady, HOME_PLAY_GLOW, HOME_PLAY_HEIGHT);
         String source = gameReady ? GameIso.gameDataRoot(this).getAbsolutePath() : "";
         if (source.equals(homeVideoSource)) return;
         homeVideoSource = source;
@@ -534,6 +608,29 @@ public final class MainActivity extends AppCompatActivity {
         boolean sound = GameOptions.flag(this, GameOptions.HOME_VIDEO_SOUND);
         homeSound.setImageResource(sound ? R.drawable.ic_som_ligado : R.drawable.ic_som_desligado);
         homeSound.setContentDescription(tr(sound ? R.string.video_sound_off : R.string.video_sound_on));
+    }
+
+    /** A button of the name dialog: Play's plate without its bands, magenta (save) or dark (cancel). */
+    private MaterialButton dialogButton(String text, boolean primary) {
+        MaterialButton button = new MaterialButton(this);
+        button.setText(text);
+        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        button.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD_ITALIC));
+        button.setAllCaps(true);
+        button.setLetterSpacing(0.04f);
+        button.setInsetTop(0);
+        button.setInsetBottom(0);
+        button.setMinWidth(dp(120));
+        button.setLayerType(View.LAYER_TYPE_SOFTWARE, null);  // PlayBackground's blurred glow
+        button.setBackgroundTintList(null);
+        PlayBackground background = new PlayBackground(getResources().getDisplayMetrics().density, primary, 6, false);
+        button.setBackground(background);
+        int side = Math.round(background.inset() + background.lean(dp(52))) + dp(14);
+        button.setPadding(side, 0, side, 0);
+        button.setTextColor(primary ? Color.WHITE : 0xFFD1D1D6);
+        button.setElevation(0);
+        Menu.pressable(button);
+        return button;
     }
 
     /** The player's name: what the home page and the game show (GameOptions.cleanGamertag). */
@@ -553,34 +650,63 @@ public final class MainActivity extends AppCompatActivity {
                     }
                     return kept.length() == end - start ? null : kept;
                 }});
-        FrameLayout box = new FrameLayout(this);
-        box.setPadding(dp(20), dp(4), dp(20), 0);
+        field.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        field.setTextColor(Menu.PRIMARY);
+        field.setBackgroundTintList(ColorStateList.valueOf(Menu.ACCENT));
+
+        // The home page's name card, larger: the same slanted see-through box with the pink line at its bottom left,
+        // and the buttons as plates that darken when pressed, as Play does.
+        LinearLayout box = ui.column();
+        box.setBackground(new NeonShapes.FadedBorderCard(0xE6141418, dp(16), getResources().getDisplayMetrics().density));
+        box.setPadding(dp(64), dp(22), dp(64), dp(16));  // clear of its slanted sides
+        TextView title = ui.text(tr(R.string.edit_player_name), 20, Menu.PRIMARY, true);
+        box.addView(title);
+        TextView rules = ui.text(tr(R.string.player_name_rules), 13.5f, 0xFFB4B4BC, false);
+        rules.setLineSpacing(0, 1.12f);
+        rules.setPadding(0, dp(6), 0, dp(8));
+        box.addView(rules);
         box.addView(field);
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setOrientation(LinearLayout.HORIZONTAL);
+        buttons.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        MaterialButton cancel = dialogButton(tr(R.string.cancel), false);
+        MaterialButton save = dialogButton(tr(R.string.save_name), true);
+        buttons.addView(cancel, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(52)));
+        LinearLayout.LayoutParams saveParams =
+                new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(52));
+        saveParams.leftMargin = dp(4);
+        buttons.addView(save, saveParams);
+        LinearLayout.LayoutParams buttonsParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        buttonsParams.topMargin = dp(10);
+        box.addView(buttons, buttonsParams);
+
         AlertDialog dialog = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle(tr(R.string.edit_player_name))
-                .setMessage(tr(R.string.player_name_rules))
                 .setView(box)
-                .setPositiveButton(tr(R.string.save_name), null)
-                .setNegativeButton(tr(R.string.cancel), null)
                 .create();
-        dialog.setOnShowListener(d -> {
-            field.requestFocus();
-            // Kept open on an empty name: says why instead of closing.
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                String name = GameOptions.cleanGamertag(field.getText().toString());
-                if (name.isEmpty()) {
-                    field.setError(tr(R.string.player_name_empty));
-                    return;
-                }
-                GameOptions.set(this, GameOptions.GAMERTAG, name);
-                homeName.setText(name);
-                dialog.dismiss();
-            });
+        cancel.setOnClickListener(v -> dialog.dismiss());
+        // Kept open on an empty name: says why instead of closing.
+        save.setOnClickListener(v -> {
+            String name = GameOptions.cleanGamertag(field.getText().toString());
+            if (name.isEmpty()) {
+                field.setError(tr(R.string.player_name_empty));
+                return;
+            }
+            GameOptions.set(this, GameOptions.GAMERTAG, name);
+            homeName.setText(name);
+            dialog.dismiss();
         });
+        dialog.setOnShowListener(d -> field.requestFocus());
         if (dialog.getWindow() != null) {
             dialog.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE);
+            dialog.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
         }
         dialog.show();
+        if (dialog.getWindow() != null) {
+            DisplayMetrics metrics = getResources().getDisplayMetrics();
+            dialog.getWindow().setLayout(Math.min(dp(500), metrics.widthPixels - dp(32)),
+                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
     }
 
     private ScrollView buildPage(int page) {

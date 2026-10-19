@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Sidebar icon of the launcher (Menu.java), tinted by the code. -->
+<!-- Sidebar icon of the launcher (Menu.java), tinted by the code: sparkles. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
-    <path android:fillColor="#FFFFFFFF" android:pathData="M12,2.5L14,10L21.5,12L14,14L12,21.5L10,14L2.5,12L10,10Z"/>
-    <path android:fillColor="#FFFFFFFF" android:pathData="M19,2.5L19.7,4.3L21.5,5L19.7,5.7L19,7.5L18.3,5.7L16.5,5L18.3,4.3Z"/>
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="1.8" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000" android:pathData="M11,4.5L12.7,10.3L18.5,12L12.7,13.7L11,19.5L9.3,13.7L3.5,12L9.3,10.3Z"/>
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="1.8" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000" android:pathData="M18.5,3v3.5M16.75,4.75h3.5"/>
 </vector>

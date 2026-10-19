@@ -2,6 +2,6 @@
 <!-- Sidebar icon of the launcher (Menu.java), tinted by the code: a trophy. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
-    <path android:fillColor="#FFFFFFFF" android:pathData="M7,3.5h10v5.2c0,2.9 -2.2,5.3 -5,5.3s-5,-2.4 -5,-5.3Z"/>
+    <path android:strokeColor="#FFFFFFFF" android:strokeWidth="1.8" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000" android:pathData="M7,3.5h10v5.2c0,2.9 -2.2,5.3 -5,5.3s-5,-2.4 -5,-5.3Z"/>
     <path android:strokeColor="#FFFFFFFF" android:strokeWidth="1.8" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000" android:pathData="M7,5.5H4.5v1.5c0,1.9 1.3,3.4 3,3.8M17,5.5h2.5v1.5c0,1.9 -1.3,3.4 -3,3.8M12,14v3.5M8.5,20.5h7M9.5,20.5c0,-1.7 1.1,-3 2.5,-3s2.5,1.3 2.5,3"/>
 </vector>
