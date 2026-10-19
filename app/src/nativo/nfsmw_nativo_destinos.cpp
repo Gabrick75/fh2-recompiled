@@ -7070,17 +7070,29 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
    * photo, resolves it and compresses it from guest memory with the CPU into the profile (the My Cars cards). Without
    * the read-back the save kept whatever was in that memory: stripes of other UI images, noise or another car, the
    * same in every session. Resolves repeated every frame (the scene, the HUD) stay on the GPU.
+   * The size is the destination texture's (RB_COPY_DEST_PITCH), not the copied rectangle's: the 768x288 photo is
+   * resolved in two copies, 608 and 160 columns, and the second alone is under 256 KiB. Every copy to a destination
+   * that turned one-off in the same frame is read back too.
    */
   static constexpr uint64_t kFh2FotogramasSuelta = 120;
 
-  bool Fh2ResueltaSuelta(uint32_t base, uint32_t ancho, uint32_t alto) {
-    if (!REXCVAR_GET(fh2_nativo_leer_resueltas_sueltas) || uint64_t(ancho) * alto * 4 < (256u << 10)) {
+  struct Fh2CopiaDestino {
+    uint64_t ultima = 0;                  // frame of the last resolve to this destination
+    uint64_t suelta = UINT64_MAX;         // frame in which it was last taken as one-off
+  };
+
+  bool Fh2ResueltaSuelta(uint32_t base, uint32_t pitch_destino, uint32_t alto_destino) {
+    if (!REXCVAR_GET(fh2_nativo_leer_resueltas_sueltas) ||
+        uint64_t(pitch_destino) * alto_destino * 4 < (256u << 10)) {
       return false;
     }
-    const auto [it, nueva] = fh2_ultima_copia_destino_.try_emplace(base, presentados_);
-    const bool suelta = nueva || presentados_ - it->second >= kFh2FotogramasSuelta;
-    it->second = presentados_;
-    return suelta;
+    const auto [it, nueva] = fh2_copias_destino_.try_emplace(base);
+    Fh2CopiaDestino& d = it->second;
+    if (nueva || presentados_ - d.ultima >= kFh2FotogramasSuelta) {
+      d.suelta = presentados_;
+    }
+    d.ultima = presentados_;
+    return d.suelta == presentados_;
   }
 #endif
 
@@ -7092,8 +7104,10 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     bool leer = maximo > 0 && uint64_t(ancho) * alto <= uint64_t(maximo);
 #if defined(FH2_RECOMP)
     // Every resolve updates the table, so a destination resolved every frame is never taken as one-off.
-    if (Fh2ResueltaSuelta(reg.rb_copy_dest_base & 0x1FFFFFFF, ancho, alto) && !leer &&
-        resuelta.imagen.formato == kFormatoColor) {
+    const uint32_t alto_destino = (reg.rb_copy_dest_pitch >> 16) & 0x3FFF;
+    if (Fh2ResueltaSuelta(reg.rb_copy_dest_base & 0x1FFFFFFF, reg.rb_copy_dest_pitch & 0x3FFF,
+                          alto_destino ? alto_destino : alto) &&
+        !leer && resuelta.imagen.formato == kFormatoColor) {
       leer = true;
       if (fh2_sueltas_leidas_++ < 24) {
         REXLOG_INFO("[fh2 nativo] resuelta suelta {:08X} {}x{}: se lee de vuelta a la memoria del invitado ({} hasta "
@@ -7909,7 +7923,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   uint64_t borrados_ = 0;
   uint64_t presentados_ = 0;
 #if defined(FH2_RECOMP)
-  std::unordered_map<uint32_t, uint64_t> fh2_ultima_copia_destino_;  // fh2_nativo_leer_resueltas_sueltas
+  std::unordered_map<uint32_t, Fh2CopiaDestino> fh2_copias_destino_;  // fh2_nativo_leer_resueltas_sueltas
   uint64_t fh2_sueltas_leidas_ = 0;
 #endif
   uint64_t rechazos_ = 0;
