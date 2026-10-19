@@ -171,8 +171,9 @@ public final class GameActivity extends SDLActivity
                 .format(new java.util.Date());
         File target = new File(backups, stamp);
         try {
+            SaveTransfer.hideFromGallery(backups);
             for (File entry : entries) {
-                copyTree(entry, new File(target, entry.getName()));
+                SaveTransfer.copyEntry(entry, new File(target, entry.getName()));
             }
             File[] old = backups.listFiles(File::isDirectory);
             if (old != null && old.length > SAVE_BACKUPS + 1) {
@@ -189,6 +190,12 @@ public final class GameActivity extends SDLActivity
     }
 
     static void copyTree(File source, File target) throws IOException {
+        copyTree(source, target, f -> true);
+    }
+
+    /** Like copyTree, but skips the files and folders `keep` rejects. */
+    static void copyTree(File source, File target, java.io.FileFilter keep) throws IOException {
+        if (!keep.accept(source)) return;
         if (source.isDirectory()) {
             if (!target.mkdirs() && !target.isDirectory()) {
                 throw new IOException("mkdir " + target);
@@ -196,7 +203,7 @@ public final class GameActivity extends SDLActivity
             File[] children = source.listFiles();
             if (children != null) {
                 for (File child : children) {
-                    copyTree(child, new File(target, child.getName()));
+                    copyTree(child, new File(target, child.getName()), keep);
                 }
             }
         } else {
