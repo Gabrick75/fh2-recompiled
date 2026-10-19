@@ -339,17 +339,17 @@ public final class MainActivity extends AppCompatActivity {
         bar.addView(navScroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
         launchGame = new MaterialButton(this);
-        stylePlay(launchGame, 16, 20);
-        launchGame.setInsetTop(0);
-        launchGame.setInsetBottom(0);
+        stylePlay(launchGame, 17, 20);
         launchGame.setOnClickListener(view -> {
             if (gameReady) play();
             else showPage(GAME, true);
         });
         Menu.pressable(launchGame);
         LinearLayout.LayoutParams playParams =
-                new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52));
-        playParams.setMargins(dp(10), dp(8), dp(SIDEBAR_SLANT + 10), 0);  // clear of the slanted edge at the foot
+                new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(SIDE_PLAY_HEIGHT));
+        // The glow's room hangs into the margins; the plate stays clear of the slanted edge at the foot.
+        playParams.setMargins(dp(14 - SIDE_PLAY_GLOW), dp(8 - SIDE_PLAY_GLOW), dp(SIDEBAR_SLANT + 6 - SIDE_PLAY_GLOW),
+                -dp(SIDE_PLAY_GLOW));
         bar.addView(launchGame, playParams);
         setGameReady(false);
         return bar;
@@ -438,6 +438,10 @@ public final class MainActivity extends AppCompatActivity {
         button.setIconGravity(MaterialButton.ICON_GRAVITY_TEXT_START);
         button.setIconTint(ColorStateList.valueOf(Color.WHITE));
         button.setSingleLine(true);
+        button.setAllCaps(true);  // again: setSingleLine took the capitals away
+        button.setInsetTop(0);
+        button.setInsetBottom(0);
+        button.setLayerType(View.LAYER_TYPE_SOFTWARE, null);  // PlayBackground's blurred glow
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             button.setOutlineSpotShadowColor(Menu.ACCENT);  // a magenta glow instead of a grey shadow
             button.setOutlineAmbientShadowColor(Menu.ACCENT);
@@ -445,21 +449,17 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     /** A Play button's look with the game present or missing (its click is the same as before). */
-    private void showPlay(MaterialButton button, boolean ready, int elevationDp) {
+    private void showPlay(MaterialButton button, boolean ready, int glowDp, int heightDp) {
         button.setBackgroundTintList(null);
-        boolean large = button == homePlay;
-        PlayBackground background = new PlayBackground(getResources().getDisplayMetrics().density, ready, large);
+        PlayBackground background = new PlayBackground(getResources().getDisplayMetrics().density, ready, glowDp);
         button.setBackground(background);
-        if (large) {
-            // Centred on the plate, not on the stripes or the glow's margin around it.
-            int height = dp(HOME_PLAY_HEIGHT);
-            button.setPaddingRelative(Math.round(background.inset() + background.lean(height) / 2), 0,
-                    Math.round(background.inset() + background.stripesWidth(height) + background.rightLean(height) / 2),
-                    0);
-        }
+        // Centred on the plate, not on the bands or the glow's room around it.
+        int height = dp(heightDp);
+        button.setPaddingRelative(Math.round(background.inset() + background.lean(height) / 2), 0,
+                Math.round(background.inset() + background.stripesWidth(height) + background.rightLean(height) / 2), 0);
         button.setIcon(ready ? getDrawable(R.drawable.ic_jogar) : null);
         button.setTextColor(byEnabled(0xCCD1D1D6, ready ? Color.WHITE : Menu.ACCENT_TEXT));
-        button.setElevation(ready ? dp(elevationDp) : 0);
+        button.setElevation(0);  // PlayBackground glows by itself
     }
 
     @Override
@@ -472,7 +472,7 @@ public final class MainActivity extends AppCompatActivity {
     private void setGameReady(boolean ready) {
         gameReady = ready;
         launchGame.setText(ready ? tr(R.string.play) : tr(R.string.install_the_game));
-        showPlay(launchGame, ready, 6);
+        showPlay(launchGame, ready, SIDE_PLAY_GLOW, SIDE_PLAY_HEIGHT);
         playStatus.setText(ready ? tr(R.string.ready_to_play) : tr(R.string.game_not_found));
         ((android.graphics.drawable.GradientDrawable) playDot.getBackground()).setColor(ready ? Menu.GREEN : Menu.AMBER);
         if (homePlay != null) showHomeReady();
@@ -482,7 +482,8 @@ public final class MainActivity extends AppCompatActivity {
 
     private static final int HOME_GREY = 0xFF3A3A3F;  // the home page with no video: no game, or not read yet
     private static final int HOME_CARD = 0x9E17171B;  // see-through over the video
-    private static final int HOME_PLAY_HEIGHT = 100;  // dp: a 72 dp plate and the glow's room around it
+    // dp: the Play buttons' heights, a plate and the glow's room around it (72 + 2 × 14 and 48 + 2 × 8)
+    private static final int HOME_PLAY_HEIGHT = 100, HOME_PLAY_GLOW = 14, SIDE_PLAY_HEIGHT = 64, SIDE_PLAY_GLOW = 8;
 
     private View homePage() {
         FrameLayout home = new FrameLayout(this);
@@ -526,7 +527,7 @@ public final class MainActivity extends AppCompatActivity {
         LinearLayout nameCard = new LinearLayout(this);
         nameCard.setOrientation(LinearLayout.HORIZONTAL);
         nameCard.setGravity(Gravity.CENTER_VERTICAL);
-        nameCard.setPadding(dp(12), dp(10), dp(16), dp(10));
+        nameCard.setPadding(dp(22), dp(10), dp(26), dp(10));  // clear of its slanted sides
         nameCard.setBackground(new NeonShapes.FadedBorderCard(HOME_CARD, dp(14), getResources().getDisplayMetrics().density));
         ImageView avatar = new ImageView(this);
         avatar.setImageResource(R.drawable.ic_usuario);
@@ -559,10 +560,6 @@ public final class MainActivity extends AppCompatActivity {
 
         homePlay = new MaterialButton(this);
         stylePlay(homePlay, 26, 30);
-        homePlay.setAllCaps(true);  // again: setSingleLine took the capitals away
-        homePlay.setLayerType(View.LAYER_TYPE_SOFTWARE, null);  // PlayBackground's blurred glow
-        homePlay.setInsetTop(0);
-        homePlay.setInsetBottom(0);
         homePlay.setOnClickListener(view -> {
             if (gameReady) play();
             else showPage(GAME, true);
@@ -571,7 +568,7 @@ public final class MainActivity extends AppCompatActivity {
         LinearLayout.LayoutParams playParams =
                 new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(HOME_PLAY_HEIGHT));
         // The glow's margin hangs outside the column: the plate lines up with the name card.
-        int glowRoom = dp(14);
+        int glowRoom = dp(HOME_PLAY_GLOW);
         playParams.setMargins(-glowRoom, dp(12) - glowRoom, -glowRoom, -glowRoom);
         cards.setClipChildren(false);
         cards.setClipToPadding(false);
@@ -597,7 +594,7 @@ public final class MainActivity extends AppCompatActivity {
     /** The big Play follows the sidebar's, and the video follows the game files (none: the grey). */
     private void showHomeReady() {
         homePlay.setText(gameReady ? tr(R.string.play) : tr(R.string.install_the_game));
-        showPlay(homePlay, gameReady, 10);
+        showPlay(homePlay, gameReady, HOME_PLAY_GLOW, HOME_PLAY_HEIGHT);
         String source = gameReady ? GameIso.gameDataRoot(this).getAbsolutePath() : "";
         if (source.equals(homeVideoSource)) return;
         homeVideoSource = source;

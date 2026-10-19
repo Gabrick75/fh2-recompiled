@@ -1,12 +1,12 @@
 package com.forzahorizon2.android;
 
 import android.graphics.Canvas;
+import android.graphics.CornerPathEffect;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
-import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.drawable.Drawable;
 
@@ -71,24 +71,35 @@ final class NeonShapes {
         }
     }
 
-    /** A see-through card whose pink border shows at the bottom left and fades out before it closes the round. */
+    /**
+     * A see-through card leaning as the Play plate's left edge does (both sides), whose pink border shows at the
+     * bottom left and fades out before it closes the round.
+     */
     static final class FadedBorderCard extends Drawable {
-        private final float radius;
         private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF box = new RectF();
+        private final Path shape = new Path();
 
         FadedBorderCard(int color, float radius, float density) {
-            this.radius = radius;
+            CornerPathEffect corners = new CornerPathEffect(radius);
             fill.setColor(color);
+            fill.setPathEffect(corners);
             border.setStyle(Paint.Style.STROKE);
             border.setStrokeWidth(1.2f * density);
+            border.setPathEffect(corners);
         }
 
         @Override
         protected void onBoundsChange(Rect b) {
             float half = border.getStrokeWidth() / 2;
-            box.set(b.left + half, b.top + half, b.right - half, b.bottom - half);
+            float l = b.left + half, t = b.top + half, r = b.right - half, btm = b.bottom - half;
+            float lean = (btm - t) * 0.22f;  // PlayBackground.lean's slope
+            shape.reset();
+            shape.moveTo(l + lean, t);
+            shape.lineTo(r, t);
+            shape.lineTo(r - lean, btm);
+            shape.lineTo(l, btm);
+            shape.close();
             // Pink at the bottom left, fading out towards the top right.
             border.setShader(new LinearGradient(b.left, b.bottom, b.left + b.width() * 0.7f, b.top,
                     0xA6FF2E9A, 0x00FF2E9A, Shader.TileMode.CLAMP));
@@ -96,13 +107,8 @@ final class NeonShapes {
 
         @Override
         public void draw(Canvas canvas) {
-            canvas.drawRoundRect(box, radius, radius, fill);
-            canvas.drawRoundRect(box, radius, radius, border);
-        }
-
-        @Override
-        public void getOutline(android.graphics.Outline outline) {
-            outline.setRoundRect(getBounds(), radius);
+            canvas.drawPath(shape, fill);
+            canvas.drawPath(shape, border);
         }
 
         @Override
