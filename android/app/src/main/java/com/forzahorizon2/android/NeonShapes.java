@@ -28,7 +28,7 @@ final class NeonShapes {
         SlantedPanel(float slant, float density) {
             this.slant = slant;
             edge.setStyle(Paint.Style.STROKE);
-            edge.setStrokeWidth(1.2f * density);
+            edge.setStrokeWidth(1.5f * density);
         }
 
         @Override
@@ -40,14 +40,21 @@ final class NeonShapes {
             shape.lineTo(b.left, b.bottom);
             shape.close();
             fill.setShader(new LinearGradient(0, b.top, 0, b.bottom, 0xEB070709, 0xE00C0C0F, Shader.TileMode.CLAMP));
-            edge.setShader(new LinearGradient(0, b.top, 0, b.bottom, 0x8CE6007E, 0x26E6007E, Shader.TileMode.CLAMP));
+            // Faint at the top, bright magenta at the foot, as the reference's.
+            edge.setShader(new LinearGradient(0, b.top, 0, b.bottom, 0x33FF2E9A, 0xF2FF2E9A, Shader.TileMode.CLAMP));
+        }
+
+        /** The panel's outline, to clip what lies on it (a chosen row's wash ends at the slanted edge). */
+        Path shape() {
+            return shape;
         }
 
         @Override
         public void draw(Canvas canvas) {
             Rect b = getBounds();
             canvas.drawPath(shape, fill);
-            canvas.drawLine(b.right, b.top, b.right - slant, b.bottom, edge);
+            float half = edge.getStrokeWidth() / 2;  // the whole line inside the bounds
+            canvas.drawLine(b.right - half, b.top, b.right - slant - half, b.bottom, edge);
         }
 
         @Override
@@ -64,7 +71,7 @@ final class NeonShapes {
         }
     }
 
-    /** A see-through card whose pink border shows at the top right and fades out before it closes the round. */
+    /** A see-through card whose pink border shows at the bottom left and fades out before it closes the round. */
     static final class FadedBorderCard extends Drawable {
         private final float radius;
         private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -82,8 +89,9 @@ final class NeonShapes {
         protected void onBoundsChange(Rect b) {
             float half = border.getStrokeWidth() / 2;
             box.set(b.left + half, b.top + half, b.right - half, b.bottom - half);
-            border.setShader(new LinearGradient(b.right, b.top, b.left + b.width() * 0.35f, b.bottom,
-                    0x8CFF2E9A, 0x00FF2E9A, Shader.TileMode.CLAMP));
+            // Pink at the bottom left, fading out towards the top right.
+            border.setShader(new LinearGradient(b.left, b.bottom, b.left + b.width() * 0.7f, b.top,
+                    0xA6FF2E9A, 0x00FF2E9A, Shader.TileMode.CLAMP));
         }
 
         @Override

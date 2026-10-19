@@ -268,12 +268,24 @@ public final class MainActivity extends AppCompatActivity {
         return root;
     }
 
-    private static final int SIDEBAR_WIDTH = 292, SIDEBAR_SLANT = 48;  // dp: the top's width, and how much the foot loses
+    private static final int SIDEBAR_WIDTH = 292, SIDEBAR_SLANT = 88;  // dp: the top's width, and how much the foot loses
 
     private View sidebar() {
-        LinearLayout bar = ui.column();
-        bar.setBackground(new NeonShapes.SlantedPanel(dp(SIDEBAR_SLANT), getResources().getDisplayMetrics().density));
-        bar.setPadding(0, dp(14), dp(SIDEBAR_SLANT), dp(12));
+        NeonShapes.SlantedPanel panel =
+                new NeonShapes.SlantedPanel(dp(SIDEBAR_SLANT), getResources().getDisplayMetrics().density);
+        // The rows run the panel's whole width and are cut along its slanted edge.
+        LinearLayout bar = new LinearLayout(this) {
+            @Override
+            protected void dispatchDraw(android.graphics.Canvas canvas) {
+                canvas.save();
+                canvas.clipPath(panel.shape());
+                super.dispatchDraw(canvas);
+                canvas.restore();
+            }
+        };
+        bar.setOrientation(LinearLayout.VERTICAL);
+        bar.setBackground(panel);
+        bar.setPadding(0, dp(14), 0, dp(12));
 
         // The name, and under it whether the game is ready to play: all of it one button, to the home page.
         brand = new LinearLayout(this);
@@ -337,7 +349,7 @@ public final class MainActivity extends AppCompatActivity {
         Menu.pressable(launchGame);
         LinearLayout.LayoutParams playParams =
                 new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52));
-        playParams.setMargins(dp(10), dp(8), dp(10), 0);
+        playParams.setMargins(dp(10), dp(8), dp(SIDEBAR_SLANT + 10), 0);  // clear of the slanted edge at the foot
         bar.addView(launchGame, playParams);
         setGameReady(false);
         return bar;
@@ -397,7 +409,8 @@ public final class MainActivity extends AppCompatActivity {
     /** The chosen sidebar row: a neon magenta strip at its left edge over a faint magenta wash fading right. */
     private android.graphics.drawable.Drawable chosenRow() {
         android.graphics.drawable.GradientDrawable wash = new android.graphics.drawable.GradientDrawable(
-                android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT, new int[] {0x4DE6007E, 0x0AE6007E});
+                android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
+                new int[] {0x59E6007E, 0x24E6007E, 0x00E6007E});  // out to the slanted edge, fading all the way
         android.graphics.drawable.GradientDrawable strip = new android.graphics.drawable.GradientDrawable();
         strip.setColor(0xFFFF2E9A);
         android.graphics.drawable.LayerDrawable layers =
@@ -439,9 +452,10 @@ public final class MainActivity extends AppCompatActivity {
         button.setBackground(background);
         if (large) {
             // Centred on the plate, not on the stripes or the glow's margin around it.
-            float half = background.lean(dp(HOME_PLAY_HEIGHT)) / 2;
-            button.setPaddingRelative(Math.round(background.inset() + half), 0,
-                    Math.round(background.inset() + background.stripesWidth(dp(HOME_PLAY_HEIGHT)) + half), 0);
+            int height = dp(HOME_PLAY_HEIGHT);
+            button.setPaddingRelative(Math.round(background.inset() + background.lean(height) / 2), 0,
+                    Math.round(background.inset() + background.stripesWidth(height) + background.rightLean(height) / 2),
+                    0);
         }
         button.setIcon(ready ? getDrawable(R.drawable.ic_jogar) : null);
         button.setTextColor(byEnabled(0xCCD1D1D6, ready ? Color.WHITE : Menu.ACCENT_TEXT));
@@ -538,7 +552,10 @@ public final class MainActivity extends AppCompatActivity {
         nameCard.setContentDescription(tr(R.string.edit_player_name));
         nameCard.setOnClickListener(v -> editPlayerName());
         Menu.pressable(nameCard);
-        cards.addView(nameCard);
+        LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        nameParams.leftMargin = dp(32);  // a little narrower than Play, starting where its plate's top does
+        cards.addView(nameCard, nameParams);
 
         homePlay = new MaterialButton(this);
         stylePlay(homePlay, 26, 30);

@@ -62,38 +62,49 @@ final class PlayBackground extends Drawable {
         return (large ? 14 : 3) * density;
     }
 
-    /** How far the plate leans: the top edge is this much to the right of the bottom one. */
+    /** How far the plate's left edge leans: its top is this much to the right of its foot. */
     float lean(int height) {
         return (height - 2 * inset()) * 0.22f;
     }
 
-    /** The width the stripes take at the right end, past the plate. */
+    /** The same for the right edge and the stripes: on the large one, much steeper (the reference's). */
+    float rightLean(int height) {
+        return large ? (height - 2 * inset()) * 0.45f : lean(height);
+    }
+
+    /** The width the stripes take at the right end, past the plate's top. */
     float stripesWidth(int height) {
-        return ready ? (height - 2 * inset()) * (large ? 0.52f : 0.62f) : 0;
+        return ready ? (height - 2 * inset()) * (large ? 0.6f : 0.62f) : 0;
     }
 
     @Override
     protected void onBoundsChange(Rect b) {
         float inset = inset();
         float l = b.left + inset, t = b.top + inset, r = b.right - inset, btm = b.bottom - inset;
-        float lean = lean(b.height());
+        float lean = lean(b.height()), rightLean = rightLean(b.height());
         float plateRight = r - stripesWidth(b.height());
         plate.reset();
         plate.moveTo(l + lean, t);
         plate.lineTo(plateRight, t);
-        plate.lineTo(plateRight - lean, btm);
+        plate.lineTo(plateRight - rightLean, btm);
         plate.lineTo(l, btm);
         plate.close();
         stripes.reset();
         if (ready) {
-            float w = (large ? 5 : 4) * density, gap = (large ? 7 : 5) * density, x = plateRight + gap;
+            // The large one: two broad bands parallel to the plate's right edge; the small one: two thin lines.
+            float h = btm - t;
+            float w = large ? h * 0.2f : 4 * density, gap = large ? h * 0.1f : 5 * density, x = plateRight + gap;
             for (int i = 0; i < 2; i++, x += w + gap) {
                 stripes.moveTo(x, t);
                 stripes.lineTo(x + w, t);
-                stripes.lineTo(x + w - lean, btm);
-                stripes.lineTo(x - lean, btm);
+                stripes.lineTo(x + w - rightLean, btm);
+                stripes.lineTo(x - rightLean, btm);
                 stripes.close();
             }
+        }
+        if (large) {
+            stripe.setPathEffect(new CornerPathEffect(4 * density));
+            stripe.setShader(new LinearGradient(0, t, 0, btm, 0xFFFF3DA8, 0xFFB8005F, Shader.TileMode.CLAMP));
         }
         sheen.setShader(new LinearGradient(0, t, 0, t + (btm - t) * 0.55f, 0x40FFFFFF, 0x00FFFFFF,
                 Shader.TileMode.CLAMP));
