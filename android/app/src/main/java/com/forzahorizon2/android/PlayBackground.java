@@ -27,6 +27,7 @@ import android.graphics.drawable.Drawable;
 final class PlayBackground extends Drawable {
     private final float density;
     private final boolean ready;
+    private final boolean bands;
     private final float glowRoom;
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint sheen = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -40,8 +41,17 @@ final class PlayBackground extends Drawable {
 
     /** glowRoomDp: the margin kept around the plate for the glow (and the focus ring). */
     PlayBackground(float density, boolean ready, float glowRoomDp) {
+        this(density, ready, glowRoomDp, true);
+    }
+
+    /**
+     * ready: the magenta plate (false: the dark one, as a secondary button's); bands: the two bands at its right end
+     * (the Play buttons'; the name dialog's buttons go without).
+     */
+    PlayBackground(float density, boolean ready, float glowRoomDp, boolean bands) {
         this.density = density;
         this.ready = ready;
+        this.bands = bands;
         this.glowRoom = glowRoomDp * density;
         CornerPathEffect corners = new CornerPathEffect(glowRoom * 0.7f);
         fill.setPathEffect(corners);
@@ -75,7 +85,7 @@ final class PlayBackground extends Drawable {
 
     /** The width the bands take at the right end, past the plate's top. */
     float stripesWidth(int height) {
-        return ready ? (height - 2 * inset()) * 0.6f : 0;
+        return ready && bands ? (height - 2 * inset()) * 0.6f : 0;
     }
 
     @Override
@@ -91,7 +101,7 @@ final class PlayBackground extends Drawable {
         plate.lineTo(l, btm);
         plate.close();
         stripes.reset();
-        if (ready) {
+        if (ready && bands) {
             float h = btm - t, w = h * 0.2f, gap = h * 0.1f, x = plateRight + gap;
             for (int i = 0; i < 2; i++, x += w + gap) {
                 stripes.moveTo(x, t);
@@ -111,8 +121,9 @@ final class PlayBackground extends Drawable {
         Rect b = getBounds();
         int left, right, stripeTop, stripeBottom;
         if (!ready) {
-            left = 0xE62A2A2F;
-            right = 0xE61F1F23;
+            // The dark plate darkens too when pressed.
+            left = pressed ? 0xF0161619 : 0xE62A2A2F;
+            right = pressed ? 0xF00E0E10 : 0xE61F1F23;
             stripeTop = stripeBottom = 0;
         } else if (pressed) {
             left = 0xFFE0168A;

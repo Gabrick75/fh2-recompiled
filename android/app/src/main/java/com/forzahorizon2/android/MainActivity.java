@@ -610,6 +610,29 @@ public final class MainActivity extends AppCompatActivity {
         homeSound.setContentDescription(tr(sound ? R.string.video_sound_off : R.string.video_sound_on));
     }
 
+    /** A button of the name dialog: Play's plate without its bands, magenta (save) or dark (cancel). */
+    private MaterialButton dialogButton(String text, boolean primary) {
+        MaterialButton button = new MaterialButton(this);
+        button.setText(text);
+        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        button.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD_ITALIC));
+        button.setAllCaps(true);
+        button.setLetterSpacing(0.04f);
+        button.setInsetTop(0);
+        button.setInsetBottom(0);
+        button.setMinWidth(dp(120));
+        button.setLayerType(View.LAYER_TYPE_SOFTWARE, null);  // PlayBackground's blurred glow
+        button.setBackgroundTintList(null);
+        PlayBackground background = new PlayBackground(getResources().getDisplayMetrics().density, primary, 6, false);
+        button.setBackground(background);
+        int side = Math.round(background.inset() + background.lean(dp(52))) + dp(14);
+        button.setPadding(side, 0, side, 0);
+        button.setTextColor(primary ? Color.WHITE : 0xFFD1D1D6);
+        button.setElevation(0);
+        Menu.pressable(button);
+        return button;
+    }
+
     /** The player's name: what the home page and the game show (GameOptions.cleanGamertag). */
     private void editPlayerName() {
         android.widget.EditText field = new android.widget.EditText(this);
@@ -627,34 +650,63 @@ public final class MainActivity extends AppCompatActivity {
                     }
                     return kept.length() == end - start ? null : kept;
                 }});
-        FrameLayout box = new FrameLayout(this);
-        box.setPadding(dp(20), dp(4), dp(20), 0);
+        field.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        field.setTextColor(Menu.PRIMARY);
+        field.setBackgroundTintList(ColorStateList.valueOf(Menu.ACCENT));
+
+        // The home page's name card, larger: the same slanted see-through box with the pink line at its bottom left,
+        // and the buttons as plates that darken when pressed, as Play does.
+        LinearLayout box = ui.column();
+        box.setBackground(new NeonShapes.FadedBorderCard(0xE6141418, dp(16), getResources().getDisplayMetrics().density));
+        box.setPadding(dp(64), dp(22), dp(64), dp(16));  // clear of its slanted sides
+        TextView title = ui.text(tr(R.string.edit_player_name), 20, Menu.PRIMARY, true);
+        box.addView(title);
+        TextView rules = ui.text(tr(R.string.player_name_rules), 13.5f, 0xFFB4B4BC, false);
+        rules.setLineSpacing(0, 1.12f);
+        rules.setPadding(0, dp(6), 0, dp(8));
+        box.addView(rules);
         box.addView(field);
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setOrientation(LinearLayout.HORIZONTAL);
+        buttons.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        MaterialButton cancel = dialogButton(tr(R.string.cancel), false);
+        MaterialButton save = dialogButton(tr(R.string.save_name), true);
+        buttons.addView(cancel, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(52)));
+        LinearLayout.LayoutParams saveParams =
+                new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(52));
+        saveParams.leftMargin = dp(4);
+        buttons.addView(save, saveParams);
+        LinearLayout.LayoutParams buttonsParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        buttonsParams.topMargin = dp(10);
+        box.addView(buttons, buttonsParams);
+
         AlertDialog dialog = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                .setTitle(tr(R.string.edit_player_name))
-                .setMessage(tr(R.string.player_name_rules))
                 .setView(box)
-                .setPositiveButton(tr(R.string.save_name), null)
-                .setNegativeButton(tr(R.string.cancel), null)
                 .create();
-        dialog.setOnShowListener(d -> {
-            field.requestFocus();
-            // Kept open on an empty name: says why instead of closing.
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                String name = GameOptions.cleanGamertag(field.getText().toString());
-                if (name.isEmpty()) {
-                    field.setError(tr(R.string.player_name_empty));
-                    return;
-                }
-                GameOptions.set(this, GameOptions.GAMERTAG, name);
-                homeName.setText(name);
-                dialog.dismiss();
-            });
+        cancel.setOnClickListener(v -> dialog.dismiss());
+        // Kept open on an empty name: says why instead of closing.
+        save.setOnClickListener(v -> {
+            String name = GameOptions.cleanGamertag(field.getText().toString());
+            if (name.isEmpty()) {
+                field.setError(tr(R.string.player_name_empty));
+                return;
+            }
+            GameOptions.set(this, GameOptions.GAMERTAG, name);
+            homeName.setText(name);
+            dialog.dismiss();
         });
+        dialog.setOnShowListener(d -> field.requestFocus());
         if (dialog.getWindow() != null) {
             dialog.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE);
+            dialog.getWindow().setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
         }
         dialog.show();
+        if (dialog.getWindow() != null) {
+            DisplayMetrics metrics = getResources().getDisplayMetrics();
+            dialog.getWindow().setLayout(Math.min(dp(500), metrics.widthPixels - dp(32)),
+                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
     }
 
     private ScrollView buildPage(int page) {
