@@ -32,9 +32,9 @@ final class GameOptions {
     static final String ANTI_ALIASING = "anti_aliasing";      // "off", "msaa", "fxaa"
     static final String MSAA_SAMPLES = "msaa_samples";        // "2", "4"
     static final String FXAA_QUALITY = "fxaa_quality";        // "normal", "high"
-    static final String SCALING = "scaling";  // present_effect: bilinear, cas or fsr 1.0
+    static final String SCALING = "scaling";  // off (100 % scale, no effect) or present_effect: bilinear, cas or fsr 1.0
     static final String SHARPNESS = "sharpness";  // present_cas_additional_sharpness * 100, 0 to 100
-    static final String FSR_MODE = "fsr_mode";  // off or an FSR 1.0 preset: render scale + fsr effect
+    static final String FSR_MODE = "fsr_mode";  // an FSR 1.0 preset: render scale + fsr effect
     static final String ANISOTROPIC = "anisotropic";          // anisotropic_override: 0, 2 (2x), 3 (4x), 5 (16x)
     static final String SHADOWS = "shadows";                  // not applied yet (needs game hooks)
     static final String SHADOW_DISTANCE = "shadow_distance";  // not applied yet
@@ -107,7 +107,7 @@ final class GameOptions {
             case FXAA_QUALITY: return "normal";
             case SCALING: return "bilinear";
             case SHARPNESS: return "0";
-            case FSR_MODE: return "off";
+            case FSR_MODE: return "mega_quality";
             case ANISOTROPIC: return "3";
             case SHADOWS: return "1";
             case SHADOW_DISTANCE: return "far";
@@ -205,18 +205,22 @@ final class GameOptions {
     }
 
     /**
-     * FSR 1.0 mode as a render-scale percent of 1280x720, or 0 when off. Only while the scaling effect
-     * itself is fsr: otherwise a stored mode must never override the typed scale (stale preset).
+     * Render-scale percent of 1280x720 forced by the scaling choice, or 0 to keep the typed scale. Off renders
+     * at 100 % (no upscaling); FSR 1.0 uses its mode. Bilinear and CAS keep the typed scale, so a stored FSR
+     * mode never overrides it (stale preset).
      */
     static int fsrModeScalePercent(Context context) {
-        if (!"fsr".equals(get(context, SCALING))) return 0;
+        String scaling = get(context, SCALING);
+        if ("off".equals(scaling)) return 100;
+        if (!"fsr".equals(scaling)) return 0;
         switch (get(context, FSR_MODE)) {
+            case "mega_quality": return 100;
             case "ultra_quality": return 77;
             case "quality": return 67;
             case "balanced": return 59;
             case "performance": return 50;
             case "ultra_performance": return 33;
-            default: return 0;
+            default: return 100;  // mega_quality, and the old "off"
         }
     }
 
@@ -422,8 +426,7 @@ final class GameOptions {
         // fills the whole buffer. The scaling effect (bilinear, CAS sharpening or FSR 1.0) needs
         // REX_HAS_FIDELITYFX_SDK on Android (sdk/src/ui/CMakeLists.txt).
         String scaling = get(context, SCALING);
-        // An FSR mode on wins over the scaling choice: it is a scale preset with the fsr effect.
-        if (fsrModeScalePercent(context) > 0) scaling = "fsr";
+        // Off draws at 100 % and only stretches to the screen: no upscaling effect.
         if (!"cas".equals(scaling) && !"fsr".equals(scaling)) scaling = "bilinear";
         args.add("--present_effect=" + scaling);
         // Extra CAS/RCAS sharpness on top of the effect's own (0 keeps the SDK default).
