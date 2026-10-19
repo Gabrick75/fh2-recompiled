@@ -7085,20 +7085,35 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   struct Fh2CopiaDestino {
     uint64_t ultima = 0;                  // frame of the last resolve to this destination
     uint64_t suelta = UINT64_MAX;         // frame in which it was last taken as one-off
+    uint64_t forma = 0;                   // pitch, height and copy format of the first resolve seen
+    bool compartida = false;              // resolved since with another shape: a scratch area, never read back
   };
 
-  bool Fh2ResueltaSuelta(uint32_t base, uint32_t pitch_destino, uint32_t alto_destino) {
-    if (!REXCVAR_GET(fh2_nativo_leer_resueltas_sueltas) ||
-        uint64_t(pitch_destino) * alto_destino * 4 < (256u << 10)) {
+  /*
+   * A destination resolved with more than one shape is a scratch area the game reuses within a frame. 1DAC5000 takes
+   * 1280x720 copies, a 256x256 8888 one and the dealer's wheel light table (256x128 16_16_16_16_FLOAT, read as data,
+   * not as a texture); this renderer never writes that table to guest memory, so reading the 256x256 image back left
+   * its bytes where the wheels read their light: they glowed pink. Only single-use destinations (the car photos) are
+   * read back.
+   */
+  bool Fh2ResueltaSuelta(uint32_t base, uint32_t pitch_destino, uint32_t alto_destino, uint32_t formato) {
+    if (!REXCVAR_GET(fh2_nativo_leer_resueltas_sueltas)) {
       return false;
     }
+    const uint64_t forma =
+        uint64_t(pitch_destino & 0x3FFF) | (uint64_t(alto_destino & 0x3FFF) << 14) | (uint64_t(formato & 0x3F) << 28);
     const auto [it, nueva] = fh2_copias_destino_.try_emplace(base);
     Fh2CopiaDestino& d = it->second;
+    if (nueva) {
+      d.forma = forma;
+    } else if (d.forma != forma) {
+      d.compartida = true;
+    }
     if (nueva || presentados_ - d.ultima >= kFh2FotogramasSuelta) {
       d.suelta = presentados_;
     }
     d.ultima = presentados_;
-    return d.suelta == presentados_;
+    return d.suelta == presentados_ && !d.compartida && uint64_t(pitch_destino) * alto_destino * 4 >= (256u << 10);
   }
 #endif
 
@@ -7112,7 +7127,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     // Every resolve updates the table, so a destination resolved every frame is never taken as one-off.
     const uint32_t alto_destino = (reg.rb_copy_dest_pitch >> 16) & 0x3FFF;
     if (Fh2ResueltaSuelta(reg.rb_copy_dest_base & 0x1FFFFFFF, reg.rb_copy_dest_pitch & 0x3FFF,
-                          alto_destino ? alto_destino : alto) &&
+                          alto_destino ? alto_destino : alto, (reg.rb_copy_dest_info >> 7) & 0x3F) &&
         !leer && resuelta.imagen.formato == kFormatoColor) {
       leer = true;
       if (fh2_sueltas_leidas_++ < 24) {
