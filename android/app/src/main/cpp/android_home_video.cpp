@@ -91,6 +91,7 @@ private:
     static constexpr int64_t kQueueMs = 5000;    // compressed picture read ahead (the sound is up to 3.5 s behind)
     static constexpr int kRingSeconds = 8;       // decoded sound ahead of the speaker
     static constexpr int64_t kFrameMs = 33;      // 29.97 fps
+    static constexpr int64_t kResyncMs = 150;    // how far the sound may drift before it is put back in place
 
     int64_t NowMs() const {
         return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start_).count();
@@ -128,21 +129,22 @@ private:
         }
     }
 
+    // The sound goes on right after what was written; only a block more than kResyncMs off (the sound was off, a
+    // block was lost, the speaker ran dry) moves it: silence up to it, or its late part dropped.
     void PushSound(const float* stereo, int frames, int64_t pts_ms) {
         int64_t target = pts_ms * sample_rate_ / 1000;
-        int64_t written = written_.load();
-        int64_t floor = std::max(written, read_.load());
-        if (target > floor) {  // silence up to it (the sound was off, or a block was lost)
-            written = std::max(written, read_.load());
+        int64_t written = std::max(written_.load(), read_.load());
+        int64_t tolerance = int64_t(sample_rate_) * kResyncMs / 1000;
+        int skip = 0;
+        if (target > written + tolerance) {
             int64_t gap = std::min<int64_t>(target - written, ring_frames_ / 2);
             for (int64_t i = 0; i < gap && WaitRoom(written); i++, written++) {
                 ring_[(written % ring_frames_) * 2] = 0;
                 ring_[(written % ring_frames_) * 2 + 1] = 0;
             }
-            written_ = written;
-            target = written;
+        } else if (target + tolerance < written) {
+            skip = int(std::min<int64_t>(frames, written - target));
         }
-        int skip = int(std::min<int64_t>(frames, std::max<int64_t>(0, written - target)));  // already past it
         for (int i = skip; i < frames && WaitRoom(written); i++, written++) {
             ring_[(written % ring_frames_) * 2] = stereo[i * 2];
             ring_[(written % ring_frames_) * 2 + 1] = stereo[i * 2 + 1];

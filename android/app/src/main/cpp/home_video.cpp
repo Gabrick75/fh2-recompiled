@@ -337,6 +337,8 @@ void HomeVideoDecoder::Decode(const AsfPacket& in, bool decode_audio, const Vide
     size_t step = in.data.size();
     if (is_audio && context->block_align > 0 && in.data.size() % context->block_align == 0)
         step = size_t(context->block_align);
+    // The sound's blocks after the object's first carry no timestamp: each follows the samples before it.
+    int64_t audio_samples = 0;
     for (size_t at = 0; at < in.data.size(); at += step) {
         size_t bytes = std::min(step, in.data.size() - at);
         if (av_new_packet(packet_, int(bytes)) < 0) return;
@@ -351,6 +353,10 @@ void HomeVideoDecoder::Decode(const AsfPacket& in, bool decode_audio, const Vide
         while (avcodec_receive_frame(context, frame_) == 0) {
             int64_t pts = frame_->best_effort_timestamp != AV_NOPTS_VALUE ? frame_->best_effort_timestamp
                                                                            : in.pts_ms;
+            if (!is_video && context->sample_rate > 0) {
+                pts = in.pts_ms + audio_samples * 1000 / context->sample_rate;
+                audio_samples += frame_->nb_samples;
+            }
             if (is_video) {
                 video(*frame_, pts);
             } else {
