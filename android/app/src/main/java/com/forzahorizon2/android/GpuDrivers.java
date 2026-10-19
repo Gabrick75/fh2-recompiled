@@ -188,7 +188,7 @@ final class GpuDrivers {
         File staging = new File(root(context), ".importing");
         delete(staging);
         if (!staging.mkdirs()) {
-            throw new IOException(tr("não foi possível criar ", "could not create ") + staging);
+            throw new IOException(tr(R.string.could_not_create) + staging);
         }
         String metaName = null;
         String metaLibrary = null;
@@ -225,7 +225,7 @@ final class GpuDrivers {
             }
         } catch (JSONException e) {
             delete(staging);
-            throw new IOException(tr("o meta.json não é um JSON válido", "meta.json is not valid JSON"));
+            throw new IOException(tr(R.string.meta_json_is_not_valid_json));
         } catch (IOException e) {
             delete(staging);
             throw e;
@@ -233,13 +233,11 @@ final class GpuDrivers {
         String library = metaLibrary != null ? metaLibrary : firstSo;
         if (library == null || !library.matches("[A-Za-z0-9_.+-]+\\.so") || !new File(staging, library).isFile()) {
             delete(staging);
-            throw new IOException(tr("o zip não tem nenhuma .so de driver", "the zip has no driver .so"));
+            throw new IOException(tr(R.string.the_zip_has_no_driver_so));
         }
         if (minApi > Build.VERSION.SDK_INT) {
             delete(staging);
-            throw new IOException(tr("este driver pede o Android de API " + minApi + " ou mais novo (este é " +
-                    Build.VERSION.SDK_INT + ")", "this driver needs Android API " + minApi + " or newer (this is " +
-                    Build.VERSION.SDK_INT + ")"));
+            throw new IOException(tr(R.string.this_driver_needs_android_api_or, minApi, Build.VERSION.SDK_INT));
         }
         try {
             checkArm64(new File(staging, library));
@@ -256,7 +254,7 @@ final class GpuDrivers {
         delete(destination);
         if (!staging.renameTo(destination)) {
             delete(staging);
-            throw new IOException(tr("não foi possível mover o driver para ", "could not move the driver to ") + destination);
+            throw new IOException(tr(R.string.could_not_move_the_driver_to) + destination);
         }
         try (FileOutputStream out = new FileOutputStream(new File(destination, ".library"))) {
             out.write(library.getBytes(StandardCharsets.UTF_8));
@@ -283,12 +281,11 @@ final class GpuDrivers {
         try (InputStream in = new FileInputStream(library)) {
             if (in.read(h) != h.length) throw new IOException("short");
         } catch (IOException e) {
-            throw new IOException(tr("a .so do driver está vazia ou ilegível", "the driver .so is empty or unreadable"));
+            throw new IOException(tr(R.string.the_driver_so_is_empty_or));
         }
         boolean elf = h[0] == 0x7F && h[1] == 'E' && h[2] == 'L' && h[3] == 'F';
         if (!elf || h[4] != 2 || h[5] != 1 || h[16] != 3 || h[17] != 0 || (h[18] & 0xFF) != 183 || h[19] != 0) {
-            throw new IOException(tr("o driver tem de ser uma biblioteca Android ARM64 (.so), não de PC nem de 32 bits",
-                    "the driver must be an Android ARM64 library (.so), not a PC or 32-bit one"));
+            throw new IOException(tr(R.string.the_driver_must_be_an_android));
         }
     }
 

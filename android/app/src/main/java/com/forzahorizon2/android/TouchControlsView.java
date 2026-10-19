@@ -608,7 +608,7 @@ public final class TouchControlsView extends View {
                 if (!c.visible) {
                     text.setColor(0xFFFFFFFF);
                     text.setTextSize(Math.max(22f, radius(c, h) * .28f));
-                    canvas.drawText(tr("OCULTO", "HIDDEN"), cx, cy + radius(c, h) + text.getTextSize() + 6f, text);
+                    canvas.drawText(tr(R.string.hidden), cx, cy + radius(c, h) + text.getTextSize() + 6f, text);
                 }
             }
         }

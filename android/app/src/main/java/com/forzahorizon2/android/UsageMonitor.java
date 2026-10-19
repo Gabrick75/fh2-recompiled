@@ -230,7 +230,7 @@ final class UsageMonitor {
         if (activityManager != null) {
             ActivityManager.MemoryInfo info = new ActivityManager.MemoryInfo();
             activityManager.getMemoryInfo(info);
-            ram += String.format(Locale.ROOT, AppLanguage.tr(" (livre %.1f/%.1f)", " (free %.1f/%.1f)"), info.availMem / (double) (1 << 30),
+            ram += String.format(Locale.ROOT, AppLanguage.tr(R.string.free_1f_1f), info.availMem / (double) (1 << 30),
                     info.totalMem / (double) (1 << 30));
         }
 

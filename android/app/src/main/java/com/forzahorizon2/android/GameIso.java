@@ -56,9 +56,9 @@ final class GameIso {
                 file.readFully(read);
                 if (java.util.Arrays.equals(read, MAGIC)) return null;
             }
-            return tr("o arquivo não é uma imagem de disco do Xbox 360", "the file is not an Xbox 360 disc image");
+            return tr(R.string.the_file_is_not_an_xbox);
         } catch (IOException e) {
-            return tr("não foi possível ler o arquivo: ", "could not read the file: ") + e.getMessage();
+            return tr(R.string.could_not_read_the_file) + e.getMessage();
         }
     }
 

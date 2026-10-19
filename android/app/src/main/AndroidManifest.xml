@@ -12,6 +12,7 @@
         android:isGame="true"
         android:icon="@mipmap/ic_launcher"
         android:label="FH2 Recompiled"
+        android:localeConfig="@xml/locales_config"
         android:roundIcon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="false">

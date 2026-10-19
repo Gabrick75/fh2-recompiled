@@ -60,6 +60,10 @@ final class Menu {
         void chosen(String value);
     }
 
+    interface OnIndex {
+        void chosen(int index);
+    }
+
     private final Context context;
 
     Menu(Context context) {
@@ -281,6 +285,43 @@ final class Menu {
 
     LinearLayout choiceRow(String key, String title, String description, String[] labels, String[] values) {
         return choiceRow(key, title, description, labels, values, null);
+    }
+
+    /**
+     * One of a list of choices, as a drop-down: the chosen one and a ▾ at the row's right, and tapping anywhere on
+     * the row opens the list under it, the chosen one in magenta.
+     */
+    LinearLayout dropdownRow(String title, String description, String[] labels, int chosen, OnIndex choose) {
+        int[] current = {Math.max(0, chosen)};
+        TextView value = text(labels[current[0]] + "  ▾", 15, ACCENT_TEXT, false);
+        LinearLayout row = row(title, description, value);
+        View content = row.getChildAt(1);
+        content.setBackground(pressedBackground());
+        content.setOnClickListener(v -> {
+            android.widget.ListPopupWindow list = new android.widget.ListPopupWindow(context);
+            list.setAdapter(new android.widget.ArrayAdapter<String>(context, 0, labels) {
+                @Override
+                public View getView(int i, View reuse, ViewGroup parent) {
+                    TextView item = text(labels[i], 15, i == current[0] ? ACCENT_TEXT : PRIMARY, i == current[0]);
+                    item.setPadding(dp(16), dp(12), dp(16), dp(12));
+                    return item;
+                }
+            });
+            list.setBackgroundDrawable(rounded(PRESSED, dp(12)));
+            list.setAnchorView(value);
+            list.setDropDownGravity(Gravity.END);
+            list.setContentWidth(dp(200));
+            list.setModal(true);
+            list.setOnItemClickListener((parent, item, i, id) -> {
+                list.dismiss();
+                if (i == current[0]) return;
+                current[0] = i;
+                value.setText(labels[i] + "  ▾");
+                choose.chosen(i);
+            });
+            list.show();
+        });
+        return row;
     }
 
     /** A slider in the menu's colors, with no floating label (the row shows the value). */

@@ -74,7 +74,7 @@ final class GameOptions {
     static final String VIBRATION_MODE = "vibration_mode";  // "phone", "gamepad", "both"
     // Language
     static final String GAME_LANGUAGE = "game_language";  // a GameLanguage code: "en-US", "pt-BR"...
-    static final String APP_LANGUAGE = "app_language";    // "pt" or "en" (AppLanguage)
+    static final String APP_LANGUAGE = "app_language";    // "" (the system's), "pt", "en" or "es" (AppLanguage)
     // Game files
     static final String GAME_ISO = "game_iso";            // path of the disc image read in place; "" = the folder
 
@@ -117,7 +117,7 @@ final class GameOptions {
             // English (US), what the console settings said before this option existed.
             case GAME_LANGUAGE: return "en-US";
             case GAME_ISO: return "";
-            case APP_LANGUAGE: return "pt".equals(java.util.Locale.getDefault().getLanguage()) ? "pt" : "en";
+            case APP_LANGUAGE: return "";  // the system's: Android picks from the phone's languages
             default: throw new IllegalArgumentException(key);
         }
     }
@@ -255,18 +255,15 @@ final class GameOptions {
     static final class GameLanguage {
         final String code;
         final String name;          // in its own language, as a console lists them
-        final String portuguese;    // what it is, in the app's two languages
-        final String english;
+        final int description;      // what it is, in the app's language (R.string)
         final int language;         // XLanguage (sdk/include/rex/system/xcontent.h)
         final int country;          // XOnlineCountry; xeXamGetLocaleFromCountry turns it into the locale
         final boolean voiceOver;
 
-        GameLanguage(String code, String name, String portuguese, String english, int language, int country,
-                     boolean voiceOver) {
+        GameLanguage(String code, String name, int description, int language, int country, boolean voiceOver) {
             this.code = code;
             this.name = name;
-            this.portuguese = portuguese;
-            this.english = english;
+            this.description = description;
             this.language = language;
             this.country = country;
             this.voiceOver = voiceOver;
@@ -274,18 +271,18 @@ final class GameOptions {
     }
 
     static final GameLanguage[] GAME_LANGUAGES = {
-            new GameLanguage("en-US", "English (US)", "Inglês · Estados Unidos", "English · United States", 1, 103, true),
-            new GameLanguage("en-GB", "English (UK)", "Inglês · Reino Unido", "English · United Kingdom", 1, 35, false),
-            new GameLanguage("pt-BR", "Português (Brasil)", "Português · Brasil", "Portuguese · Brazil", 9, 13, true),
-            new GameLanguage("es-ES", "Español (España)", "Espanhol · Espanha", "Spanish · Spain", 5, 31, false),
-            new GameLanguage("es-MX", "Español (México)", "Espanhol · México", "Spanish · Mexico", 5, 71, true),
-            new GameLanguage("fr-FR", "Français", "Francês", "French", 4, 34, true),
-            new GameLanguage("de-DE", "Deutsch", "Alemão", "German", 3, 24, false),
-            new GameLanguage("it-IT", "Italiano", "Italiano", "Italian", 6, 50, false),
-            new GameLanguage("pl-PL", "Polski", "Polonês", "Polish", 11, 82, false),
-            new GameLanguage("ru-RU", "Русский", "Russo", "Russian", 12, 88, false),
-            new GameLanguage("ja-JP", "日本語", "Japonês", "Japanese", 2, 53, false),
-            new GameLanguage("zh-TW", "繁體中文", "Chinês tradicional", "Traditional Chinese", 8, 101, false),
+            new GameLanguage("en-US", "English (US)", R.string.game_language_en_us, 1, 103, true),
+            new GameLanguage("en-GB", "English (UK)", R.string.game_language_en_gb, 1, 35, false),
+            new GameLanguage("pt-BR", "Português (Brasil)", R.string.game_language_pt_br, 9, 13, true),
+            new GameLanguage("es-ES", "Español (España)", R.string.game_language_es_es, 5, 31, false),
+            new GameLanguage("es-MX", "Español (México)", R.string.game_language_es_mx, 5, 71, true),
+            new GameLanguage("fr-FR", "Français", R.string.game_language_fr_fr, 4, 34, true),
+            new GameLanguage("de-DE", "Deutsch", R.string.game_language_de_de, 3, 24, false),
+            new GameLanguage("it-IT", "Italiano", R.string.game_language_it_it, 6, 50, false),
+            new GameLanguage("pl-PL", "Polski", R.string.game_language_pl_pl, 11, 82, false),
+            new GameLanguage("ru-RU", "Русский", R.string.game_language_ru_ru, 12, 88, false),
+            new GameLanguage("ja-JP", "日本語", R.string.game_language_ja_jp, 2, 53, false),
+            new GameLanguage("zh-TW", "繁體中文", R.string.game_language_zh_tw, 8, 101, false),
     };
 
     /**

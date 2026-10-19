@@ -1,6 +1,7 @@
 package com.forzahorizon2.android;
 
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
@@ -19,26 +20,28 @@ public final class GpuProbeActivity extends Activity {
     private boolean finished;
 
     @Override
+    protected void attachBaseContext(Context base) {
+        super.attachBaseContext(AppLanguage.wrap(base));
+    }
+
+    @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        AppLanguage.load(this);
         String name = getIntent().getStringExtra(EXTRA_DRIVER);
         Handler main = new Handler(Looper.getMainLooper());
         // A driver that hangs while loading must not hold the launcher.
-        main.postDelayed(() -> finishReport(error(AppLanguage.tr("O teste do driver passou de 20 segundos",
-                "The driver test took over 20 seconds"))), 20000);
+        main.postDelayed(() -> finishReport(error(AppLanguage.tr(R.string.the_driver_test_took_over_20))), 20000);
         new Thread(() -> {
             String report;
             try {
                 GpuDrivers.Driver driver = name == null || name.isEmpty() ? null : GpuDrivers.find(this, name);
                 if (name != null && !name.isEmpty() && driver == null) {
-                    report = error(AppLanguage.tr("O driver não está mais instalado", "The driver is no longer installed"));
+                    report = error(AppLanguage.tr(R.string.the_driver_is_no_longer_installed));
                 } else {
                     report = Diagnostics.probe(this, driver);
                 }
             } catch (Exception | LinkageError e) {
-                report = error(AppLanguage.tr("Não foi possível carregar a biblioteca de diagnóstico",
-                        "Could not load the diagnostics library") + ": " + e);
+                report = error(AppLanguage.tr(R.string.could_not_load_the_diagnostics_library) + ": " + e);
             }
             String result = report;
             main.post(() -> finishReport(result));

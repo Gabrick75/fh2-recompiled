@@ -89,7 +89,7 @@ final class SaveTransfer {
     static File export(Context context) throws IOException {
         File[] entries = userRoot(context).listFiles(SaveTransfer::isSaveEntry);
         if (entries == null || entries.length == 0) {
-            throw new IOException(tr("ainda não há save", "there is no save yet"));
+            throw new IOException(tr(R.string.there_is_no_save_yet));
         }
         String stamp = new java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", java.util.Locale.ROOT)
                 .format(new java.util.Date());
@@ -106,7 +106,7 @@ final class SaveTransfer {
     static void importFrom(Context context, File source) throws IOException {
         File[] entries = source.listFiles(SaveTransfer::isSaveEntry);
         if (entries == null || entries.length == 0) {
-            throw new IOException(tr("a pasta não tem um save: ", "the folder has no save: ") + source);
+            throw new IOException(tr(R.string.the_folder_has_no_save) + source);
         }
         File root = userRoot(context);
         if (!root.mkdirs() && !root.isDirectory()) {
