@@ -20,6 +20,7 @@
 #include <rex/memory.h>
 #include <rex/platform.h>
 #include <rex/system/mmio_handler.h>
+#include <rex/system/thread_state.h>
 #include <rex/types.h>
 
 #if !REX_PLATFORM_WIN32
@@ -439,6 +440,29 @@ bool MMIOHandler::ExceptionCallback(arch::Exception* ex) {
                        info.dli_saddr ? pc - reinterpret_cast<uint64_t>(info.dli_saddr) : 0);
         } else {
           REXLOG_ERROR("  at host pc 0x{:X}", pc);
+        }
+        // The guest side: a few registers and the return addresses on the guest stack. Recompiled functions save the
+        // LR they were called with at (previous frame - 8) before their stwu, and [r1] is the previous frame, so the
+        // chain gives the callers even when the faulting function is reached through a pointer.
+        if (auto* ts = runtime::ThreadState::Get(); ts && ts->context()) {
+          const ::PPCContext& c = *ts->context();
+          const auto leer = [this](uint32_t direccion, uint32_t& valor) {
+            if (direccion < 0x10000 || direccion >= 0xE0000000u || (direccion & 3)) return false;
+            std::memcpy(&valor, virtual_membase_ + direccion, 4);
+            valor = __builtin_bswap32(valor);
+            return true;
+          };
+          REXLOG_ERROR("  guest lr 0x{:08X} r1 0x{:08X} r3 0x{:08X} r4 0x{:08X} r5 0x{:08X} r30 0x{:08X} r31 0x{:08X}",
+                       uint32_t(c.lr), c.r1.u32, c.r3.u32, c.r4.u32, c.r5.u32, c.r30.u32, c.r31.u32);
+          std::string pila;
+          uint32_t marco = c.r1.u32;
+          for (int i = 0; i < 16; ++i) {
+            uint32_t anterior = 0, retorno = 0;
+            if (!leer(marco, anterior) || anterior <= marco || !leer(anterior - 8, retorno)) break;
+            pila += fmt::format(" {:08X}", retorno);
+            marco = anterior;
+          }
+          REXLOG_ERROR("  guest stack (return addresses):{}", pila.empty() ? std::string(" (none)") : pila);
         }
       }
 #endif
