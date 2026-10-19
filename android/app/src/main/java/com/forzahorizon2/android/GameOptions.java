@@ -43,10 +43,12 @@ final class GameOptions {
     // Performance
     static final String PIN_THREADS = "pin_threads";
     static final String JOGO_RAPIDO = "jogo_rapido";  // fh2_android_afinidade=jogo-rapido (off = auto)
-    static final String PERFORMANCE_HINTS = "performance_hints";  // fh2_android_adpf (Android's ADPF)
-    // The ADPF toggle is out of the menu: the hints are always on (the 2026-10-14 A/B on the S23 Ultra showed no
-    // loss). Set to true to bring the row back (MainActivity.performancePage) and honor the saved choice again.
-    static final boolean PERFORMANCE_HINTS_IN_MENU = false;
+    // fh2_android_adpf (Android's ADPF). Not "performance_hints": the 2026-10-14 A/B builds saved that key off on some
+    // phones, and the toggle starts on for everyone.
+    static final String PERFORMANCE_HINTS = "adpf_hints";
+    // The ADPF toggle is in Performance > Processor, on by default (the 2026-10-14 A/B on the S23 Ultra showed no
+    // loss). Set to false to hide the row again and keep the hints always on.
+    static final boolean PERFORMANCE_HINTS_IN_MENU = true;
     static final String VERTEX_CACHE = "vertex_cache";  // fh2_nativo_cache_vertices (native), on by default
     // fh2_nativo_cache_indices (native), on by default. Not "indices_cache": test builds of 2026-10-14 used that key
     // and some phones saved it off to dodge a since-fixed bug.
