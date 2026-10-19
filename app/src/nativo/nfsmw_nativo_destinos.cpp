@@ -456,9 +456,6 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_borrar_area_util, false, "NFSMW",
 REXCVAR_DECLARE(int32_t, nfsmw_nativo_estadisticas_por_dibujo_s);
 // nfsmw_nativo_sombra_minimo only pays off with the single-sample PCF (defined in nfsmw_nativo_dibujos.cpp).
 REXCVAR_DECLARE(bool, nfsmw_nativo_pcf_barato);
-#if defined(FH2_RECOMP)
-REXCVAR_DECLARE(bool, fh2_nativo_tabla_ruedas_descartada);  // nfsmw_nativo_dibujos.cpp
-#endif
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_estadisticas_pipeline, false, "NFSMW",
                     "Renderizador nativo (17/09, build 156): cuenta fragmentos sombreados, invocaciones de "
                     "vertice y primitivas recortadas por tipo de pasada (informe C2). La imagen no cambia, "
@@ -1623,11 +1620,6 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if (FormatoHostDestinoColor(formato_color) == VK_FORMAT_UNDEFINED) {
       return Rechazar(100 + formato_color, "formato de destino de render todavia no soportado");
     }
-#if defined(FH2_RECOMP)
-    if (formato_color == 5 && pitch == 320 && REXCVAR_GET(fh2_nativo_tabla_ruedas_descartada)) {
-      return Rechazar(105, "tabla de luz de las ruedas en 16_16_16_16 (fh2_nativo_tabla_ruedas_descartada)");
-    }
-#endif
     int32_t x0, y0, x1, y1;
     if (!Rectangulo(reg, pitch, x0, y0, x1, y1)) {
       return false;

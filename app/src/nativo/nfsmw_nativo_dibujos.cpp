@@ -179,18 +179,6 @@ REXCVAR_DEFINE_INT32(nfsmw_nativo_huellas_muestreo, 8, "NFSMW",
                      "desacuerdo se apaga solo. 0 = siempre la huella completa, como antes")
     .range(0, 64);
 
-/*
- * The dealer's wheel light table. Right after the four wheel visibility queries, FH2 draws 8 rectangles (PS n3239, which
- * decodes HDR light) into a 320-pitch 16_16_16_16 target and resolves them to a 256x128 16_16_16_16_FLOAT texture.
- * Until 16_16_16_16 targets were accepted (for the photo mode) those draws and that resolve were rejected and the
- * dealer looked right; drawn, the table lights the wheels with a pink glow even clamped to the fixed point range, so
- * this renderer still differs somewhere in that shader's inputs. Until that is found, the table is dropped as before.
- * The photo mode's 16_16_16_16 target (1280 pitch) is not affected.
- */
-REXCVAR_DEFINE_BOOL(fh2_nativo_tabla_ruedas_descartada, true, "FH2",
-                    "Drop the dealer's wheel light table (320-pitch 16_16_16_16 target and its resolve), as before "
-                    "16_16_16_16 targets were accepted; drawn, the wheels glow pink");
-
 REXCVAR_DEFINE_BOOL(nfsmw_sombras_sin_vegetacion, true, "NFSMW",
                     "No dibujar en el mapa de sombras lo que lleva prueba de alfa: arboles, arbustos y "
                     "vallas de alambre. Son el 55 % de los dibujos del pase y el 12 % de sus triangulos, "
@@ -2772,11 +2760,6 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       if (FormatoHostDestinoColor(formato) == VK_FORMAT_UNDEFINED) {
         return Rechazar(200 + formato, "formato de destino de color todavia no soportado");
       }
-#if defined(FH2_RECOMP)
-      if (formato == 5 && pitch == 320 && REXCVAR_GET(fh2_nativo_tabla_ruedas_descartada)) {
-        return Rechazar(205, "tabla de luz de las ruedas en 16_16_16_16 (fh2_nativo_tabla_ruedas_descartada)");
-      }
-#endif
       claves[i] = (uint64_t(1) << 63) | (uint64_t(info & 0xFFF) << 24) | (uint64_t(formato) << 16) |
                   pitch;
       mascaras |= mascara << (i * 4);
