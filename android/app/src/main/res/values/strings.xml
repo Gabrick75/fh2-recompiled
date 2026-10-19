@@ -68,6 +68,7 @@
     <string name="driver">Driver</string>
     <string name="driver_chosen">"Driver chosen: "</string>
     <string name="driver_imported">"Driver imported: "</string>
+    <string name="edit_player_name">Your username</string>
     <string name="emulated">Emulated</string>
     <string name="emulated_image">Emulated image</string>
     <string name="emulated_performance">Emulated performance</string>
@@ -129,6 +130,7 @@
     <string name="high">High</string>
     <string name="high_2">High</string>
     <string name="high_smooths_more_edges_the_faint">High smooths more edges, the faint ones too, and softens the image a little.</string>
+    <string name="home">Home</string>
     <string name="how_far_objects_cast_shadows_nearly">How far objects cast shadows: nearly all of their cost is there. Far is the game\'s own.</string>
     <string name="how_much_of_the_xbox_360" formatted="false">How much of the Xbox 360\'s resolution (1280×720) the game draws, in 12.5 % steps. Below 100 % the image is less sharp and the GPU works much less.</string>
     <string name="how_much_of_the_xbox_360_2" formatted="false">How much of the Xbox 360\'s resolution (1280×720) the game draws: the scene and the post-processing (the HUD gets less sharp too). Below 100 % the GPU works much less.</string>
@@ -201,6 +203,9 @@
     <string name="pin_threads_to_cores">Pin threads to cores</string>
     <string name="play">Play</string>
     <string name="play_anyway">Play anyway</string>
+    <string name="player_name">Username</string>
+    <string name="player_name_empty">Use at least one letter or digit.</string>
+    <string name="player_name_rules">Up to 15 letters, digits or spaces. It is the name the game shows.</string>
     <string name="preparing_diagnostics">Preparing diagnostics…</string>
     <string name="present_mode">Present mode</string>
     <string name="presentation">Presentation</string>
@@ -224,6 +229,7 @@
     <string name="save_diagnostics_zip">Save diagnostics (ZIP)</string>
     <string name="save_exported_to_jogos">Save exported to jogos/</string>
     <string name="save_imported_from">"Save imported from "</string>
+    <string name="save_name">Save</string>
     <string name="saves_exportados_or_saves">-saves-exportados or -saves.</string>
     <string name="scaling_to_the_screen">Scaling to the screen</string>
     <string name="scene_in_one_pass">Scene in one pass</string>
@@ -314,6 +320,8 @@
     <string name="vibrate_on_touch">Vibrate on touch</string>
     <string name="vibration">Vibration</string>
     <string name="vibration_mode">Vibration mode</string>
+    <string name="video_sound_off">Turn the video sound off</string>
+    <string name="video_sound_on">Turn the video sound on</string>
     <string name="voiced">" · voiced"</string>
     <string name="volume">Volume</string>
     <string name="vulkan_test">Vulkan test</string>

@@ -77,6 +77,9 @@ final class GameOptions {
     static final String APP_LANGUAGE = "app_language";    // "" (the system's), "pt", "en" or "es" (AppLanguage)
     // Game files
     static final String GAME_ISO = "game_iso";            // path of the disc image read in place; "" = the folder
+    // Home screen
+    static final String GAMERTAG = "gamertag";  // user_gamertag: the name the game shows (cleanGamertag)
+    static final String HOME_VIDEO_SOUND = "home_video_sound";  // the home screen video with sound, off by default
 
     static final String RES_480P = "480p";
     static final String RES_720P = "720p";
@@ -117,6 +120,7 @@ final class GameOptions {
             // English (US), what the console settings said before this option existed.
             case GAME_LANGUAGE: return "en-US";
             case GAME_ISO: return "";
+            case GAMERTAG: return "Player";
             case APP_LANGUAGE: return "";  // the system's: Android picks from the phone's languages
             default: throw new IllegalArgumentException(key);
         }
@@ -136,6 +140,27 @@ final class GameOptions {
 
     static void set(Context context, String key, String value) {
         prefs(context).edit().putString(key, value).apply();
+    }
+
+    static final int GAMERTAG_MAX = 15;
+
+    /**
+     * A name as an Xbox 360 gamertag: letters, digits and single spaces, at most 15, so it fits wherever the game
+     * shows one. Empty when nothing is left.
+     */
+    static String cleanGamertag(String name) {
+        StringBuilder clean = new StringBuilder();
+        for (int i = 0; i < name.length() && clean.length() < GAMERTAG_MAX; i++) {
+            char c = name.charAt(i);
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) clean.append(c);
+            else if (c == ' ' && clean.length() > 0 && clean.charAt(clean.length() - 1) != ' ') clean.append(c);
+        }
+        return clean.toString().trim();
+    }
+
+    static String gamertag(Context context) {
+        String name = cleanGamertag(get(context, GAMERTAG));
+        return name.isEmpty() ? defaultOf(GAMERTAG) : name;  // never empty: the cvar parser aborts on it
     }
 
     static boolean flag(Context context, String key) {
@@ -328,6 +353,7 @@ final class GameOptions {
         GameLanguage language = gameLanguage(context);
         args.add("--user_language=" + language.language);
         args.add("--user_country=" + language.country);
+        args.add("--user_gamertag=" + gamertag(context));
         if ("native".equals(get(context, RENDERER))) {
             // NFSMW Android Evolved's renderer built for FH2 (app/src/nativo): the ring is drawn with translated
             // shaders, no EDRAM emulation. The emulated GPU's arguments below are then ignored; these are its own.

@@ -66,6 +66,7 @@
     <string name="driver">Driver</string>
     <string name="driver_chosen">"Driver elegido: "</string>
     <string name="driver_imported">"Driver importado: "</string>
+    <string name="edit_player_name">Tu nombre de usuario</string>
     <string name="emulated">Emulado</string>
     <string name="emulated_image">Imagen del emulado</string>
     <string name="emulated_performance">Rendimiento del emulado</string>
@@ -127,6 +128,7 @@
     <string name="high">Altos</string>
     <string name="high_2">Alta</string>
     <string name="high_smooths_more_edges_the_faint">Alta suaviza más bordes, incluso los débiles, y deja la imagen un poco más suave.</string>
+    <string name="home">Inicio</string>
     <string name="how_far_objects_cast_shadows_nearly">Hasta dónde los objetos proyectan sombra: ahí está casi todo su costo. Lejos es como el juego.</string>
     <string name="how_much_of_the_xbox_360" formatted="false">Cuánto de la resolución de Xbox 360 (1280×720) dibuja el juego, en pasos de 12,5 %. Por debajo del 100 % la imagen queda menos nítida y la GPU trabaja mucho menos.</string>
     <string name="how_much_of_the_xbox_360_2" formatted="false">Cuánto de la resolución de Xbox 360 (1280×720) dibuja el juego: la escena y el posprocesado (el HUD también queda menos nítido). Por debajo del 100 % la GPU trabaja mucho menos.</string>
@@ -199,6 +201,9 @@
     <string name="pin_threads_to_cores">Fijar hilos a los núcleos</string>
     <string name="play">Jugar</string>
     <string name="play_anyway">Jugar de todos modos</string>
+    <string name="player_name">Nombre de usuario</string>
+    <string name="player_name_empty">Usa al menos una letra o un número.</string>
+    <string name="player_name_rules">Hasta 15 letras, números o espacios. Es el nombre que muestra el juego.</string>
     <string name="preparing_diagnostics">Preparando el diagnóstico…</string>
     <string name="present_mode">Modo de presentación</string>
     <string name="presentation">Presentación</string>
@@ -222,6 +227,7 @@
     <string name="save_diagnostics_zip">Guardar diagnóstico (ZIP)</string>
     <string name="save_exported_to_jogos">Save exportado a jogos/</string>
     <string name="save_imported_from">"Save importado de "</string>
+    <string name="save_name">Guardar</string>
     <string name="saves_exportados_or_saves">-saves-exportados o -saves.</string>
     <string name="scaling_to_the_screen">Escalado a la pantalla</string>
     <string name="scene_in_one_pass">Escena en una pasada</string>
@@ -312,6 +318,8 @@
     <string name="vibrate_on_touch">Vibrar al tocar</string>
     <string name="vibration">Vibración</string>
     <string name="vibration_mode">Modo de vibración</string>
+    <string name="video_sound_off">Desactivar el sonido del vídeo</string>
+    <string name="video_sound_on">Activar el sonido del vídeo</string>
     <string name="voiced">" · doblado"</string>
     <string name="volume">Volumen</string>
     <string name="vulkan_test">Prueba de Vulkan</string>
