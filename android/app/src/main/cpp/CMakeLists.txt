@@ -57,6 +57,13 @@ if(TARGET SDL3-shared)
     )
 endif()
 
+# The launcher's home screen video (HomeVideo.java): the game's PressStart.wmv through the libavcodec the game
+# links (WMV3 and WMA Pro), shown on a TextureView with the sound through AAudio.
+add_library(fh2_home_video SHARED home_video.cpp android_home_video.cpp)
+target_link_libraries(fh2_home_video PRIVATE libavcodec libavutil android aaudio log)
+target_link_options(fh2_home_video PRIVATE "-Wl,-z,max-page-size=16384"
+    "LINKER:--exclude-libs,liblibavcodec.a:liblibavutil.a")
+
 # The namespace hooks adrenotools opens from nativeLibraryDir to load an imported driver: built and packaged.
 add_dependencies(fh2 main_hook file_redirect_hook gsl_alloc_hook hook_impl)
 

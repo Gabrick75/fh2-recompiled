@@ -63,6 +63,61 @@ final class GameIso {
     }
 
     /**
+     * Where a file of the image is: {offset, size} in bytes from the image's start, or null. The path is relative
+     * to the disc's root ("media/ui/videos/PressStart.wmv"), any case. GDFX directories are binary trees of entries
+     * (left, right, sector, size, attributes, name); each one walked whole, they are a few sectors.
+     */
+    static long[] find(File iso, String path) {
+        try (RandomAccessFile file = new RandomAccessFile(iso, "r")) {
+            byte[] read = new byte[MAGIC.length];
+            for (long partition : PARTITIONS) {
+                long at = partition + DESCRIPTOR;
+                if (at + 28 > file.length()) continue;
+                file.seek(at);
+                file.readFully(read);
+                if (!java.util.Arrays.equals(read, MAGIC)) continue;
+                byte[] root = new byte[8];
+                file.readFully(root);
+                long sector = le32(root, 0), size = le32(root, 4);
+                boolean directory = true;
+                for (String name : path.split("/")) {
+                    if (!directory || size <= 0 || size > (1 << 20)) return null;
+                    byte[] table = new byte[(int) size];
+                    file.seek(partition + sector * 2048);
+                    file.readFully(table);
+                    int entry = findEntry(table, 0, name);
+                    if (entry < 0) return null;
+                    sector = le32(table, entry + 4);
+                    size = le32(table, entry + 8);
+                    directory = (table[entry + 12] & 0x10) != 0;
+                }
+                return directory ? null : new long[] {partition + sector * 2048, size};
+            }
+        } catch (IOException e) {
+            // unreadable: as if not there
+        }
+        return null;
+    }
+
+    private static int findEntry(byte[] table, int dword, String name) {
+        int at = dword * 4;
+        if (at + 14 > table.length) return -1;
+        int left = (table[at] & 0xFF) | (table[at + 1] & 0xFF) << 8;
+        int right = (table[at + 2] & 0xFF) | (table[at + 3] & 0xFF) << 8;
+        if (left == 0xFFFF) return -1;  // an empty directory's padding
+        int length = table[at + 13] & 0xFF;
+        if (at + 14 + length > table.length) return -1;
+        String entry = new String(table, at + 14, length, StandardCharsets.ISO_8859_1);
+        if (entry.equalsIgnoreCase(name)) return at;
+        int found = left != 0 ? findEntry(table, left, name) : -1;
+        return found >= 0 || right == 0 ? found : findEntry(table, right, name);
+    }
+
+    private static long le32(byte[] b, int at) {
+        return (b[at] & 0xFFL) | (b[at + 1] & 0xFFL) << 8 | (b[at + 2] & 0xFFL) << 16 | (b[at + 3] & 0xFFL) << 24;
+    }
+
+    /**
      * The file path behind what the system file picker returned, or null. First from the document id, then from
      * the file the picker opens, for the ids that carry no path: the Downloads shortcut ("msf:123", "123"), the
      * media categories ("document:123") and other apps' file managers shown in the picker (issue #1).

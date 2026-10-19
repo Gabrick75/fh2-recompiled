@@ -24,6 +24,7 @@ import android.text.style.StyleSpan;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.TextureView;
 import android.view.View;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
@@ -100,7 +101,7 @@ public final class MainActivity extends AppCompatActivity {
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
                 View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_FULLSCREEN |
                 View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
-        setContentView(buildScreen(state == null ? GRAPHICS : state.getInt(STATE_PAGE, GRAPHICS)));
+        setContentView(buildScreen(state == null ? HOME : state.getInt(STATE_PAGE, HOME)));
         prepareGameFolder();
         startBenchIfAsked(getIntent());
     }
@@ -185,6 +186,8 @@ public final class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        resumed = true;
+        if (currentPage == HOME) homeVideo.resume();
         // Back from the game: it may have unlocked some.
         if (content != null && pages[ACHIEVEMENTS] != null) rebuildPage(ACHIEVEMENTS);
         if (hasStorageAccess()) {
@@ -192,14 +195,24 @@ public final class MainActivity extends AppCompatActivity {
         }
     }
 
+    @Override
+    protected void onPause() {
+        super.onPause();
+        resumed = false;
+        homeVideo.pause();
+    }
+
     // ---- Screen --------------------------------------------------------------------------------------------
     // A sidebar with the pages, one under the other, and the Play button always at hand at its foot; on the right
-    // the chosen page, in grouped lists (Menu). Graphics comes first and starts with the renderer: the options under
+    // the chosen page, in grouped lists (Menu). The app opens on the home page, which the name at the top of the
+    // sidebar brings back: the game's own "press start" video behind the player's name and a big Play (the sidebar's
+    // Play hides there, the big one takes its place). Graphics comes first and starts with the renderer: the options under
     // it are the chosen renderer's own, so the emulated and the native ones never mix. Every text is in the app's
     // three languages (AppLanguage.tr); changing the language builds the screen again.
 
     private static final int GRAPHICS = 0, DISPLAY = 1, PERFORMANCE = 2, SOUND = 3, ACHIEVEMENTS = 4, LANGUAGE = 5,
             GAME = 6, ABOUT = 7;
+    private static final int HOME = 8;  // not in the sidebar's list: its name at the top opens it
     private static final int[] PAGE_ICONS = {R.drawable.ic_menu_graficos, R.drawable.ic_menu_tela,
             R.drawable.ic_menu_desempenho, R.drawable.ic_menu_outros, R.drawable.ic_menu_conquistas,
             R.drawable.ic_menu_idioma, R.drawable.ic_menu_jogo, R.drawable.ic_menu_sobre};
@@ -216,6 +229,14 @@ public final class MainActivity extends AppCompatActivity {
     private LinearLayout rendererOptions;
     private TextView rendererNote;
     private Boolean shadersFound;  // what the native renderer's requirement row shows; null before it is built
+    private LinearLayout brand;
+    private View homeView;
+    private MaterialButton homePlay;
+    private TextView homeName;
+    private ImageView homeSound;
+    private HomeVideo homeVideo;
+    private String homeVideoSource;  // what the video was opened from: opened again only when that changes
+    private boolean resumed;
 
     private static String pageName(int page) {
         switch (page) {
@@ -243,7 +264,8 @@ public final class MainActivity extends AppCompatActivity {
         content = new FrameLayout(this);
         root.addView(content, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f));
         for (int i = 0; i < pages.length; i++) pages[i] = buildPage(i);
-        showPage(page, false);
+        homeView = homePage();
+        showPage(page == HOME || (page >= 0 && page < pages.length) ? page : HOME, false);
         return root;
     }
 
@@ -252,11 +274,14 @@ public final class MainActivity extends AppCompatActivity {
         bar.setBackgroundColor(Menu.SIDEBAR);
         bar.setPadding(dp(12), dp(14), dp(12), dp(12));
 
-        // The name, and under it whether the game is ready to play.
-        LinearLayout brand = new LinearLayout(this);
+        // The name, and under it whether the game is ready to play: all of it one button, to the home page.
+        brand = new LinearLayout(this);
         brand.setOrientation(LinearLayout.HORIZONTAL);
         brand.setGravity(Gravity.CENTER_VERTICAL);
-        brand.setPadding(dp(6), 0, dp(6), dp(12));
+        brand.setPadding(dp(8), dp(8), dp(8), dp(8));
+        brand.setContentDescription(tr(R.string.home));
+        brand.setOnClickListener(v -> showPage(HOME, true));
+        Menu.pressable(brand);
         brand.addView(appIcon(34), new LinearLayout.LayoutParams(dp(34), dp(34)));
         LinearLayout names = ui.column();
         names.setPadding(dp(10), 0, 0, 0);
@@ -273,7 +298,10 @@ public final class MainActivity extends AppCompatActivity {
         status.addView(playStatus);
         names.addView(status);
         brand.addView(names);
-        bar.addView(brand);
+        LinearLayout.LayoutParams brandParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        brandParams.bottomMargin = dp(8);
+        bar.addView(brand, brandParams);
 
         LinearLayout nav = ui.column();
         for (int i = 0; i < navRows.length; i++) {
@@ -339,9 +367,15 @@ public final class MainActivity extends AppCompatActivity {
     private void showPage(int page, boolean animate) {
         if (page == currentPage) return;
         currentPage = page;
+        View shown = page == HOME ? homeView : pages[page];
         content.removeAllViews();
-        content.addView(pages[page]);
-        if (animate) Menu.enter(pages[page]);
+        content.addView(shown);
+        if (animate) Menu.enter(shown);
+        boolean home = page == HOME;
+        brand.setBackground(Menu.rounded(home ? Menu.ACCENT_SOFT : Color.TRANSPARENT, dp(12)));
+        launchGame.setVisibility(home ? View.GONE : View.VISIBLE);
+        if (home && resumed) homeVideo.resume();
+        else homeVideo.pause();
         for (int i = 0; i < navRows.length; i++) {
             boolean chosen = i == page;
             LinearLayout row = navRows[i];
@@ -369,6 +403,184 @@ public final class MainActivity extends AppCompatActivity {
         launchGame.setElevation(ready ? dp(6) : 0);
         playStatus.setText(ready ? tr(R.string.ready_to_play) : tr(R.string.game_not_found));
         ((android.graphics.drawable.GradientDrawable) playDot.getBackground()).setColor(ready ? Menu.GREEN : Menu.AMBER);
+        if (homePlay != null) showHomeReady();
+    }
+
+    // ---- Home: the game's video behind the player's name and a big Play -----------------------------------------
+
+    private static final int HOME_GREY = 0xFF3A3A3F;  // the home page with no video: no game, or not read yet
+    private static final int HOME_CARD = 0xCC1B1B1F;  // Menu.GROUP, a little see-through over the video
+
+    private View homePage() {
+        FrameLayout home = new FrameLayout(this);
+        home.setBackgroundColor(HOME_GREY);
+
+        // The video and a light veil over it (a little more at the foot, under the cards), faded in together.
+        FrameLayout videoLayer = new FrameLayout(this);
+        TextureView video = new TextureView(this);
+        videoLayer.addView(video, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        View veil = new View(this);
+        veil.setBackground(new android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM, new int[] {0x33000000, 0x8C000000}));
+        videoLayer.addView(veil, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        home.addView(videoLayer, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        if (homeVideo != null) homeVideo.close();
+        homeVideo = new HomeVideo(video, videoLayer);
+        homeVideoSource = null;
+
+        // The sound, top right: off unless the player turned it on (kept for the next time).
+        homeSound = new ImageView(this);
+        homeSound.setScaleType(ImageView.ScaleType.CENTER);
+        homeSound.setImageTintList(ColorStateList.valueOf(Color.WHITE));
+        homeSound.setBackground(Menu.rounded(0x59000000, dp(20)));
+        homeSound.setOnClickListener(v -> {
+            boolean sound = !GameOptions.flag(this, GameOptions.HOME_VIDEO_SOUND);
+            GameOptions.flag(this, GameOptions.HOME_VIDEO_SOUND, sound);
+            homeVideo.setSound(sound);
+            showHomeSound();
+        });
+        Menu.pressable(homeSound);
+        FrameLayout.LayoutParams soundParams = new FrameLayout.LayoutParams(dp(40), dp(40), Gravity.TOP | Gravity.END);
+        soundParams.setMargins(0, dp(16), dp(16), 0);
+        home.addView(homeSound, soundParams);
+        showHomeSound();
+
+        // Bottom right: the player's name in its card, and under it Play in its own.
+        LinearLayout cards = ui.column();
+        LinearLayout nameCard = new LinearLayout(this);
+        nameCard.setOrientation(LinearLayout.HORIZONTAL);
+        nameCard.setGravity(Gravity.CENTER_VERTICAL);
+        nameCard.setPadding(dp(12), dp(10), dp(14), dp(10));
+        nameCard.setBackground(Menu.rounded(HOME_CARD, dp(16)));
+        ImageView avatar = new ImageView(this);
+        avatar.setImageResource(R.drawable.ic_usuario);
+        avatar.setImageTintList(ColorStateList.valueOf(Menu.ACCENT_TEXT));
+        avatar.setScaleType(ImageView.ScaleType.CENTER);
+        avatar.setBackground(Menu.rounded(Menu.ACCENT_SOFT, dp(19)));
+        nameCard.addView(avatar, new LinearLayout.LayoutParams(dp(38), dp(38)));
+        LinearLayout nameText = ui.column();
+        nameText.setPadding(dp(12), 0, dp(8), 0);
+        nameText.addView(ui.text(tr(R.string.player_name), 12, Menu.SECONDARY, false));
+        homeName = ui.text(GameOptions.gamertag(this), 17, Menu.PRIMARY, true);
+        homeName.setSingleLine(true);
+        homeName.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        nameText.addView(homeName);
+        nameCard.addView(nameText, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        ImageView edit = new ImageView(this);
+        edit.setImageResource(R.drawable.ic_editar);
+        edit.setImageTintList(ColorStateList.valueOf(Menu.SECONDARY));
+        nameCard.addView(edit, new LinearLayout.LayoutParams(dp(20), dp(20)));
+        nameCard.setContentDescription(tr(R.string.edit_player_name));
+        nameCard.setOnClickListener(v -> editPlayerName());
+        Menu.pressable(nameCard);
+        cards.addView(nameCard);
+
+        homePlay = new MaterialButton(this);
+        homePlay.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+        homePlay.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+        homePlay.setAllCaps(false);
+        homePlay.setCornerRadius(dp(16));
+        homePlay.setInsetTop(0);
+        homePlay.setInsetBottom(0);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            homePlay.setOutlineSpotShadowColor(Menu.ACCENT);
+            homePlay.setOutlineAmbientShadowColor(Menu.ACCENT);
+        }
+        homePlay.setOnClickListener(view -> {
+            if (gameReady) play();
+            else showPage(GAME, true);
+        });
+        Menu.pressable(homePlay);
+        LinearLayout.LayoutParams playParams =
+                new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(68));
+        playParams.topMargin = dp(10);
+        cards.addView(homePlay, playParams);
+
+        FrameLayout.LayoutParams cardsParams = new FrameLayout.LayoutParams(dp(300),
+                FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
+        cardsParams.setMargins(dp(24), dp(24), dp(24), dp(24));
+        home.addView(cards, cardsParams);
+        // On a narrow screen the cards take what is left beside the margins.
+        home.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            int width = Math.min(dp(300), r - l - dp(48));
+            if (width > 0 && cards.getLayoutParams().width != width) {
+                cards.getLayoutParams().width = width;
+                cards.post(cards::requestLayout);
+            }
+        });
+        showHomeReady();
+        return home;
+    }
+
+    /** The big Play follows the sidebar's, and the video follows the game files (none: the grey). */
+    private void showHomeReady() {
+        homePlay.setText(gameReady ? tr(R.string.play) : tr(R.string.install_the_game));
+        homePlay.setBackgroundTintList(byEnabled(Menu.FILL, gameReady ? Menu.ACCENT : Menu.FILL));
+        homePlay.setTextColor(byEnabled(Menu.TERTIARY, gameReady ? Color.WHITE : Menu.ACCENT_TEXT));
+        homePlay.setElevation(gameReady ? dp(8) : 0);
+        String source = gameReady ? GameIso.gameDataRoot(this).getAbsolutePath() : "";
+        if (source.equals(homeVideoSource)) return;
+        homeVideoSource = source;
+        boolean playable = gameReady &&
+                homeVideo.setSource(this, GameOptions.flag(this, GameOptions.HOME_VIDEO_SOUND));
+        if (!gameReady) homeVideo.close();
+        homeSound.setVisibility(playable ? View.VISIBLE : View.GONE);
+    }
+
+    private void showHomeSound() {
+        boolean sound = GameOptions.flag(this, GameOptions.HOME_VIDEO_SOUND);
+        homeSound.setImageResource(sound ? R.drawable.ic_som_ligado : R.drawable.ic_som_desligado);
+        homeSound.setContentDescription(tr(sound ? R.string.video_sound_off : R.string.video_sound_on));
+    }
+
+    /** The player's name: what the home page and the game show (GameOptions.cleanGamertag). */
+    private void editPlayerName() {
+        android.widget.EditText field = new android.widget.EditText(this);
+        field.setSingleLine(true);
+        field.setText(GameOptions.gamertag(this));
+        field.setSelectAllOnFocus(true);
+        field.setFilters(new android.text.InputFilter[] {
+                new android.text.InputFilter.LengthFilter(GameOptions.GAMERTAG_MAX),
+                (source, start, end, dest, dstart, dend) -> {
+                    // Letters, digits and spaces only, as typed: the rest is dropped.
+                    StringBuilder kept = new StringBuilder();
+                    for (int i = start; i < end; i++) {
+                        char c = source.charAt(i);
+                        if (c == ' ' || (c < 128 && Character.isLetterOrDigit(c))) kept.append(c);
+                    }
+                    return kept.length() == end - start ? null : kept;
+                }});
+        FrameLayout box = new FrameLayout(this);
+        box.setPadding(dp(20), dp(4), dp(20), 0);
+        box.addView(field);
+        AlertDialog dialog = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(tr(R.string.edit_player_name))
+                .setMessage(tr(R.string.player_name_rules))
+                .setView(box)
+                .setPositiveButton(tr(R.string.save_name), null)
+                .setNegativeButton(tr(R.string.cancel), null)
+                .create();
+        dialog.setOnShowListener(d -> {
+            field.requestFocus();
+            // Kept open on an empty name: says why instead of closing.
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                String name = GameOptions.cleanGamertag(field.getText().toString());
+                if (name.isEmpty()) {
+                    field.setError(tr(R.string.player_name_empty));
+                    return;
+                }
+                GameOptions.set(this, GameOptions.GAMERTAG, name);
+                homeName.setText(name);
+                dialog.dismiss();
+            });
+        });
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE);
+        }
+        dialog.show();
     }
 
     private ScrollView buildPage(int page) {
@@ -1477,6 +1689,7 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
 
     private void play() {
         launchGame.setEnabled(false);
+        homePlay.setEnabled(false);
         Diagnostics.recordLaunch(this);
         worker.execute(() -> {
             // The edition check reads default.xex from the folder; an ISO is mounted as it is (not checked).
@@ -1485,6 +1698,7 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
             mainHandler.post(() -> {
                 if (isFinishing() || isDestroyed()) return;
                 launchGame.setEnabled(true);
+                homePlay.setEnabled(true);
                 if (emulatedBlocked) {
                     new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                             .setTitle(tr(R.string.emulated_renderer_not_supported))
@@ -1938,6 +2152,7 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
     @Override
     protected void onDestroy() {
         worker.shutdown();
+        homeVideo.close();
         super.onDestroy();
     }
 }
