@@ -20,7 +20,8 @@ import java.util.Map;
  * off the UI thread: it reads a few dozen /proc files.
  *
  * - GPU: the kernel driver's busy percentage (Adreno kgsl, Mali on Samsung/Google, MediaTek's GED or the Mali
- *   devfreq), "--" where none of them can be read.
+ *   devfreq). Where none of them can be read (Android 16 on MediaTek blocks them all), the native renderer's own
+ *   GPU time per second, from two timestamps per submission (fh2_nativo_medir_gpu_uso); "--" without either.
  * - CPU: the game's share of all cores, and its busiest thread as a share of one core. When that thread is near
  *   100 % (usually "GPU Commands", the emulated GPU's command processor), it is what limits the frame rate.
  * - RAM: the game's resident memory, and the phone's available memory of its total.
@@ -52,6 +53,8 @@ final class UsageMonitor {
     private final int cores = Math.max(1, Runtime.getRuntime().availableProcessors());
     private String gpuFile;
     private boolean gpuLogged;
+    private long lastGpuNs = -1;
+    private long lastGpuTime;
     private long lastProcessTicks = -1;
     private long lastTime;
     private Map<String, Long> lastThreadTicks = new HashMap<>();
@@ -251,10 +254,39 @@ final class UsageMonitor {
                 gpuLogged = true;
                 Log.i(TAG, "GPU use read from " + (gpuFile != null ? gpuFile : "nowhere (no readable file)"));
             }
-            if (gpuFile == null) return "GPU --";
+            if (gpuFile == null) return timestampGpu();
         }
         Double percent = gpuPercent(gpuFile, readLine(gpuFile));
         return percent == null ? "GPU --" : String.format(Locale.ROOT, "GPU %.0f%%", percent);
+    }
+
+    /** The GPU's busy share of the last second from the renderer's timestamps; "GPU --" without them. */
+    private String timestampGpu() {
+        long ns;
+        try {
+            ns = nativeGpuNs();
+        } catch (UnsatisfiedLinkError e) {
+            ns = -1;
+        }
+        long now = System.nanoTime();
+        String text = "GPU --";
+        if (ns >= 0 && lastGpuNs >= 0 && now > lastGpuTime) {
+            // Consecutive submissions can overlap by a little (the next one starts at the top of the pipe).
+            text = String.format(Locale.ROOT, "GPU %.0f%%", Math.min(100.0, 100.0 * (ns - lastGpuNs) / (now - lastGpuTime)));
+        }
+        lastGpuNs = ns;
+        lastGpuTime = now;
+        return text;
+    }
+
+    private static native long nativeGpuNs();
+
+    /** Whether some kernel file gives the GPU %; if not, the overlay needs the renderer's timestamps. */
+    static boolean kernelGpuReadable() {
+        for (String path : gpuCandidates()) {
+            if (gpuPercent(path, readLine(path)) != null) return true;
+        }
+        return false;
     }
 
     /** The files tried for the GPU %, in order: the fixed ones, then each Mali/GPU devfreq node's load. */
