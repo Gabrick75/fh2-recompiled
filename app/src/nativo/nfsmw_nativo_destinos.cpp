@@ -74,6 +74,9 @@ std::atomic<float> g_fh2_nativo_fps{-1.0f};
 // Android's performance hints (android/app/src/main/cpp/android_rendimiento.cpp); absent on the PC.
 extern "C" void fh2_android_fotograma(int64_t periodo_ns) __attribute__((weak));
 std::atomic<float> g_fh2_nativo_ms{-1.0f};
+// GPU nanoseconds of the measured submissions, accumulated, for the overlay's "GPU %" on phones whose kernel GPU
+// load files cannot be read (Android 16 on MediaTek: no GED, no devfreq); -1 without timestamps.
+std::atomic<int64_t> g_fh2_nativo_gpu_ns{-1};
 #endif
 
 REXCVAR_DEFINE_STRING(nfsmw_consultas_oclusion, "auto", "NFSMW",
@@ -668,6 +671,11 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_salida_sin_espera, true, "NFSMW",
 REXCVAR_DEFINE_BOOL(fh2_nativo_medir_gpu, FH2_MEDIR_GPU_POR_DEFECTO, "FH2",
                     "Native renderer: GPU timestamps and pipeline statistics for the reports (measurement only)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// Only two timestamps per submission (its start and its end), no categories or statistics: the GPU time for the
+// overlay's "GPU %" where the kernel's load files cannot be read. Android turns it on with the overlay only there.
+REXCVAR_DEFINE_BOOL(fh2_nativo_medir_gpu_uso, false, "FH2",
+                    "Native renderer: GPU time per submission (two timestamps) for the overlay's GPU use")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_marcas_precisas, true, "NFSMW",
                     "Renderizador nativo (medida): marcas de tiempo de GPU entre categorias con BOTTOM_OF_PIPE (se "
                     "sueltan al terminar lo anterior) en vez de TOP_OF_PIPE (al leer el comando): reparto por "
@@ -1181,7 +1189,8 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       leer_consultas_ = reinterpret_cast<FnLeerConsultas>(
           ifn.vkGetDeviceProcAddr(device_, "vkGetQueryPoolResults"));
       const bool fh2_medir_gpu = REXCVAR_GET(fh2_nativo_medir_gpu);
-      if (fh2_medir_gpu && familia_ < familias && colas[familia_].timestampValidBits && escribir_marca_ &&
+      solo_uso_gpu_ = !fh2_medir_gpu && REXCVAR_GET(fh2_nativo_medir_gpu_uso);
+      if ((fh2_medir_gpu || solo_uso_gpu_) && familia_ < familias && colas[familia_].timestampValidBits && escribir_marca_ &&
           leer_consultas_ && fisico.limits.timestampPeriod > 0.0f) {
         VkQueryPoolCreateInfo info_consultas{};
         info_consultas.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
@@ -1192,6 +1201,11 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         }
         periodo_marca_ns_ = fisico.limits.timestampPeriod;
       }
+#if defined(FH2_RECOMP)
+      if (consultas_ != VK_NULL_HANDLE) {
+        g_fh2_nativo_gpu_ns.store(0, std::memory_order_relaxed);
+      }
+#endif
       REXLOG_INFO("[nativo] C2: tiempo de GPU por Swap {}",
                   consultas_ != VK_NULL_HANDLE ? "medido con marcas de tiempo"
                                                : "no disponible (la cola no tiene marcas)");
@@ -4406,7 +4420,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   }
 
   void MarcarGpu(uint32_t categoria) override {
-    if (consultas_ == VK_NULL_HANDLE || !grabando_) {
+    if (consultas_ == VK_NULL_HANDLE || !grabando_ || solo_uso_gpu_) {
       return;
     }
     RanuraTrabajo& ranura = ranuras_[ranura_];
@@ -6334,6 +6348,12 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if (consultas_ != VK_NULL_HANDLE) {
       dfn_.vkCmdResetQueryPool(comandos_trabajo_, consultas_, ranura_ * kMarcasPorRanura,
                                kMarcasPorRanura);
+      if (solo_uso_gpu_) {
+        // Start mark; the end one is written at submit. Out of every category (counted only in gpu_ns_).
+        escribir_marca_(comandos_trabajo_, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, consultas_,
+                        ranura_ * kMarcasPorRanura);
+        ranura.categorias.push_back(uint8_t(kGpuCategorias));
+      }
     }
     if (oclusiones_ != VK_NULL_HANDLE) {
       DescartarOclusiones(ranura);  // Completar already read the last submission's; these were never submitted
@@ -6476,6 +6496,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         marca_fin_previa_ = marcas[marcadas - 1];
         ultima_marca_gpu_ = marcas[marcadas - 1];
         gpu_ns_ += uint64_t(double(marcas[marcadas - 1] - marcas[0]) * periodo_marca_ns_);
+#if defined(FH2_RECOMP)
+        g_fh2_nativo_gpu_ns.store(int64_t(gpu_ns_), std::memory_order_relaxed);
+#endif
         ++gpu_trabajos_;
         if (ranura.marcas_precisas) {
           ++gpu_trabajos_precisos_;
@@ -7639,6 +7662,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   std::unordered_map<uint32_t, uint64_t> oclusion_por_base_;
   uint64_t estadisticas_oclusion_[5] = {};
   double periodo_marca_ns_ = 0.0;
+  bool solo_uso_gpu_ = false;  // fh2_nativo_medir_gpu_uso alone: start and end marks only
   uint64_t gpu_ns_ = 0;
   uint64_t gpu_trabajos_ = 0;
   uint64_t gpu_trabajos_precisos_ = 0;  // measured with precise intermediate marks

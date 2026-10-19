@@ -136,6 +136,14 @@ extern "C" JNIEXPORT jfloat JNICALL Java_com_forzahorizon2_android_GameActivity_
   return value ? value->load(std::memory_order_relaxed) : -1.0f;
 }
 
+// GPU nanoseconds of the native renderer's measured submissions, accumulated (fh2_nativo_medir_gpu_uso or
+// fh2_nativo_medir_gpu); -1 without timestamps. UsageMonitor turns it into "GPU %" where no kernel file is readable.
+extern std::atomic<int64_t> g_fh2_nativo_gpu_ns;
+
+extern "C" JNIEXPORT jlong JNICALL Java_com_forzahorizon2_android_UsageMonitor_nativeGpuNs(JNIEnv*, jclass) {
+  return g_fh2_nativo_gpu_ns.load(std::memory_order_relaxed);
+}
+
 // Per-thread core pinning by name (adapted from NFSMW-Recompiled-Mobile, android/app/src/main/cpp/afinidad.cpp,
 // where pinning the command processor and the game's main thread to the prime cores gave +17 %).
 //

@@ -370,6 +370,9 @@ final class GameOptions {
             args.add("--nfsmw_nativo_compuesta_perezosa=" + flag(context, LAZY_COMPOSITE));
             // Off by default: each GPU timestamp makes a phone's GPU wait for the work in flight.
             args.add("--fh2_nativo_medir_gpu=" + flag(context, GPU_MEASUREMENTS));
+            // The overlay's GPU % from two timestamps per submission, only where no kernel file has it (Mali on
+            // MediaTek with Android 16): the timestamps cost a little GPU time.
+            args.add("--fh2_nativo_medir_gpu_uso=" + (flag(context, SHOW_USAGE) && !UsageMonitor.kernelGpuReadable()));
             args.add("--fh2_nativo_cache_vertices=" + flag(context, VERTEX_CACHE));
             args.add("--fh2_nativo_cache_indices=" + flag(context, INDEX_CACHE));
             args.add("--fh2_nativo_vertices_sin_espera=" + flag(context, VERTEX_NO_WAIT));
