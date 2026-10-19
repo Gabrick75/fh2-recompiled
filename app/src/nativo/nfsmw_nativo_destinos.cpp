@@ -1917,10 +1917,16 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 #if defined(FH2_RECOMP)
         // The copy's exponent bias (RB_COPY_DEST_INFO 16-21): FH2 resolves its HDR scene with -2 and its blurs with -4.
         const int32_t fh2_sesgo = int32_t(reg.rb_copy_dest_info << 10) >> 26;
+        // 16_16 (4) and 16_16_16_16 (5) are fixed point from -32 to 32 on the console, without NaN or infinity; the
+        // host keeps them in half floats. Their resolves always go through the scaled copy, which clamps all four
+        // channels: the dealer's wheel table (16_16_16_16 copied to a 16_16_16_16_FLOAT texture) lit the wheels
+        // with a pink glow.
+        const bool fh2_fijo16 = formato_color == 4 || formato_color == 5;
 #else
         const int32_t fh2_sesgo = 0;
+        const bool fh2_fijo16 = false;
 #endif
-        if (entero_color && borrar_color && ResolverSinCopia() && fh2_sesgo == 0 &&
+        if (entero_color && borrar_color && ResolverSinCopia() && fh2_sesgo == 0 && !fh2_fijo16 &&
             REXCVAR_GET(nfsmw_nativo_intercambiar_color)) {
           // With x0 = y0 = 0 the tiling offset is 0, so the address is the base as is.
           if (IntercambiarConResuelta(*destino_render, *resuelta, reg.rb_copy_dest_base & 0x1FFFFFFF)) {
@@ -1944,12 +1950,12 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 #if defined(FH2_RECOMP)
         // 2_10_10_10_FLOAT (3) and its AS_16_16_16_16 view (12) are 7e3 on the console: nothing above 31.875. The host
         // render target is float16 and keeps more; without the clamp the sun and the sky lowered the exposure. The
-        // fixed point 16_16 (4) and 16_16_16_16 (5) stop at 32.
-        if (fh2_sesgo != 0 && Fh2CopiarConEscala(*destino_render, resuelta->imagen, x0, y0, dx, dy, ancho, alto,
-                                                  std::ldexp(1.0f, fh2_sesgo),
-                                                  formato_color == 3 || formato_color == 12 ? 31.875f
-                                                  : formato_color == 4 || formato_color == 5 ? 32.0f
-                                                                                             : 65504.0f)) {
+        // fixed point 16_16 (4) and 16_16_16_16 (5) are clamped from -32 to 32 on every channel (a negative maximum).
+        if ((fh2_sesgo != 0 || fh2_fijo16) &&
+            Fh2CopiarConEscala(*destino_render, resuelta->imagen, x0, y0, dx, dy, ancho, alto, std::ldexp(1.0f, fh2_sesgo),
+                               formato_color == 3 || formato_color == 12 ? 31.875f
+                               : fh2_fijo16                              ? -32.0f
+                                                                         : 65504.0f)) {
           ++copias_;
           AnotarCopia(ancho, alto);
           ResueltaEscrita(base_resuelta, uint64_t(ancho) * alto);
