@@ -38,6 +38,32 @@ final class SaveTransfer {
         return new File(Environment.getExternalStorageDirectory(), MainActivity.GAME_FOLDER_NAME + "-saves-exportados");
     }
 
+    /*
+     * Both folders are in public storage, so the gallery would index the achievement icons (PNGs). The copies leave
+     * achievements/icons out (the SDK writes them again on every start) and a .nomedia hides the folders. The old
+     * copies that still have the icons lose them here too.
+     */
+    static void hideFromGallery(File folder) {
+        if (!folder.mkdirs() && !folder.isDirectory()) return;
+        try {
+            new File(folder, ".nomedia").createNewFile();
+        } catch (IOException e) {
+            Log.w(TAG, "Não foi possível criar .nomedia em " + folder, e);
+        }
+        File[] copies = folder.listFiles(File::isDirectory);
+        if (copies == null) return;
+        for (File copy : copies) {
+            File icons = new File(new File(copy, "achievements"), "icons");
+            if (icons.isDirectory()) GameActivity.deleteTree(icons);
+        }
+    }
+
+    /** Copies one save entry (a profile or achievements) without the achievement icons. */
+    static void copyEntry(File entry, File target) throws IOException {
+        File icons = new File(entry, "icons");
+        GameActivity.copyTree(entry, target, f -> !f.equals(icons));
+    }
+
     private static boolean isSaveEntry(File f) {
         return f.isDirectory() && (f.getName().matches("[0-9A-Fa-f]{16}") || f.getName().equals("achievements"));
     }
@@ -67,9 +93,10 @@ final class SaveTransfer {
         }
         String stamp = new java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", java.util.Locale.ROOT)
                 .format(new java.util.Date());
+        hideFromGallery(exportsFolder());
         File target = new File(exportsFolder(), stamp);
         for (File entry : entries) {
-            GameActivity.copyTree(entry, new File(target, entry.getName()));
+            copyEntry(entry, new File(target, entry.getName()));
         }
         Log.i(TAG, "Save exportado para " + target);
         return target;
