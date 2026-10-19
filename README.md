@@ -82,7 +82,9 @@ Known issues:
 
 - Low frame rate on phones, limited by the GPU emulation (command processing on fast phones, resolves and
   texture reloads on slower ones).
-- Collisions are sometimes missed on Android (the car passes through some objects); under investigation.
+- Cars collide with the world and with each other, but collision is not perfect yet: on Android the car still
+  passes through some objects now and then; under investigation.
+- In the paint shop, the car picture on the Designs card is stretched.
 - The native renderer still has image errors in some places; the emulated renderer is the faithful one.
 - Some menu options are not implemented yet (they are marked as such in the launcher).
 
@@ -126,6 +128,17 @@ Known issues:
          -DCMAKE_C_COMPILER=clang-20 -DCMAKE_CXX_COMPILER=clang++-20 -DREXSDK_DIR="$PWD/sdk"
    cmake --build app/out/linux
    tools/rodar_pc.sh
+   ```
+
+   **Regenerate the code after pulling changes to `app/overrides.toml`** (or any other `app/*.toml`). The
+   generated code is not in Git. This Linux build regenerates it when those files change, but the Android build
+   (step 4) cannot run the code generator, so if you only build the APK a fix made there does not reach it. For
+   example, the paint shop crash fix only declares the guest `setjmp` and `longjmp` in `app/overrides.toml`;
+   without regenerating, the game still closes when entering the paint shop. Run this step's build again, or the
+   generator alone:
+
+   ```sh
+   REXGLUE=$PWD/sdk/out/linux-amd64/rexglue tools/codegen.sh app
    ```
 
 4. **Build the Android APK** (after step 3, which produced the generated code):

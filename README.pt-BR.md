@@ -82,7 +82,9 @@ Problemas conhecidos:
 
 - Taxa de quadros baixa nos celulares, limitada pela emulação da GPU (o processamento de comandos nos celulares
   rápidos; os resolves e recargas de textura nos mais fracos).
-- No Android, às vezes a colisão falha (o carro atravessa alguns objetos); em investigação.
+- Os carros colidem com o cenário e entre si, mas a colisão ainda não está perfeita: no Android o carro às vezes
+  ainda atravessa alguns objetos; em investigação.
+- Na oficina de pintura, a imagem do carro no cartão Designs fica esticada.
 - O renderizador nativo ainda tem erros de imagem em alguns lugares; o emulado é o fiel.
 - Algumas opções do menu ainda não funcionam (o launcher as marca assim).
 
@@ -126,6 +128,17 @@ Problemas conhecidos:
          -DCMAKE_C_COMPILER=clang-20 -DCMAKE_CXX_COMPILER=clang++-20 -DREXSDK_DIR="$PWD/sdk"
    cmake --build app/out/linux
    tools/rodar_pc.sh
+   ```
+
+   **Regenere o código depois de baixar mudanças no `app/overrides.toml`** (ou em qualquer outro `app/*.toml`). O
+   código gerado não fica no Git. Esta compilação para Linux o regenera quando esses arquivos mudam, mas a do
+   Android (passo 4) não consegue rodar o gerador; então, se você só compila o APK, uma correção feita ali não
+   chega a ele. Por exemplo, a correção do crash da oficina de pintura só declara o `setjmp` e o `longjmp` do jogo
+   no `app/overrides.toml`; sem regenerar, o jogo continua fechando ao entrar na oficina. Rode de novo a
+   compilação deste passo, ou só o gerador:
+
+   ```sh
+   REXGLUE=$PWD/sdk/out/linux-amd64/rexglue tools/codegen.sh app
    ```
 
 4. **Compile o APK Android** (depois do passo 3, que produziu o código gerado):
