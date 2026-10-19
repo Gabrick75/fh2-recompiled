@@ -217,6 +217,21 @@ final class Diagnostics {
             out.append("  vibração do celular: ").append(vibrator == null || !vibrator.hasVibrator() ? "não tem"
                     : vibrator.hasAmplitudeControl() ? "controla a intensidade" : "só liga e desliga (sem intensidade)")
                     .append('\n');
+            // Silent mode and Do Not Disturb are what most often mute an app's vibration.
+            android.media.AudioManager audio = (android.media.AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+            if (audio != null) {
+                int ringer = audio.getRingerMode();
+                out.append("  modo do toque: ").append(ringer == android.media.AudioManager.RINGER_MODE_SILENT ? "silencioso"
+                        : ringer == android.media.AudioManager.RINGER_MODE_VIBRATE ? "só vibrar" : "som").append('\n');
+            }
+            android.app.NotificationManager notifications =
+                    (android.app.NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (notifications != null) {
+                int filter = notifications.getCurrentInterruptionFilter();
+                out.append("  não perturbe: ").append(filter == android.app.NotificationManager.INTERRUPTION_FILTER_ALL
+                        || filter == android.app.NotificationManager.INTERRUPTION_FILTER_UNKNOWN ? "desligado"
+                        : "ligado (filtro " + filter + ")").append('\n');
+            }
         } catch (RuntimeException error) {
             out.append("  controles: indisponível (").append(error.getMessage()).append(")\n");
         }
