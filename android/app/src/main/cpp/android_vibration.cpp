@@ -9,6 +9,7 @@
 #include "android_vibration.h"
 #include "../../../../../sdk/include/rex/input/android_vibration_hook.h"
 
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "FH2Vibration", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "FH2Vibration", __VA_ARGS__)
 
 // The launcher's "Vibração" options come as arguments (GameOptions.arguments), like every other option: the
@@ -33,6 +34,12 @@ jmethodID g_create_one_shot = nullptr;
 jmethodID g_vibrate_effect = nullptr;
 jmethodID g_vibrate_ms = nullptr;
 jmethodID g_cancel = nullptr;
+// The vibration says what it is for: without it the system files it as USAGE_UNKNOWN, which some ROMs (HyperOS,
+// seen on usuario-18's Xiaomi) mute. Media (API 33+) or game audio (API 26-32), so silent mode and DND let it play.
+jobject g_attributes = nullptr;  // global ref: VibrationAttributes or AudioAttributes, null if neither was found
+jmethodID g_vibrate_effect_attributes = nullptr;
+bool g_logged_first = false;  // the first vibration and the first failure are logged once each
+bool g_logged_failure = false;
 
 // Threads this file attached to the JVM are detached when they exit, not after every call: an attach creates a
 // java.lang.Thread each time. Threads that were already attached (Java's, SDL's) are never detached here.
@@ -71,6 +78,70 @@ bool ClearException(JNIEnv* env) {
   return false;
 }
 
+// Like ClearException, but logs the first exception the vibration calls throw (a refusal must not be silent).
+bool ClearAndLogException(JNIEnv* env, const char* what) {
+  if (!env->ExceptionCheck()) {
+    return false;
+  }
+  jthrowable error = env->ExceptionOccurred();
+  env->ExceptionClear();
+  if (!g_logged_failure && error) {
+    g_logged_failure = true;
+    jclass object = env->FindClass("java/lang/Object");
+    jmethodID to_string = object ? env->GetMethodID(object, "toString", "()Ljava/lang/String;") : nullptr;
+    jstring text = to_string ? static_cast<jstring>(env->CallObjectMethod(error, to_string)) : nullptr;
+    ClearException(env);
+    const char* chars = text ? env->GetStringUTFChars(text, nullptr) : nullptr;
+    LOGE("%s failed: %s", what, chars ? chars : "unknown exception");
+    if (chars) env->ReleaseStringUTFChars(text, chars);
+  }
+  return true;
+}
+
+// VibrationAttributes(USAGE_MEDIA) on API 33+, else AudioAttributes(USAGE_GAME), with the vibrate overload for it.
+void LookUpAttributes(JNIEnv* env, jclass vibrator_class) {
+  jclass vibration_attributes = env->FindClass("android/os/VibrationAttributes");
+  if (!ClearException(env) && vibration_attributes) {
+    jmethodID create =
+        env->GetStaticMethodID(vibration_attributes, "createForUsage", "(I)Landroid/os/VibrationAttributes;");
+    jmethodID vibrate =
+        ClearException(env) ? nullptr
+                            : env->GetMethodID(vibrator_class, "vibrate",
+                                               "(Landroid/os/VibrationEffect;Landroid/os/VibrationAttributes;)V");
+    jobject attributes = (!ClearException(env) && create && vibrate)
+                             ? env->CallStaticObjectMethod(vibration_attributes, create, jint(19))  // USAGE_MEDIA
+                             : nullptr;
+    if (!ClearException(env) && attributes) {
+      g_attributes = env->NewGlobalRef(attributes);
+      g_vibrate_effect_attributes = vibrate;
+      LOGI("phone vibration uses VibrationAttributes USAGE_MEDIA");
+      return;
+    }
+  }
+  jclass builder_class = env->FindClass("android/media/AudioAttributes$Builder");
+  if (ClearException(env) || !builder_class) {
+    return;
+  }
+  jmethodID init = env->GetMethodID(builder_class, "<init>", "()V");
+  jmethodID set_usage = env->GetMethodID(builder_class, "setUsage", "(I)Landroid/media/AudioAttributes$Builder;");
+  jmethodID build = env->GetMethodID(builder_class, "build", "()Landroid/media/AudioAttributes;");
+  jmethodID vibrate =
+      env->GetMethodID(vibrator_class, "vibrate", "(Landroid/os/VibrationEffect;Landroid/media/AudioAttributes;)V");
+  if (ClearException(env) || !init || !set_usage || !build || !vibrate) {
+    return;
+  }
+  jobject builder = env->NewObject(builder_class, init);
+  if (!ClearException(env) && builder) {
+    env->CallObjectMethod(builder, set_usage, jint(14));  // AudioAttributes.USAGE_GAME
+    jobject attributes = ClearException(env) ? nullptr : env->CallObjectMethod(builder, build);
+    if (!ClearException(env) && attributes) {
+      g_attributes = env->NewGlobalRef(attributes);
+      g_vibrate_effect_attributes = vibrate;
+      LOGI("phone vibration uses AudioAttributes USAGE_GAME");
+    }
+  }
+}
+
 void LookUpVibrator(JNIEnv* env) {
   jclass activity_thread = env->FindClass("android/app/ActivityThread");
   jmethodID current_application =
@@ -100,6 +171,7 @@ void LookUpVibrator(JNIEnv* env) {
     g_vibrate_effect = env->GetMethodID(vibrator_class, "vibrate", "(Landroid/os/VibrationEffect;)V");
     if (!ClearException(env) && g_create_one_shot && g_vibrate_effect) {
       g_vibration_effect = static_cast<jclass>(env->NewGlobalRef(effect));
+      LookUpAttributes(env, vibrator_class);
     }
   }
   g_vibrator = env->NewGlobalRef(vibrator);
@@ -116,7 +188,7 @@ void vibrate_via_java(int duration_ms, int intensity) {
   if (intensity <= 0) {  // the game stopped rumbling
     if (g_cancel) {
       env->CallVoidMethod(g_vibrator, g_cancel);
-      ClearException(env);
+      ClearAndLogException(env, "Vibrator.cancel");
     }
     return;
   }
@@ -133,14 +205,25 @@ void vibrate_via_java(int duration_ms, int intensity) {
   if (g_vibration_effect) {
     jobject effect =
         env->CallStaticObjectMethod(g_vibration_effect, g_create_one_shot, jlong(duration_ms), jint(amplitude));
-    if (!ClearException(env) && effect) {
-      env->CallVoidMethod(g_vibrator, g_vibrate_effect, effect);
-      done = !ClearException(env);
+    if (!ClearAndLogException(env, "VibrationEffect.createOneShot") && effect) {
+      if (g_attributes) {
+        env->CallVoidMethod(g_vibrator, g_vibrate_effect_attributes, effect, g_attributes);
+        done = !ClearAndLogException(env, "Vibrator.vibrate(effect, attributes)");
+      }
+      if (!done) {
+        env->CallVoidMethod(g_vibrator, g_vibrate_effect, effect);
+        done = !ClearAndLogException(env, "Vibrator.vibrate(effect)");
+      }
     }
   }
   if (!done && g_vibrate_ms) {
     env->CallVoidMethod(g_vibrator, g_vibrate_ms, jlong(duration_ms));
-    ClearException(env);
+    done = !ClearAndLogException(env, "Vibrator.vibrate(ms)");
+  }
+  if (done && !g_logged_first) {
+    g_logged_first = true;
+    LOGI("first phone vibration sent: %d ms, amplitude %d%s", duration_ms, amplitude,
+         g_attributes ? ", with usage attributes" : ", without usage attributes");
   }
   env->PopLocalFrame(nullptr);
 }
