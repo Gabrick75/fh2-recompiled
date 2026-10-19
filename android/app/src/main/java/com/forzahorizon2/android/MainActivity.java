@@ -254,32 +254,32 @@ public final class MainActivity extends AppCompatActivity {
     private View buildScreen(int page) {
         ui = new Menu(this);
         currentPage = -1;
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.HORIZONTAL);
+        // The page under the sidebar: the home page's video runs behind its see-through panel, the other pages
+        // start past its slanted edge (showPage).
+        FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Menu.BACKGROUND);
-        root.addView(sidebar(), new LinearLayout.LayoutParams(dp(244), LinearLayout.LayoutParams.MATCH_PARENT));
-        View line = new View(this);
-        line.setBackgroundColor(0x40E6007E);  // a faint magenta edge
-        root.addView(line, new LinearLayout.LayoutParams(1, LinearLayout.LayoutParams.MATCH_PARENT));
         content = new FrameLayout(this);
-        root.addView(content, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f));
+        root.addView(content, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        root.addView(sidebar(), new FrameLayout.LayoutParams(dp(SIDEBAR_WIDTH), FrameLayout.LayoutParams.MATCH_PARENT));
         for (int i = 0; i < pages.length; i++) pages[i] = buildPage(i);
         homeView = homePage();
         showPage(page == HOME || (page >= 0 && page < pages.length) ? page : HOME, false);
         return root;
     }
 
+    private static final int SIDEBAR_WIDTH = 292, SIDEBAR_SLANT = 48;  // dp: the top's width, and how much the foot loses
+
     private View sidebar() {
         LinearLayout bar = ui.column();
-        bar.setBackground(new android.graphics.drawable.GradientDrawable(
-                android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM, new int[] {0xF2070709, 0xEB0C0C0F}));
-        bar.setPadding(0, dp(14), 0, dp(12));
+        bar.setBackground(new NeonShapes.SlantedPanel(dp(SIDEBAR_SLANT), getResources().getDisplayMetrics().density));
+        bar.setPadding(0, dp(14), dp(SIDEBAR_SLANT), dp(12));
 
         // The name, and under it whether the game is ready to play: all of it one button, to the home page.
         brand = new LinearLayout(this);
         brand.setOrientation(LinearLayout.HORIZONTAL);
         brand.setGravity(Gravity.CENTER_VERTICAL);
-        brand.setPadding(dp(10), dp(10), dp(10), dp(10));
+        brand.setPadding(dp(24), dp(12), dp(12), dp(12));
         brand.setContentDescription(tr(R.string.home));
         brand.setOnClickListener(v -> showPage(HOME, true));
         Menu.pressable(brand);
@@ -311,7 +311,7 @@ public final class MainActivity extends AppCompatActivity {
         brand.addView(names);
         LinearLayout.LayoutParams brandParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        brandParams.setMargins(dp(12), 0, dp(12), dp(14));
+        brandParams.bottomMargin = dp(10);
         bar.addView(brand, brandParams);
 
         LinearLayout nav = ui.column();
@@ -377,7 +377,8 @@ public final class MainActivity extends AppCompatActivity {
         content.addView(shown);
         if (animate) Menu.enter(shown);
         boolean home = page == HOME;
-        brand.setBackground(stroked(home ? 0x33E6007E : 0x14FFFFFF, home ? 0x66E6007E : 0x14FFFFFF, dp(14)));
+        brand.setBackground(home ? chosenRow() : null);  // chosen as the pages' rows are
+        content.setPadding(home ? 0 : dp(SIDEBAR_WIDTH), 0, 0, 0);
         launchGame.setVisibility(home ? View.GONE : View.VISIBLE);
         if (home && resumed) homeVideo.resume();
         else homeVideo.pause();
@@ -433,7 +434,15 @@ public final class MainActivity extends AppCompatActivity {
     /** A Play button's look with the game present or missing (its click is the same as before). */
     private void showPlay(MaterialButton button, boolean ready, int elevationDp) {
         button.setBackgroundTintList(null);
-        button.setBackground(new PlayBackground(getResources().getDisplayMetrics().density, ready));
+        boolean large = button == homePlay;
+        PlayBackground background = new PlayBackground(getResources().getDisplayMetrics().density, ready, large);
+        button.setBackground(background);
+        if (large) {
+            // Centred on the plate, not on the stripes or the glow's margin around it.
+            float half = background.lean(dp(HOME_PLAY_HEIGHT)) / 2;
+            button.setPaddingRelative(Math.round(background.inset() + half), 0,
+                    Math.round(background.inset() + background.stripesWidth(dp(HOME_PLAY_HEIGHT)) + half), 0);
+        }
         button.setIcon(ready ? getDrawable(R.drawable.ic_jogar) : null);
         button.setTextColor(byEnabled(0xCCD1D1D6, ready ? Color.WHITE : Menu.ACCENT_TEXT));
         button.setElevation(ready ? dp(elevationDp) : 0);
@@ -458,7 +467,8 @@ public final class MainActivity extends AppCompatActivity {
     // ---- Home: the game's video behind the player's name and a big Play -----------------------------------------
 
     private static final int HOME_GREY = 0xFF3A3A3F;  // the home page with no video: no game, or not read yet
-    private static final int HOME_CARD = 0xCC1B1B1F;  // Menu.GROUP, a little see-through over the video
+    private static final int HOME_CARD = 0x9E17171B;  // see-through over the video
+    private static final int HOME_PLAY_HEIGHT = 100;  // dp: a 72 dp plate and the glow's room around it
 
     private View homePage() {
         FrameLayout home = new FrameLayout(this);
@@ -503,7 +513,7 @@ public final class MainActivity extends AppCompatActivity {
         nameCard.setOrientation(LinearLayout.HORIZONTAL);
         nameCard.setGravity(Gravity.CENTER_VERTICAL);
         nameCard.setPadding(dp(12), dp(10), dp(16), dp(10));
-        nameCard.setBackground(stroked(HOME_CARD, 0x1FFFFFFF, dp(14)));
+        nameCard.setBackground(new NeonShapes.FadedBorderCard(HOME_CARD, dp(14), getResources().getDisplayMetrics().density));
         ImageView avatar = new ImageView(this);
         avatar.setImageResource(R.drawable.ic_usuario);
         avatar.setImageTintList(ColorStateList.valueOf(Menu.ACCENT_TEXT));
@@ -532,6 +542,8 @@ public final class MainActivity extends AppCompatActivity {
 
         homePlay = new MaterialButton(this);
         stylePlay(homePlay, 26, 30);
+        homePlay.setAllCaps(true);  // again: setSingleLine took the capitals away
+        homePlay.setLayerType(View.LAYER_TYPE_SOFTWARE, null);  // PlayBackground's blurred glow
         homePlay.setInsetTop(0);
         homePlay.setInsetBottom(0);
         homePlay.setOnClickListener(view -> {
@@ -540,8 +552,13 @@ public final class MainActivity extends AppCompatActivity {
         });
         Menu.pressable(homePlay);
         LinearLayout.LayoutParams playParams =
-                new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(72));
-        playParams.topMargin = dp(12);
+                new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(HOME_PLAY_HEIGHT));
+        // The glow's margin hangs outside the column: the plate lines up with the name card.
+        int glowRoom = dp(14);
+        playParams.setMargins(-glowRoom, dp(12) - glowRoom, -glowRoom, -glowRoom);
+        cards.setClipChildren(false);
+        cards.setClipToPadding(false);
+        home.setClipChildren(false);
         cards.addView(homePlay, playParams);
 
         FrameLayout.LayoutParams cardsParams = new FrameLayout.LayoutParams(dp(340),

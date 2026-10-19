@@ -1,5 +1,6 @@
 package com.forzahorizon2.android;
 
+import android.graphics.BlurMaskFilter;
 import android.graphics.Canvas;
 import android.graphics.ColorMatrix;
 import android.graphics.ColorMatrixColorFilter;
@@ -14,15 +15,21 @@ import android.graphics.Shader;
 import android.graphics.drawable.Drawable;
 
 /**
- * The Play buttons' background, after a racing game's: a slanted plate in a magenta gradient with three diagonal
- * stripes at its right end. It follows the button's state: pressed, a deeper magenta and a stronger glow (the button
- * itself shrinks, Menu.pressable); focused by a keyboard or a controller, a white ring around it; disabled, washed
- * out. With the game missing it is a plain dark plate, as the old grey button was.
+ * The Play buttons' background, after a racing game's: a slanted plate in a magenta gradient with diagonal stripes
+ * at its right end. It follows the button's state: pressed, a deeper magenta and a stronger glow (the button itself
+ * shrinks, Menu.pressable); focused by a keyboard or a controller, a white ring around it; disabled, washed out.
+ * With the game missing it is a plain dark plate, as the old grey button was.
+ *
+ * The large one (the home page's) also has a soft blurred glow around it, a light sheen on its top half and a thin
+ * bright rim; it keeps a margin inside its bounds for the glow, so its view must use a software layer (the blur).
  */
 final class PlayBackground extends Drawable {
     private final float density;
     private final boolean ready;
+    private final boolean large;
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint sheen = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint rim = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint stripe = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint glow = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -30,32 +37,47 @@ final class PlayBackground extends Drawable {
     private final Path stripes = new Path();
     private boolean pressed, focused, enabled = true;
 
-    PlayBackground(float density, boolean ready) {
+    PlayBackground(float density, boolean ready, boolean large) {
         this.density = density;
         this.ready = ready;
-        CornerPathEffect corners = new CornerPathEffect(8 * density);
+        this.large = large;
+        CornerPathEffect corners = new CornerPathEffect((large ? 10 : 8) * density);
         fill.setPathEffect(corners);
+        sheen.setPathEffect(corners);
+        rim.setPathEffect(corners);
+        rim.setStyle(Paint.Style.STROKE);
+        rim.setStrokeWidth(1.2f * density);
         glow.setPathEffect(corners);
-        glow.setStyle(Paint.Style.STROKE);
+        if (large) glow.setMaskFilter(new BlurMaskFilter(14 * density, BlurMaskFilter.Blur.NORMAL));
+        else glow.setStyle(Paint.Style.STROKE);
         ring.setPathEffect(corners);
         ring.setStyle(Paint.Style.STROKE);
         ring.setStrokeWidth(2 * density);
         ring.setColor(0xFFFFFFFF);
-        stripe.setColor(Menu.ACCENT);
+        stripe.setColor(0xFFFF2E9A);
+    }
+
+    /** The room kept around the plate: for the focus ring, and on the large one for the glow. */
+    float inset() {
+        return (large ? 14 : 3) * density;
     }
 
     /** How far the plate leans: the top edge is this much to the right of the bottom one. */
-    private float lean(Rect b) {
-        return b.height() * 0.22f;
+    float lean(int height) {
+        return (height - 2 * inset()) * 0.22f;
+    }
+
+    /** The width the stripes take at the right end, past the plate. */
+    float stripesWidth(int height) {
+        return ready ? (height - 2 * inset()) * (large ? 0.52f : 0.62f) : 0;
     }
 
     @Override
     protected void onBoundsChange(Rect b) {
-        float inset = 3 * density;  // room for the focus ring and the glow
+        float inset = inset();
         float l = b.left + inset, t = b.top + inset, r = b.right - inset, btm = b.bottom - inset;
-        float lean = lean(b);
-        float stripesWidth = ready ? b.height() * 0.62f : 0;
-        float plateRight = r - stripesWidth;
+        float lean = lean(b.height());
+        float plateRight = r - stripesWidth(b.height());
         plate.reset();
         plate.moveTo(l + lean, t);
         plate.lineTo(plateRight, t);
@@ -64,7 +86,7 @@ final class PlayBackground extends Drawable {
         plate.close();
         stripes.reset();
         if (ready) {
-            float w = 4 * density, gap = 5 * density, x = plateRight + gap;
+            float w = (large ? 5 : 4) * density, gap = (large ? 7 : 5) * density, x = plateRight + gap;
             for (int i = 0; i < 2; i++, x += w + gap) {
                 stripes.moveTo(x, t);
                 stripes.lineTo(x + w, t);
@@ -73,25 +95,32 @@ final class PlayBackground extends Drawable {
                 stripes.close();
             }
         }
+        sheen.setShader(new LinearGradient(0, t, 0, t + (btm - t) * 0.55f, 0x40FFFFFF, 0x00FFFFFF,
+                Shader.TileMode.CLAMP));
+        rim.setShader(new LinearGradient(0, t, 0, btm, 0xB3FFB3DB, 0x1AFFB3DB, Shader.TileMode.CLAMP));
         updatePaints();
     }
 
     private void updatePaints() {
         Rect b = getBounds();
-        int top, bottom;
+        int left, right;
         if (!ready) {
-            top = 0xE62A2A2F;
-            bottom = 0xE61F1F23;
+            left = 0xE62A2A2F;
+            right = 0xE61F1F23;
         } else if (pressed) {
-            top = 0xFFC8006E;
-            bottom = 0xFF8A0050;
+            left = 0xFFE0168A;
+            right = 0xFF8A0050;
         } else {
-            top = 0xFFFF2E9A;
-            bottom = 0xFFC4006B;
+            left = 0xFFFF3DA8;
+            right = 0xFFC2006C;
         }
-        fill.setShader(new LinearGradient(b.left, b.top, b.right, b.bottom, top, bottom, Shader.TileMode.CLAMP));
-        glow.setStrokeWidth((pressed ? 6 : 4) * density);
-        glow.setColor(ready ? (pressed ? 0x66FF2E9A : 0x38FF2E9A) : 0);
+        fill.setShader(new LinearGradient(b.left, b.top, b.right, b.bottom, left, right, Shader.TileMode.CLAMP));
+        if (large) {
+            glow.setColor(ready ? (pressed ? 0xCCFF2E9A : 0x80FF2E9A) : 0);
+        } else {
+            glow.setStrokeWidth((pressed ? 6 : 4) * density);
+            glow.setColor(ready ? (pressed ? 0x66FF2E9A : 0x38FF2E9A) : 0);
+        }
         ColorMatrix washed = new ColorMatrix();
         washed.setSaturation(0.25f);
         ColorMatrixColorFilter filter = enabled ? null : new ColorMatrixColorFilter(washed);
@@ -99,13 +128,18 @@ final class PlayBackground extends Drawable {
         stripe.setColorFilter(filter);
         fill.setAlpha(enabled ? 255 : 150);
         stripe.setAlpha(enabled ? 255 : 110);
-        glow.setAlpha(enabled ? glow.getAlpha() : 0);
+        if (!enabled) glow.setAlpha(0);
     }
 
     @Override
     public void draw(Canvas canvas) {
         canvas.drawPath(plate, glow);
+        if (large) canvas.drawPath(stripes, glow);
         canvas.drawPath(plate, fill);
+        if (large && ready && enabled) {
+            canvas.drawPath(plate, sheen);
+            canvas.drawPath(plate, rim);
+        }
         canvas.drawPath(stripes, stripe);
         if (focused) {
             canvas.save();
@@ -141,9 +175,10 @@ final class PlayBackground extends Drawable {
     @Override
     public void getOutline(Outline outline) {
         Rect b = getBounds();
-        int inset = Math.round(4 * density);
+        int inset = Math.round(inset() + density);
         outline.setRoundRect(b.left + inset, b.top + inset, b.right - inset, b.bottom - inset, 8 * density);
-        outline.setAlpha(ready && enabled ? 0.9f : 0f);
+        // The large one glows by itself: no system shadow under it.
+        outline.setAlpha(ready && enabled && !large ? 0.9f : 0f);
     }
 
     @Override
