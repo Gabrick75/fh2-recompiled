@@ -11,6 +11,15 @@
 #  (REXGLUE_DUMP_IMAGE=<folder> rexglue codegen ...).
 # ============================================================================
 
+# The C runtime's setjmp (saves f14-f31, r13-r31 and v64-v127 at 0/152/320 of the buffer) and longjmp (restores the
+# same layout, r3 = buffer, r4 = value). The image decoders of the paint shop and other screens (9 setjmp call sites,
+# 8 longjmp) recover from errors with them; recompiled as plain functions, a longjmp could not return to its setjmp and
+# the decoder went on with a null context: the crash on entering the paint shop (sub_82B9FBD0 reading 0x1A4, called
+# after the setjmp in sub_82B89DA0). With these the codegen emits ppc_setjmp / ppc_longjmp (host setjmp keyed by the
+# guest buffer, with the PPCContext saved and restored).
+setjmp_address = 0x82C055F0
+longjmp_address = 0x82C050C0
+
 [functions]
 
 # --- Validate: "target not in any function" (first codegen, 10 errors) -------

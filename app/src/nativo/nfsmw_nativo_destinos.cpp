@@ -704,6 +704,10 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_leer_resueltas_sueltas, true, "FH2",
                     "One-off resolves of 256 KiB or more (new or not resolved for 120 frames) are read back to guest "
                     "memory: the game compresses the car photos of My Cars from there with the CPU. Without it the "
                     "saved photos come out striped or show other images");
+REXCVAR_DEFINE_BOOL(fh2_nativo_leer_tablas_fijo16, true, "FH2",
+                    "Small tables computed in a 16_16 / 16_16_16_16 target and resolved to a 16_16_16_16_FLOAT texture "
+                    "(256 KiB at most) are read back to guest memory every time: the dealer's car light, which the "
+                    "game reads from there; without it the car is darker in the dealer and in its photo");
 REXCVAR_DEFINE_STRING(fh2_nativo_prueba_magenta, "", "FH2",
                       "Debug: hex address whose colour copies take a render target painted magenta");
 REXCVAR_DEFINE_BOOL(fh2_nativo_empaquetar_primera, false, "FH2",
@@ -897,6 +901,7 @@ struct LecturaPendiente {
   uint32_t pitch;         // RB_COPY_DEST_PITCH
   uint32_t alto_destino;
   uint32_t info;          // RB_COPY_DEST_INFO
+  uint32_t bytes_texel = 4;  // 4 (8888) or 8 (FH2's 16_16_16_16_FLOAT tables)
 };
 
 // Output slots with nfsmw_nativo_salida_sin_espera (without it, only slot 0 is used).
@@ -1620,6 +1625,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if (FormatoHostDestinoColor(formato_color) == VK_FORMAT_UNDEFINED) {
       return Rechazar(100 + formato_color, "formato de destino de render todavia no soportado");
     }
+#if defined(FH2_RECOMP)
+    fh2_copia_desde_fijo16_ = formato_color == 4 || formato_color == 5;  // fh2_nativo_leer_tablas_fijo16
+#endif
     int32_t x0, y0, x1, y1;
     if (!Rectangulo(reg, pitch, x0, y0, x1, y1)) {
       return false;
@@ -7135,8 +7143,29 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                     "ahora)", reg.rb_copy_dest_base & 0x1FFFFFFF, ancho, alto, fh2_sueltas_leidas_);
       }
     }
+    /*
+     * fh2_nativo_leer_tablas_fijo16. Small tables computed in a 16_16 / 16_16_16_16 target and resolved to a
+     * 16_16_16_16_FLOAT texture of at most 256 KiB are read back every time. The dealer computes its car light this way
+     * (8 rectangles of PS n3239 resolved to 1DAC5000, 256x128) and reads it from guest memory, not as a texture: without
+     * it the car came out darker in the dealer and in its photo, and with other bytes there it glowed pink.
+     */
+    const bool fh2_tabla = REXCVAR_GET(fh2_nativo_leer_tablas_fijo16) && fh2_copia_desde_fijo16_ &&
+                           resuelta.imagen.formato == VK_FORMAT_R16G16B16A16_SFLOAT &&
+                           uint64_t(reg.rb_copy_dest_pitch & 0x3FFF) * (alto_destino ? alto_destino : alto) * 8 <=
+                               (256u << 10);
+    if (fh2_tabla) {
+      leer = true;
+      if (fh2_tablas_leidas_++ < 8) {
+        REXLOG_INFO("[fh2 nativo] tabla de 16 bits {:08X} {}x{}: se lee de vuelta a la memoria del invitado ({} hasta "
+                    "ahora)", reg.rb_copy_dest_base & 0x1FFFFFFF, ancho, alto, fh2_tablas_leidas_);
+      }
+    }
+#else
+    constexpr bool fh2_tabla = false;
 #endif
-    if (!leer || resuelta.imagen.formato != kFormatoColor) {
+    // Guest bytes per texel: 8888, or the 16_16_16_16_FLOAT tables.
+    const uint32_t bytes_texel = resuelta.imagen.formato == kFormatoColor ? 4 : fh2_tabla ? 8 : 0;
+    if (!leer || !bytes_texel) {
       return;
     }
     if (resuelta.imagen.ancho_guest && resuelta.imagen.ancho_guest != resuelta.imagen.ancho) {
@@ -7153,7 +7182,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       ++destino.saltadas;  // exposure changes slowly: the guest keeps the previous one
       return;
     }
-    const VkDeviceSize bytes = VkDeviceSize(ancho) * alto * 4;
+    const VkDeviceSize bytes = VkDeviceSize(ancho) * alto * bytes_texel;
     const uint64_t clave = (uint64_t(reg.rb_copy_dest_base) << 32) ^ (uint64_t(uint32_t(x0)) << 16) ^
                            uint64_t(uint32_t(y0));
     // One buffer per slot: the previous submission may still be copying into the other slot's.
@@ -7199,7 +7228,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                                 lectura.bufer, 1, &copia);
     lecturas_pendientes_.push_back({&lectura, reg.rb_copy_dest_base, x0, y0, ancho, alto,
                                     reg.rb_copy_dest_pitch & 0x3FFF,
-                                    (reg.rb_copy_dest_pitch >> 16) & 0x3FFF, reg.rb_copy_dest_info});
+                                    (reg.rb_copy_dest_pitch >> 16) & 0x3FFF, reg.rb_copy_dest_info, bytes_texel});
     if (lecturas_hechas_++ == 0) {
       REXLOG_INFO("[nativo] C2: lectura de vuelta de texturas resueltas de hasta {} texels (la "
                   "primera: {:08X}, {}x{})",
@@ -7245,6 +7274,10 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         rango.size = VK_WHOLE_SIZE;
         dfn_.vkInvalidateMappedMemoryRanges(device_, 1, &rango);
       }
+      if (p.bytes_texel == 8) {
+        EscribirLectura64(p, lectura);
+        continue;
+      }
       const bool intercambio = (p.info >> 24) & 0x1;
       const uint32_t orden_copia = p.info & 0x7;  // Endian128: 0-3 as xenos::Endian
       const auto orden =
@@ -7289,6 +7322,49 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     lecturas.clear();
     ns_escribir_lecturas_ += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now() - antes_lecturas).count());
+  }
+
+  // A 16_16_16_16_FLOAT read-back (8-byte texels, RGBA half floats in the host buffer). As the emulation's resolve:
+  // dword 0 = R | G << 16 and dword 1 = B | A << 16, red and blue swapped with copy_dest_swap, then the copy's byte
+  // order on each dword (8in64 also swaps the two dwords), at the 64bpp tiled address.
+  void EscribirLectura64(const LecturaPendiente& p, const Lectura& lectura) {
+    const bool intercambio = (p.info >> 24) & 0x1;
+    const uint32_t orden_copia = p.info & 0x7;
+    const bool ocho_en_64 = orden_copia == 4;
+    const auto orden = orden_copia <= 3 ? static_cast<xenos::Endian>(orden_copia) : xenos::Endian::k8in32;
+    uint8_t* const fisica = memoria_->TranslatePhysical(0);
+    const uint64_t base = uint64_t(p.base & 0x1FFFFFFF);
+    for (uint32_t j = 0; j < p.alto; ++j) {
+      const uint32_t ty = uint32_t(p.y0) + j;
+      if (p.alto_destino && ty >= p.alto_destino) {
+        break;
+      }
+      const uint8_t* s = lectura.datos + size_t(j) * p.ancho * 8;
+      for (uint32_t i = 0; i < p.ancho; ++i, s += 8) {
+        const uint32_t tx = uint32_t(p.x0) + i;
+        if (tx >= p.pitch) {
+          break;
+        }
+        const uint64_t direccion =
+            base + uint64_t(uint32_t(DesplazamientoMosaico2D(int32_t(tx), int32_t(ty), p.pitch, 3)));
+        if (direccion + 8 > 0x20000000) {
+          continue;
+        }
+        uint32_t w[2];
+        std::memcpy(w, s, 8);
+        if (intercambio) {
+          const uint32_t r = w[0] & 0xFFFF;
+          w[0] = (w[0] & ~0xFFFFu) | (w[1] & 0xFFFF);
+          w[1] = (w[1] & ~0xFFFFu) | r;
+        }
+        w[0] = xenos::GpuSwap(w[0], orden);
+        w[1] = xenos::GpuSwap(w[1], orden);
+        if (ocho_en_64) {
+          std::swap(w[0], w[1]);
+        }
+        std::memcpy(fisica + direccion, w, 8);
+      }
+    }
   }
 
   void DestruirLectura(Lectura& lectura) {
@@ -7946,6 +8022,8 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 #if defined(FH2_RECOMP)
   std::unordered_map<uint32_t, Fh2CopiaDestino> fh2_copias_destino_;  // fh2_nativo_leer_resueltas_sueltas
   uint64_t fh2_sueltas_leidas_ = 0;
+  uint64_t fh2_tablas_leidas_ = 0;          // fh2_nativo_leer_tablas_fijo16
+  bool fh2_copia_desde_fijo16_ = false;     // the resolve being made reads a 16_16 / 16_16_16_16 target
 #endif
   uint64_t rechazos_ = 0;
 #if defined(FH2_RECOMP)
