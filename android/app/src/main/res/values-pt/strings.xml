@@ -328,4 +328,6 @@
     <string name="without_msaa_the_scene_fits_whole" formatted="false">Sem MSAA a cena cabe inteira e é desenhada uma vez só, em vez de em 3 faixas: menos trabalho para a CPU (+25 %).</string>
     <string name="writes_every_repetition_of_the_messages">Grava todas as repetições das mensagens que se repetem várias vezes por segundo (texturas do renderizador, funções não implementadas). Desligado, cada uma aparece só as 20 primeiras vezes, e o log guarda mais tempo de jogo. Só para investigar.</string>
     <string name="writes_to_the_log_how_long">Grava no log quanto tempo a GPU gasta em cada parte do quadro. Só para investigar: deixa o jogo mais lento, porque cada medição faz a GPU esperar.</string>
+    <string name="reflection_mips_in_one_pass">Mips do reflexo num passe por nível</string>
+    <string name="draws_the_reflection_mips_level_by_level">Desenha os níveis menores do cubo de reflexo com as seis faces juntas: 8 passes em vez de 48. A imagem não muda; economiza GPU no celular.</string>
 </resources>

@@ -1105,6 +1105,10 @@ public final class MainActivity extends AppCompatActivity {
                 tr(R.string.creates_the_small_render_targets_reflect),
                 GameOptions.flag(this, GameOptions.EXACT_TARGETS),
                 v -> GameOptions.flag(this, GameOptions.EXACT_TARGETS, v)));
+        rows.add(ui.toggleRow(tr(R.string.reflection_mips_in_one_pass),
+                tr(R.string.draws_the_reflection_mips_level_by_level),
+                GameOptions.flag(this, GameOptions.REFLECTION_MIPS),
+                v -> GameOptions.flag(this, GameOptions.REFLECTION_MIPS, v)));
         if (GameOptions.PERFORMANCE_HINTS_IN_MENU) {
             rows.add(ui.toggleRow(tr(R.string.performance_hints_adpf),
                     tr(R.string.tells_android_how_long_each_frame),

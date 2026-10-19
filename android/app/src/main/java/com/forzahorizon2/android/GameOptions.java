@@ -54,6 +54,8 @@ final class GameOptions {
     // fh2_nativo_vertices_sin_espera (native), off by default: no measurable gain in the 2026-10-18 A/B
     static final String VERTEX_NO_WAIT = "vertex_no_wait";
     static final String EXACT_TARGETS = "exact_targets";  // fh2_nativo_destinos_exactos (native), off by default
+    // fh2_nativo_mips_reflejo_juntos (native), off by default until the phone A/B
+    static final String REFLECTION_MIPS = "reflection_mips";
     // Diagnostics (About page)
     static final String GPU_MEASUREMENTS = "gpu_measurements";  // fh2_nativo_medir_gpu: GPU times in the logs
     static final String VERBOSE_LOG = "verbose_log";  // log_detalhado: every repeated message (stubs, textures)
@@ -381,6 +383,7 @@ final class GameOptions {
             args.add("--fh2_nativo_cache_indices=" + flag(context, INDEX_CACHE));
             args.add("--fh2_nativo_vertices_sin_espera=" + flag(context, VERTEX_NO_WAIT));
             args.add("--fh2_nativo_destinos_exactos=" + flag(context, EXACT_TARGETS));
+            args.add("--fh2_nativo_mips_reflejo_juntos=" + flag(context, REFLECTION_MIPS));
         }
         switch (get(context, ANTI_ALIASING)) {
             case "off":

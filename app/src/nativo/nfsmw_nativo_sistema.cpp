@@ -423,6 +423,15 @@ REXCVAR_DEFINE_STRING(fh2_nativo_biblioteca_dir, "", "FH2",
 REXCVAR_DEFINE_BOOL(fh2_nativo_lecturas_diferidas, true, "FH2",
                     "Native renderer: hold fences behind pending read-backs instead of waiting for the GPU")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// The reflection cube's mip chain: after drawing the six 256x256 faces the game halves each face eight times (128 down
+// to 1) with one draw and one resolve per level, face after face, all in the same small EDRAM target: 48 render passes
+// of one draw each, about half the GPU frame on tilers. Each level only samples the same face's previous level (2D
+// fetch), so the ring holds the chain and plays it back level by level with the six faces side by side in one target
+// six times wider (window offset = face x pitch), then the six resolves: 8 passes. Same shader, inputs and pixels.
+REXCVAR_DEFINE_BOOL(fh2_nativo_mips_reflejo_juntos, false, "FH2",
+                    "Native renderer: draw the reflection cube's mip levels with the six faces in one pass per level "
+                    "(48 passes -> 8); the image does not change")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 #endif
 
 // The 30 FPS guard lives in nfsmw_recorte_sombras.cpp, which owns the switch.
@@ -1216,8 +1225,16 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
       valor |= UINT32_C(0x80000000);
     }
     if (indice >= kRegRampaPrimero && indice <= kRegRampaUltimo) {
+#if defined(FH2_RECOMP)
+      VaciarMipsReflejo();  // the ramp also writes its index register behind the log's back
+#endif
       AnotarRampaGamma(indice, valor);
     }
+#if defined(FH2_RECOMP)
+    if (!mips_reflejo_.empty() && registros_[indice] != valor) {
+      mips_cambios_.push_back({indice, registros_[indice], valor});
+    }
+#endif
     registros_[indice] = valor;
     if (indice >= rex::graphics::XE_GPU_REG_SCRATCH_REG0 &&
         indice <= rex::graphics::XE_GPU_REG_SCRATCH_REG7) {
@@ -1242,6 +1259,11 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     if (!registros_en_bloque_ || cuenta < 2 || indice >= kNumRegistros || cuenta > kNumRegistros - indice) {
       return false;
     }
+#if defined(FH2_RECOMP)
+    if (!mips_reflejo_.empty()) {
+      return false;  // one by one, so EscribirRegistro logs what the held mip chain has to play back
+    }
+#endif
     const uint32_t fin = indice + cuenta;
     const auto toca = [indice, fin](uint32_t desde, uint32_t hasta) { return indice < hasta && desde < fin; };
     if (toca(rex::graphics::XE_GPU_REG_COHER_STATUS_HOST, rex::graphics::XE_GPU_REG_COHER_STATUS_HOST + 1) ||
@@ -1529,6 +1551,11 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   // and without searching for boundaries: in each group, the classes lie in a single known piece.
   void AplicarTramoRapido(uint32_t indice, uint32_t cuenta, const uint8_t* origen) {
     uint32_t* destino = registros_.data() + indice;
+#if defined(FH2_RECOMP)
+    if (!mips_reflejo_.empty()) {
+      mips_tramo_.assign(destino, destino + cuenta);  // logged at the end, as EscribirRegistro does
+    }
+#endif
     const bool verificar = tramos_rapidos_verificados_ < kTramosRapidosAVerificar;
     if (verificar) {
       copia_marcador_.assign(destino, destino + cuenta);
@@ -1596,6 +1623,15 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     if (encuadre) {
       ++generacion_encuadre_;
     }
+#if defined(FH2_RECOMP)
+    if (!mips_reflejo_.empty()) {
+      for (uint32_t i = 0; i < cuenta; ++i) {
+        if (mips_tramo_[i] != destino[i]) {
+          mips_cambios_.push_back({indice + i, mips_tramo_[i], destino[i]});
+        }
+      }
+    }
+#endif
   }
 
   // The fast path guard: the first kTramosRapidosAVerificar spans are replayed through TramoEscalar (the
@@ -1808,6 +1844,9 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     uint32_t leido = 0;
     uint32_t generacion = 0;
     while (activo_.load(std::memory_order_acquire)) {
+#if defined(FH2_RECOMP)
+      VaciarMipsReflejo();  // never sleep on a held mip chain
+#endif
       {
         std::unique_lock<std::mutex> cerrojo(anillo_mutex_);
         const auto antes_sin_trabajo = Reloj::now();  // for the "[tiron]" line
@@ -2026,6 +2065,31 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     if ((paquete & 0x1) && (!(bin_select_ & bin_mask_) || opcode == xenos::PM4_XE_SWAP)) {
       return;  // predicate fails; predicated Swaps are always dropped
     }
+#if defined(FH2_RECOMP)
+    // A held mip chain goes out before anything that is not register state, shader loads or a draw (the draw case
+    // decides for itself): fences, memory writes, waits, the Swap.
+    if (!mips_reflejo_.empty()) {
+      switch (opcode) {
+        case xenos::PM4_SET_CONSTANT:
+        case xenos::PM4_SET_CONSTANT2:
+        case xenos::PM4_SET_SHADER_CONSTANTS:
+        case xenos::PM4_LOAD_ALU_CONSTANT:
+        case xenos::PM4_IM_LOAD:
+        case xenos::PM4_IM_LOAD_IMMEDIATE:
+        case xenos::PM4_NOP:
+        case xenos::PM4_EVENT_WRITE:
+        case xenos::PM4_INVALIDATE_STATE:  // D3D puts one between the links; the ring ignores it
+        case xenos::PM4_INDIRECT_BUFFER:
+        case xenos::PM4_INDIRECT_BUFFER_PFD:
+        case xenos::PM4_DRAW_INDX:
+        case xenos::PM4_DRAW_INDX_2:
+          break;
+        default:
+          VaciarMipsReflejo();
+          break;
+      }
+    }
+#endif
     switch (opcode) {
       case xenos::PM4_INTERRUPT: {
         if (palabras < 1) break;
@@ -2376,7 +2440,14 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
                                    std::memory_order_relaxed);
           ultima_copia_pitch_.store(Registro(rex::graphics::XE_GPU_REG_RB_COPY_DEST_PITCH),
                                     std::memory_order_relaxed);
+#if defined(FH2_RECOMP)
+          if (!GuardarCopiaMipReflejo()) {
+            VaciarMipsReflejo();
+            HacerCopia();
+          }
+#else
           HacerCopia();
+#endif
         } else {
           ContarDibujoShaders();
           EmparejarDibujo();
@@ -2397,7 +2468,14 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
                      // In mode 5 (depth only) the VS is enough: Xenos does not run the PS, and D3D leaves
                      // the PS object at 0 in some of the race shadow draws.
                      (ps_dibujo_ || (Registro(rex::graphics::XE_GPU_REG_RB_MODECONTROL) & 0x7) == 5)) {
+#if defined(FH2_RECOMP)
+            if (!GuardarMipReflejo()) {
+              VaciarMipsReflejo();
+              DibujarNativo();
+            }
+#else
             DibujarNativo();
+#endif
           } else {
             // Diagnostic: draws dropped here without any report (no VS or PS identified for the draw).
             ++fh2_saltados_sin_shader_;
@@ -2648,6 +2726,244 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     tiempo_copias_ns_ += NanosegundosDesde(inicio);
     ++copias_medidas_;
   }
+
+#if defined(FH2_RECOMP)
+  // --- fh2_nativo_mips_reflejo_juntos: the reflection cube's mip chain, one pass per level ----------------------
+  //
+  // A held link of the chain is a draw of the halving PS into the small target and the resolve of that target. While
+  // links are held every register write that changes a value is logged (index, before, after), so any link's register
+  // state can be rebuilt from the current one by walking the log back. Playback swaps registers in place and bumps
+  // every generation, so the draw caches recompute what they need.
+  void MipsReflejoLeerCvar() {
+    if (mips_activo_ < 0) {
+      mips_activo_ = REXCVAR_GET(fh2_nativo_mips_reflejo_juntos) ? 1 : 0;
+      REXLOG_INFO("[nativo] mips del reflejo juntos (fh2_nativo_mips_reflejo_juntos) = {}", mips_activo_ ? "SI" : "no");
+    }
+  }
+
+  bool GuardarMipReflejo() {
+    namespace g = rex::graphics;
+    MipsReflejoLeerCvar();
+    if (!mips_activo_ || !vs_dibujo_ || !ps_dibujo_ || ps_dibujo_->samplers.empty()) {
+      return false;
+    }
+    if (ps_dibujo_->huella != kHuellaPsMipReflejo) {
+      if (ps_dibujo_->numero == 2160 && !mips_huella_avisada_) {
+        mips_huella_avisada_ = true;
+        REXLOG_INFO("[nativo] mips del reflejo: PS n2160 con huella {:016X}", ps_dibujo_->huella);
+      }
+      return false;
+    }
+    if (!mips_reflejo_.empty() && !mips_reflejo_.back().con_copia) {
+      return false;  // the previous draw never got its resolve: not the chain
+    }
+    const uint32_t superficie = Registro(g::XE_GPU_REG_RB_SURFACE_INFO);
+    const uint32_t color = Registro(g::XE_GPU_REG_RB_COLOR_INFO);
+    const uint32_t pitch = superficie & 0x3FFF;
+    if ((Registro(g::XE_GPU_REG_RB_MODECONTROL) & 0x7) != uint32_t(xenos::EdramMode::kColorDepth) ||
+        ((superficie >> 16) & 0x3) || !pitch || pitch > 256 || Registro(g::XE_GPU_REG_PA_SC_WINDOW_OFFSET) ||
+        mips_reflejo_.size() >= 64) {
+      return false;
+    }
+    if (!mips_reflejo_.empty() && (superficie != mips_superficie_ || color != mips_color_)) {
+      return false;
+    }
+    const uint32_t registro = ps_dibujo_->samplers[0].registro;
+    if (registro >= 32) {
+      return false;
+    }
+    if (mips_reflejo_.empty()) {
+      mips_superficie_ = superficie;
+      mips_color_ = color;
+      mips_cambios_.clear();
+    }
+    MipReflejo& m = mips_reflejo_.emplace_back();
+    m.pos_dibujo = mips_cambios_.size();
+    m.vs = vs_dibujo_;
+    m.ps = ps_dibujo_;
+    m.vs_microcodigo.assign(vs_microcodigo_.begin(), vs_microcodigo_.end());
+    m.generacion_vs = generacion_vs_;
+    m.vegetacion = vegetacion_juego_;
+    m.fuente = Registro(g::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + registro * 6 + 1) & 0xFFFFF000;
+    return true;
+  }
+
+  bool GuardarCopiaMipReflejo() {
+    namespace g = rex::graphics;
+    if (mips_reflejo_.empty() || mips_reflejo_.back().con_copia) {
+      return false;
+    }
+    if (Registro(g::XE_GPU_REG_RB_SURFACE_INFO) != mips_superficie_ ||
+        Registro(g::XE_GPU_REG_RB_COLOR_INFO) != mips_color_ ||
+        (Registro(g::XE_GPU_REG_RB_COPY_CONTROL) & 0x7) != 0 || Registro(g::XE_GPU_REG_PA_SC_WINDOW_OFFSET)) {
+      return false;  // not a resolve of render target 0 of the held target
+    }
+    MipReflejo& m = mips_reflejo_.back();
+    m.pos_copia = mips_cambios_.size();
+    m.destino = Registro(g::XE_GPU_REG_RB_COPY_DEST_BASE);
+    m.con_copia = true;
+    return true;
+  }
+
+  void VaciarMipsReflejo() {
+    if (mips_reflejo_.empty()) {
+      return;
+    }
+    namespace g = rex::graphics;
+    // Taken out first: the playback writes registers directly and must not log them.
+    std::vector<MipReflejo> mips;
+    mips.swap(mips_reflejo_);
+    std::vector<CambioRegistro> cambios;
+    cambios.swap(mips_cambios_);
+
+    // Faces and levels: a link that samples what the previous link resolved is that face's next level.
+    uint32_t caras = 0;
+    for (size_t i = 0; i < mips.size(); ++i) {
+      MipReflejo& m = mips[i];
+      if (i > 0 && mips[i - 1].con_copia && m.fuente == mips[i - 1].destino) {
+        m.cara = mips[i - 1].cara;
+        m.nivel = mips[i - 1].nivel + 1;
+      } else {
+        m.cara = caras++;
+        m.nivel = 0;
+      }
+    }
+    const uint32_t pitch = mips_superficie_ & 0x3FFF;
+    bool juntas = caras >= 2 && caras <= 8 && pitch * caras <= 2048;
+    // Reordering is only safe if no link reads what a link of another face writes, and no two links write the same
+    // place.
+    uint32_t niveles = 0;
+    for (size_t i = 0; juntas && i < mips.size(); ++i) {
+      niveles = std::max(niveles, mips[i].nivel + 1);
+      for (size_t j = 0; j < mips.size(); ++j) {
+        if (j != i && mips[j].con_copia &&
+            ((mips[i].con_copia && mips[i].destino == mips[j].destino) ||
+             (mips[i].fuente == mips[j].destino && mips[i].cara != mips[j].cara))) {
+          juntas = false;
+          break;
+        }
+      }
+    }
+
+    const EntradaShader* vs_actual = vs_dibujo_;
+    const EntradaShader* ps_actual = ps_dibujo_;
+    const std::span<const uint32_t> microcodigo_actual = vs_microcodigo_;
+    const uint64_t generacion_vs_actual = generacion_vs_;
+    const uint16_t vegetacion_actual = vegetacion_juego_;
+    size_t pos = cambios.size();  // the registers are at the end of the log
+    const auto ir = [&](size_t destino) {
+      while (pos > destino) {
+        --pos;
+        registros_[cambios[pos].indice] = cambios[pos].antes;
+      }
+      while (pos < destino) {
+        registros_[cambios[pos].indice] = cambios[pos].despues;
+        ++pos;
+      }
+    };
+    const auto invalidar = [&] {
+      ++generacion_constantes_vs_;
+      ++generacion_constantes_ps_;
+      ++generacion_fetch_;
+      ++generacion_encuadre_;
+    };
+    // The face's slot in the wide target: pitch x faces, window offset = face x pitch (applied to the viewport, the
+    // scissor and the resolve rectangle alike), and the resolve's clear only on the level's last face, so it does not
+    // wipe the faces still to be resolved.
+    constexpr uint32_t kRegistrosCara[] = {g::XE_GPU_REG_RB_SURFACE_INFO, g::XE_GPU_REG_PA_SC_WINDOW_OFFSET,
+                                           g::XE_GPU_REG_PA_SU_SC_MODE_CNTL, g::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL,
+                                           g::XE_GPU_REG_RB_COPY_CONTROL};
+    std::array<uint32_t, std::size(kRegistrosCara)> guardados{};
+    const auto poner_cara = [&](const MipReflejo& m, bool sin_borrado) {
+      for (size_t k = 0; k < std::size(kRegistrosCara); ++k) {
+        guardados[k] = registros_[kRegistrosCara[k]];
+      }
+      registros_[g::XE_GPU_REG_RB_SURFACE_INFO] = (guardados[0] & ~UINT32_C(0x3FFF)) | (pitch * caras);
+      registros_[g::XE_GPU_REG_PA_SC_WINDOW_OFFSET] = (m.cara * pitch) & 0x7FFF;
+      registros_[g::XE_GPU_REG_PA_SU_SC_MODE_CNTL] = guardados[2] | (UINT32_C(1) << 16);  // vtx_window_offset_enable
+      registros_[g::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL] = guardados[3] & ~(UINT32_C(1) << 31);
+      if (sin_borrado) {
+        registros_[g::XE_GPU_REG_RB_COPY_CONTROL] = guardados[4] & ~(UINT32_C(1) << 8);  // color_clear_enable
+      }
+    };
+    const auto quitar_cara = [&] {
+      for (size_t k = 0; k < std::size(kRegistrosCara); ++k) {
+        registros_[kRegistrosCara[k]] = guardados[k];
+      }
+    };
+    const auto dibujar = [&](const MipReflejo& m, bool en_atlas) {
+      ir(m.pos_dibujo);
+      vs_dibujo_ = m.vs;
+      ps_dibujo_ = m.ps;
+      vs_microcodigo_ = m.vs_microcodigo;
+      generacion_vs_ = m.generacion_vs;
+      vegetacion_juego_ = m.vegetacion;
+      if (en_atlas) {
+        poner_cara(m, false);
+      }
+      invalidar();
+      DibujarNativo();
+      if (en_atlas) {
+        quitar_cara();
+      }
+    };
+    const auto copiar = [&](const MipReflejo& m, bool en_atlas, bool sin_borrado) {
+      ir(m.pos_copia);
+      if (en_atlas) {
+        poner_cara(m, sin_borrado);
+      }
+      HacerCopia();
+      if (en_atlas) {
+        quitar_cara();
+      }
+    };
+
+    if (juntas) {
+      std::vector<const MipReflejo*> nivel;
+      for (uint32_t n = 0; n < niveles; ++n) {
+        nivel.clear();
+        for (const MipReflejo& m : mips) {
+          if (m.con_copia && m.nivel == n) {
+            nivel.push_back(&m);
+          }
+        }
+        for (const MipReflejo* m : nivel) {
+          dibujar(*m, true);
+        }
+        for (size_t k = 0; k < nivel.size(); ++k) {
+          copiar(*nivel[k], true, k + 1 < nivel.size());
+        }
+      }
+      for (const MipReflejo& m : mips) {
+        if (!m.con_copia) {
+          dibujar(m, false);  // the last draw, whose resolve has not come yet: on the game's own target
+        }
+      }
+      if (++mips_juntadas_ <= 3) {
+        REXLOG_INFO("[nativo] mips del reflejo juntos: {} caras, {} niveles, {} enlaces en {} pases (pitch {} -> {})",
+                    caras, niveles, mips.size(), niveles, pitch, pitch * caras);
+      }
+    } else {
+      for (const MipReflejo& m : mips) {
+        dibujar(m, false);
+        if (m.con_copia) {
+          copiar(m, false, false);
+        }
+      }
+      if (mips.size() > 1 && ++mips_en_orden_ <= 3) {
+        REXLOG_INFO("[nativo] mips del reflejo: {} enlaces de {} caras en su orden (no se pueden juntar)", mips.size(),
+                    caras);
+      }
+    }
+    ir(cambios.size());
+    vs_dibujo_ = vs_actual;
+    ps_dibujo_ = ps_actual;
+    vs_microcodigo_ = microcodigo_actual;
+    generacion_vs_ = generacion_vs_actual;
+    vegetacion_juego_ = vegetacion_actual;
+    invalidar();
+  }
+#endif
 
   // Diagnostic (nfsmw_nativo_diag_fotograma_s): every draw and every copy of one whole
   // frame, from the first Swap after that many seconds until the next one.
@@ -5152,6 +5468,39 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   // travel in PeticionDibujo so the translator does not redo per draw what has not changed.
   uint64_t generacion_fetch_ = 0;
   uint64_t generacion_encuadre_ = 0;
+#if defined(FH2_RECOMP)
+  // fh2_nativo_mips_reflejo_juntos (VaciarMipsReflejo).
+  struct MipReflejo {
+    size_t pos_dibujo = 0;  // length of the register log when the draw came
+    size_t pos_copia = 0;   // and when its resolve came
+    bool con_copia = false;
+    const EntradaShader* vs = nullptr;
+    const EntradaShader* ps = nullptr;
+    std::vector<uint32_t> vs_microcodigo;
+    uint64_t generacion_vs = 0;
+    uint16_t vegetacion = 0;
+    uint32_t fuente = 0;   // the texture its PS samples (the previous level)
+    uint32_t destino = 0;  // where its resolve writes
+    uint32_t cara = 0;
+    uint32_t nivel = 0;
+  };
+  struct CambioRegistro {
+    uint32_t indice;
+    uint32_t antes;
+    uint32_t despues;
+  };
+  // The halving PS (library n2160 on 2026-10-19): XXH3 of its masked microcode, as EntradaShader::huella.
+  static constexpr uint64_t kHuellaPsMipReflejo = UINT64_C(0xEBF88EFD4462AC36);
+  std::vector<MipReflejo> mips_reflejo_;
+  std::vector<CambioRegistro> mips_cambios_;
+  std::vector<uint32_t> mips_tramo_;
+  uint32_t mips_superficie_ = 0;
+  uint32_t mips_color_ = 0;
+  int mips_activo_ = -1;
+  bool mips_huella_avisada_ = false;
+  uint64_t mips_juntadas_ = 0;
+  uint64_t mips_en_orden_ = 0;
+#endif
   uint64_t fetch_escritas_ = 0;
   uint64_t fetch_sin_cambio_ = 0;
   uint64_t encuadre_escritas_ = 0;
