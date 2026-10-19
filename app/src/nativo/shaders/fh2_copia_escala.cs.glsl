@@ -14,7 +14,9 @@ layout(push_constant) uniform Constantes {
   ivec2 destino_xy;
   ivec2 tamano;
   float escala;
-  float maximo;  // the render target's largest value (31.875 for 2_10_10_10_FLOAT, 7e3); applied before the scale
+  // The render target's largest value (31.875 for 2_10_10_10_FLOAT, 7e3); applied before the scale. Negative: the
+  // fixed point 16_16 / 16_16_16_16 range, -32 to 32 on all four channels.
+  float maximo;
 } c;
 
 void main() {
@@ -26,6 +28,10 @@ void main() {
   // A NaN is stored as 0: min(NaN, maximo) may return maximo, and a NaN in one channel then saturated to 1 in the
   // unorm texture (green in FH2's bloom pyramid, which feeds itself back frame after frame).
   texel = mix(texel, vec4(0.0), isnan(texel));
-  texel.rgb = min(texel.rgb, vec3(c.maximo));
+  if (c.maximo < 0.0) {
+    texel = clamp(texel, vec4(c.maximo), vec4(-c.maximo));
+  } else {
+    texel.rgb = min(texel.rgb, vec3(c.maximo));
+  }
   imageStore(destino, c.destino_xy + i, texel * c.escala);
 }

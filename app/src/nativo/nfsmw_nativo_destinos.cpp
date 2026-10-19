@@ -700,6 +700,10 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_variantes, false, "FH2",
 REXCVAR_DEFINE_BOOL(fh2_nativo_lecturas_antes_de_valla, true, "FH2",
                     "Read-backs of resolves reach guest memory before the ring writes the next fence (one GPU wait per "
                     "frame); without it they arrive submissions late and the race's exposure can end up black");
+REXCVAR_DEFINE_BOOL(fh2_nativo_leer_resueltas_sueltas, true, "FH2",
+                    "One-off resolves of 256 KiB or more (new or not resolved for 120 frames) are read back to guest "
+                    "memory: the game compresses the car photos of My Cars from there with the CPU. Without it the "
+                    "saved photos come out striped or show other images");
 REXCVAR_DEFINE_STRING(fh2_nativo_prueba_magenta, "", "FH2",
                       "Debug: hex address whose colour copies take a render target painted magenta");
 REXCVAR_DEFINE_BOOL(fh2_nativo_empaquetar_primera, false, "FH2",
@@ -1913,10 +1917,16 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 #if defined(FH2_RECOMP)
         // The copy's exponent bias (RB_COPY_DEST_INFO 16-21): FH2 resolves its HDR scene with -2 and its blurs with -4.
         const int32_t fh2_sesgo = int32_t(reg.rb_copy_dest_info << 10) >> 26;
+        // 16_16 (4) and 16_16_16_16 (5) are fixed point from -32 to 32 on the console, without NaN or infinity; the
+        // host keeps them in half floats. Their resolves always go through the scaled copy, which clamps all four
+        // channels: the dealer's wheel table (16_16_16_16 copied to a 16_16_16_16_FLOAT texture) lit the wheels
+        // with a pink glow.
+        const bool fh2_fijo16 = formato_color == 4 || formato_color == 5;
 #else
         const int32_t fh2_sesgo = 0;
+        const bool fh2_fijo16 = false;
 #endif
-        if (entero_color && borrar_color && ResolverSinCopia() && fh2_sesgo == 0 &&
+        if (entero_color && borrar_color && ResolverSinCopia() && fh2_sesgo == 0 && !fh2_fijo16 &&
             REXCVAR_GET(nfsmw_nativo_intercambiar_color)) {
           // With x0 = y0 = 0 the tiling offset is 0, so the address is the base as is.
           if (IntercambiarConResuelta(*destino_render, *resuelta, reg.rb_copy_dest_base & 0x1FFFFFFF)) {
@@ -1939,10 +1949,13 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                                 dx == 0 && dy == 0 && ancho == resuelta->imagen.ancho && alto == resuelta->imagen.alto);
 #if defined(FH2_RECOMP)
         // 2_10_10_10_FLOAT (3) and its AS_16_16_16_16 view (12) are 7e3 on the console: nothing above 31.875. The host
-        // render target is float16 and keeps more; without the clamp the sun and the sky lowered the exposure.
-        if (fh2_sesgo != 0 && Fh2CopiarConEscala(*destino_render, resuelta->imagen, x0, y0, dx, dy, ancho, alto,
-                                                  std::ldexp(1.0f, fh2_sesgo),
-                                                  formato_color == 3 || formato_color == 12 ? 31.875f : 65504.0f)) {
+        // render target is float16 and keeps more; without the clamp the sun and the sky lowered the exposure. The
+        // fixed point 16_16 (4) and 16_16_16_16 (5) are clamped from -32 to 32 on every channel (a negative maximum).
+        if ((fh2_sesgo != 0 || fh2_fijo16) &&
+            Fh2CopiarConEscala(*destino_render, resuelta->imagen, x0, y0, dx, dy, ancho, alto, std::ldexp(1.0f, fh2_sesgo),
+                               formato_color == 3 || formato_color == 12 ? 31.875f
+                               : fh2_fijo16                              ? -32.0f
+                                                                         : 65504.0f)) {
           ++copias_;
           AnotarCopia(ancho, alto);
           ResueltaEscrita(base_resuelta, uint64_t(ancho) * alto);
@@ -2093,6 +2106,16 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                           color.float32[1], color.float32[2], color.float32[3]);
             }
 #endif
+          } else if (formato_color == 4 || formato_color == 5) {
+            // k_16_16 (RB_COLOR_CLEAR) and k_16_16_16_16 (RB_COLOR_CLEAR_LO the low dword, red and green): signed
+            // 16-bit channels from -32 to 32, as the render target stores them.
+            const uint64_t canales =
+                formato_color == 4 ? uint64_t(reg.rb_color_clear)
+                                   : uint64_t(reg.rb_color_clear_lo) | (uint64_t(reg.rb_color_clear) << 32);
+            for (uint32_t j = 0; j < (formato_color == 4 ? 2u : 4u); ++j) {
+              const int16_t c = int16_t(uint16_t(canales >> (j * 16)));
+              color.float32[j] = std::max(float(c), -32767.0f) * (32.0f / 32767.0f);
+            }
           } else {
             for (uint32_t j = 0; j < 4; ++j) {
               color.float32[j] = float((valor_crudo >> (j * 8)) & 0xFF) * (1.0f / 255.0f);
@@ -7046,13 +7069,74 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     }
   }
 
+#if defined(FH2_RECOMP)
+  /*
+   * fh2_nativo_leer_resueltas_sueltas. A one-off resolve of 256 KiB or more (a destination new or not resolved for
+   * kFh2FotogramasSuelta frames) is read back to guest memory, as Pinyon Shift does for FH1: the game renders a car's
+   * photo, resolves it and compresses it from guest memory with the CPU into the profile (the My Cars cards). Without
+   * the read-back the save kept whatever was in that memory: stripes of other UI images, noise or another car, the
+   * same in every session. Resolves repeated every frame (the scene, the HUD) stay on the GPU.
+   * The size is the destination texture's (RB_COPY_DEST_PITCH), not the copied rectangle's: the 768x288 photo is
+   * resolved in two copies, 608 and 160 columns, and the second alone is under 256 KiB. Every copy to a destination
+   * that turned one-off in the same frame is read back too.
+   */
+  static constexpr uint64_t kFh2FotogramasSuelta = 120;
+
+  struct Fh2CopiaDestino {
+    uint64_t ultima = 0;                  // frame of the last resolve to this destination
+    uint64_t suelta = UINT64_MAX;         // frame in which it was last taken as one-off
+    uint64_t forma = 0;                   // pitch, height and copy format of the first resolve seen
+    bool compartida = false;              // resolved since with another shape: a scratch area, never read back
+  };
+
+  /*
+   * A destination resolved with more than one shape is a scratch area the game reuses within a frame. 1DAC5000 takes
+   * 1280x720 copies, a 256x256 8888 one and the dealer's wheel light table (256x128 16_16_16_16_FLOAT, read as data,
+   * not as a texture); this renderer never writes that table to guest memory, so reading the 256x256 image back left
+   * its bytes where the wheels read their light: they glowed pink. Only single-use destinations (the car photos) are
+   * read back.
+   */
+  bool Fh2ResueltaSuelta(uint32_t base, uint32_t pitch_destino, uint32_t alto_destino, uint32_t formato) {
+    if (!REXCVAR_GET(fh2_nativo_leer_resueltas_sueltas)) {
+      return false;
+    }
+    const uint64_t forma =
+        uint64_t(pitch_destino & 0x3FFF) | (uint64_t(alto_destino & 0x3FFF) << 14) | (uint64_t(formato & 0x3F) << 28);
+    const auto [it, nueva] = fh2_copias_destino_.try_emplace(base);
+    Fh2CopiaDestino& d = it->second;
+    if (nueva) {
+      d.forma = forma;
+    } else if (d.forma != forma) {
+      d.compartida = true;
+    }
+    if (nueva || presentados_ - d.ultima >= kFh2FotogramasSuelta) {
+      d.suelta = presentados_;
+    }
+    d.ultima = presentados_;
+    return d.suelta == presentados_ && !d.compartida && uint64_t(pitch_destino) * alto_destino * 4 >= (256u << 10);
+  }
+#endif
+
   // Read-back of a small resolved texture: the copied rectangle goes to a host-visible buffer in the
   // same submission; EscribirLecturas moves it into guest memory.
   void LeerResuelta(const RegistrosCopia& reg, const Resuelta& resuelta, int32_t x0, int32_t y0,
                     uint32_t dx, uint32_t dy, uint32_t ancho, uint32_t alto) {
     const int32_t maximo = REXCVAR_GET(nfsmw_nativo_leer_resueltas_texels);
-    if (maximo <= 0 || uint64_t(ancho) * alto > uint64_t(maximo) ||
-        resuelta.imagen.formato != kFormatoColor) {
+    bool leer = maximo > 0 && uint64_t(ancho) * alto <= uint64_t(maximo);
+#if defined(FH2_RECOMP)
+    // Every resolve updates the table, so a destination resolved every frame is never taken as one-off.
+    const uint32_t alto_destino = (reg.rb_copy_dest_pitch >> 16) & 0x3FFF;
+    if (Fh2ResueltaSuelta(reg.rb_copy_dest_base & 0x1FFFFFFF, reg.rb_copy_dest_pitch & 0x3FFF,
+                          alto_destino ? alto_destino : alto, (reg.rb_copy_dest_info >> 7) & 0x3F) &&
+        !leer && resuelta.imagen.formato == kFormatoColor) {
+      leer = true;
+      if (fh2_sueltas_leidas_++ < 24) {
+        REXLOG_INFO("[fh2 nativo] resuelta suelta {:08X} {}x{}: se lee de vuelta a la memoria del invitado ({} hasta "
+                    "ahora)", reg.rb_copy_dest_base & 0x1FFFFFFF, ancho, alto, fh2_sueltas_leidas_);
+      }
+    }
+#endif
+    if (!leer || resuelta.imagen.formato != kFormatoColor) {
       return;
     }
     if (resuelta.imagen.ancho_guest && resuelta.imagen.ancho_guest != resuelta.imagen.ancho) {
@@ -7859,6 +7943,10 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   uint64_t borrados_en_pase_fallidos_ = 0;  // clears through a pass that could not be opened
   uint64_t borrados_ = 0;
   uint64_t presentados_ = 0;
+#if defined(FH2_RECOMP)
+  std::unordered_map<uint32_t, Fh2CopiaDestino> fh2_copias_destino_;  // fh2_nativo_leer_resueltas_sueltas
+  uint64_t fh2_sueltas_leidas_ = 0;
+#endif
   uint64_t rechazos_ = 0;
 #if defined(FH2_RECOMP)
   std::map<uint32_t, uint64_t> rechazos_por_causa_;

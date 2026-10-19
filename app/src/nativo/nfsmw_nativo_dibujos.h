@@ -43,6 +43,13 @@ inline VkFormat FormatoHostDestinoColor(uint32_t formato) {
       return VK_FORMAT_R16G16B16A16_SFLOAT;
     case 6:   // k_16_16_FLOAT
       return VK_FORMAT_R16G16_SFLOAT;
+    // k_16_16 and k_16_16_16_16 are fixed point from -32 to 32 on the console. Kept in half floats, like Xenia's
+    // fallback (color_rgba16_draw_format_fallback_to_float_): the value written is the value resolved. FH2 draws
+    // into 16_16_16_16 near its photo mode (causes 105/205 while the photo mode screen was white).
+    case 4:   // k_16_16
+      return VK_FORMAT_R16G16_SFLOAT;
+    case 5:   // k_16_16_16_16
+      return VK_FORMAT_R16G16B16A16_SFLOAT;
     case 14:  // k_32_FLOAT
       return VK_FORMAT_R32_SFLOAT;
     case 15:  // k_32_32_FLOAT
