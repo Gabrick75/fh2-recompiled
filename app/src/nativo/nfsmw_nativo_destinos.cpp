@@ -700,6 +700,10 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_variantes, false, "FH2",
 REXCVAR_DEFINE_BOOL(fh2_nativo_lecturas_antes_de_valla, true, "FH2",
                     "Read-backs of resolves reach guest memory before the ring writes the next fence (one GPU wait per "
                     "frame); without it they arrive submissions late and the race's exposure can end up black");
+REXCVAR_DEFINE_BOOL(fh2_nativo_leer_resueltas_sueltas, true, "FH2",
+                    "One-off resolves of 256 KiB or more (new or not resolved for 120 frames) are read back to guest "
+                    "memory: the game compresses the car photos of My Cars from there with the CPU. Without it the "
+                    "saved photos come out striped or show other images");
 REXCVAR_DEFINE_STRING(fh2_nativo_prueba_magenta, "", "FH2",
                       "Debug: hex address whose colour copies take a render target painted magenta");
 REXCVAR_DEFINE_BOOL(fh2_nativo_empaquetar_primera, false, "FH2",
@@ -7059,13 +7063,45 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     }
   }
 
+#if defined(FH2_RECOMP)
+  /*
+   * fh2_nativo_leer_resueltas_sueltas. A one-off resolve of 256 KiB or more (a destination new or not resolved for
+   * kFh2FotogramasSuelta frames) is read back to guest memory, as Pinyon Shift does for FH1: the game renders a car's
+   * photo, resolves it and compresses it from guest memory with the CPU into the profile (the My Cars cards). Without
+   * the read-back the save kept whatever was in that memory: stripes of other UI images, noise or another car, the
+   * same in every session. Resolves repeated every frame (the scene, the HUD) stay on the GPU.
+   */
+  static constexpr uint64_t kFh2FotogramasSuelta = 120;
+
+  bool Fh2ResueltaSuelta(uint32_t base, uint32_t ancho, uint32_t alto) {
+    if (!REXCVAR_GET(fh2_nativo_leer_resueltas_sueltas) || uint64_t(ancho) * alto * 4 < (256u << 10)) {
+      return false;
+    }
+    const auto [it, nueva] = fh2_ultima_copia_destino_.try_emplace(base, presentados_);
+    const bool suelta = nueva || presentados_ - it->second >= kFh2FotogramasSuelta;
+    it->second = presentados_;
+    return suelta;
+  }
+#endif
+
   // Read-back of a small resolved texture: the copied rectangle goes to a host-visible buffer in the
   // same submission; EscribirLecturas moves it into guest memory.
   void LeerResuelta(const RegistrosCopia& reg, const Resuelta& resuelta, int32_t x0, int32_t y0,
                     uint32_t dx, uint32_t dy, uint32_t ancho, uint32_t alto) {
     const int32_t maximo = REXCVAR_GET(nfsmw_nativo_leer_resueltas_texels);
-    if (maximo <= 0 || uint64_t(ancho) * alto > uint64_t(maximo) ||
-        resuelta.imagen.formato != kFormatoColor) {
+    bool leer = maximo > 0 && uint64_t(ancho) * alto <= uint64_t(maximo);
+#if defined(FH2_RECOMP)
+    // Every resolve updates the table, so a destination resolved every frame is never taken as one-off.
+    if (Fh2ResueltaSuelta(reg.rb_copy_dest_base & 0x1FFFFFFF, ancho, alto) && !leer &&
+        resuelta.imagen.formato == kFormatoColor) {
+      leer = true;
+      if (fh2_sueltas_leidas_++ < 24) {
+        REXLOG_INFO("[fh2 nativo] resuelta suelta {:08X} {}x{}: se lee de vuelta a la memoria del invitado ({} hasta "
+                    "ahora)", reg.rb_copy_dest_base & 0x1FFFFFFF, ancho, alto, fh2_sueltas_leidas_);
+      }
+    }
+#endif
+    if (!leer || resuelta.imagen.formato != kFormatoColor) {
       return;
     }
     if (resuelta.imagen.ancho_guest && resuelta.imagen.ancho_guest != resuelta.imagen.ancho) {
@@ -7872,6 +7908,10 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   uint64_t borrados_en_pase_fallidos_ = 0;  // clears through a pass that could not be opened
   uint64_t borrados_ = 0;
   uint64_t presentados_ = 0;
+#if defined(FH2_RECOMP)
+  std::unordered_map<uint32_t, uint64_t> fh2_ultima_copia_destino_;  // fh2_nativo_leer_resueltas_sueltas
+  uint64_t fh2_sueltas_leidas_ = 0;
+#endif
   uint64_t rechazos_ = 0;
 #if defined(FH2_RECOMP)
   std::map<uint32_t, uint64_t> rechazos_por_causa_;
