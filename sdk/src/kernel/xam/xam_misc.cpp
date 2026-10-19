@@ -767,7 +767,11 @@ REX_EXPORT_STUB(__imp__XamWebInstrumentationSetUserVarNoEscape);
 REX_EXPORT_STUB(__imp__XamWriteBiometricData);
 REX_EXPORT_STUB(__imp__XamWriteGamerTileEx);
 REX_EXPORT_STUB(__imp__XamWriteTile);
-REX_EXPORT_STUB(__imp__XamXStudioRequest);
+// FH2 sends requests here first and falls back to the older call on a failure HRESULT (4099 goes to
+// PsCamDeviceRequest; 4101 takes its other path on E_INVALIDARG). The plain stub left the request id
+// in r3, a positive "success", so the game used never-written outputs as handles and the garage and
+// paint shop could stay under the loading screen.
+REX_EXPORT_STUB_RETURN(__imp__XamXStudioRequest, 0x80070057);  // E_INVALIDARG: request not supported
 REX_EXPORT_STUB(__imp__XamXgiBlobTrackerSetMockInfo);
 REX_EXPORT_STUB(__imp__XamXlfsInitializeUploadQueue);
 REX_EXPORT_STUB(__imp__XamXlfsInitializeUploadQueueWithTestHooks);
