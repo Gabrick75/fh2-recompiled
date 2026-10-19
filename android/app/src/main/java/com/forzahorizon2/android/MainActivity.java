@@ -891,21 +891,18 @@ public final class MainActivity extends AppCompatActivity {
     private View scalingRow() {
         return ui.choiceRow(GameOptions.SCALING, tr(R.string.scaling_to_the_screen),
                 tr(R.string.how_the_image_is_brought_to),
-                new String[] {"Bilinear", "FSR 1.0", "CAS"}, new String[] {"bilinear", "fsr", "cas"},
-                value -> {
-                    // Leaving FSR must also leave its mode: a stored preset must never override the scale.
-                    if (!"fsr".equals(value)) GameOptions.set(this, GameOptions.FSR_MODE, "off");
-                    refreshFsrModeRows();
-                });
+                new String[] {tr(R.string.off_masculine), "Bilinear", "FSR 1.0", "CAS"},
+                new String[] {"off", "bilinear", "fsr", "cas"},
+                value -> refreshFsrModeRows());
     }
 
     private View fsrModeRow() {
         LinearLayout row = ui.choiceRow(GameOptions.FSR_MODE, tr(R.string.fsr_mode),
                 tr(R.string.shortcut_render_scale_fsr_1_0),
-                new String[] {tr(R.string.off_masculine), tr(R.string.ultra_quality),
+                new String[] {tr(R.string.mega_quality), tr(R.string.ultra_quality),
                         tr(R.string.quality), tr(R.string.balanced), tr(R.string.performance),
                         tr(R.string.ultra_performance)},
-                new String[] {"off", "ultra_quality", "quality", "balanced", "performance", "ultra_performance"});
+                new String[] {"mega_quality", "ultra_quality", "quality", "balanced", "performance", "ultra_performance"});
         Runnable refresh = () -> row.setVisibility(
                 "fsr".equals(GameOptions.get(this, GameOptions.SCALING)) ? View.VISIBLE : View.GONE);
         fsrModeRefreshers.add(refresh);

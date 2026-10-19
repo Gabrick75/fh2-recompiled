@@ -136,7 +136,7 @@
     <string name="how_much_of_the_xbox_360_2" formatted="false">How much of the Xbox 360\'s resolution (1280×720) the game draws: the scene and the post-processing (the HUD gets less sharp too). Below 100 % the GPU works much less.</string>
     <string name="how_often_the_shadow_maps_are">How often the shadow maps are redrawn. Every 2 frames costs less and is hardly noticed.</string>
     <string name="how_the_game_is_drawn">How the game is drawn</string>
-    <string name="how_the_image_is_brought_to">How the image is brought to the screen\'s size. FSR is sharper when the game draws below the screen\'s resolution; CAS only sharpens.</string>
+    <string name="how_the_image_is_brought_to">How the image is brought to the screen\'s size. Off draws at 100 % with no upscaling. FSR is sharper when the game draws below the screen\'s resolution; CAS only sharpens.</string>
     <string name="image">Image</string>
     <string name="image_stretched_to_the_whole_screen">Image stretched to the whole screen</string>
     <string name="import_a_driver_zip">Import a driver (.zip)</string>
@@ -240,7 +240,7 @@
     <string name="shadow_quality">Shadow quality</string>
     <string name="shadows">Shadows</string>
     <string name="sharper_textures_seen_at_an_angle">Sharper textures seen at an angle, like the road in the distance.</string>
-    <string name="shortcut_render_scale_fsr_1_0" formatted="false">Shortcut: render scale + FSR 1.0 together (77/67/59/50/33 % of 1280x720). Off keeps the scale and effect chosen above.</string>
+    <string name="shortcut_render_scale_fsr_1_0" formatted="false">Render scale + FSR 1.0 together (100/77/67/59/50/33 % of 1280x720).</string>
     <string name="show_fps">Show FPS</string>
     <string name="show_gpu_cpu_and_ram_use">Show GPU, CPU and RAM use</string>
     <string name="show_hide">Show / hide</string>
@@ -302,6 +302,7 @@
     <string name="turned_off_it_breaks_the_game">Turned off, it breaks the game: only the bottom band of the screen shows, with black and grey bands above.</string>
     <string name="turnip_and_qualcomm_drivers_are_for">Turnip and Qualcomm drivers are for Adreno GPUs only: with this GPU, use the system driver.</string>
     <string name="ultra_performance">Ultra performance</string>
+    <string name="mega_quality">Mega quality</string>
     <string name="ultra_quality">Ultra quality</string>
     <string name="under_the_fps_gpu_load_the" formatted="false">Under the FPS: GPU load; the game\'s CPU (of all cores) and the busiest thread (near 100 % it is what limits the FPS); the game\'s memory and the phone\'s free memory, in GB.</string>
     <string name="unlocked">unlocked</string>

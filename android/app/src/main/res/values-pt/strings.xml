@@ -134,7 +134,7 @@
     <string name="how_much_of_the_xbox_360_2" formatted="false">Quanto da resolução do Xbox 360 (1280×720) o jogo desenha: a cena e o pós-processamento (o HUD também fica menos nítido). Abaixo de 100 % a GPU trabalha bem menos.</string>
     <string name="how_often_the_shadow_maps_are">A cada quanto os mapas de sombras são redesenhados. A cada 2 quadros custa menos e quase não se nota.</string>
     <string name="how_the_game_is_drawn">Como o jogo é desenhado</string>
-    <string name="how_the_image_is_brought_to">Como a imagem é levada ao tamanho da tela. O FSR é mais nítido quando o jogo desenha abaixo da resolução da tela; o CAS só aumenta a nitidez.</string>
+    <string name="how_the_image_is_brought_to">Como a imagem é levada ao tamanho da tela. Desligado desenha a 100 % sem upscaling. O FSR é mais nítido quando o jogo desenha abaixo da resolução da tela; o CAS só aumenta a nitidez.</string>
     <string name="image">Imagem</string>
     <string name="image_stretched_to_the_whole_screen">Imagem esticada na tela inteira</string>
     <string name="import_a_driver_zip">Importar driver (.zip)</string>
@@ -238,7 +238,7 @@
     <string name="shadow_quality">Qualidade das sombras</string>
     <string name="shadows">Sombras</string>
     <string name="sharper_textures_seen_at_an_angle">Texturas mais nítidas vistas em ângulo, como a estrada ao longe.</string>
-    <string name="shortcut_render_scale_fsr_1_0" formatted="false">Atalho: escala de render + FSR 1.0 juntos (77/67/59/50/33 % de 1280×720). Desligado vale a escala e o efeito escolhidos acima.</string>
+    <string name="shortcut_render_scale_fsr_1_0" formatted="false">Escala de render + FSR 1.0 juntos (100/77/67/59/50/33 % de 1280×720).</string>
     <string name="show_fps">Mostrar FPS</string>
     <string name="show_gpu_cpu_and_ram_use">Mostrar uso de GPU, CPU e RAM</string>
     <string name="show_hide">Mostrar / ocultar</string>
@@ -300,6 +300,7 @@
     <string name="turned_off_it_breaks_the_game">Desligada, quebra o jogo: só a faixa de baixo da tela aparece, com faixas preta e cinza em cima.</string>
     <string name="turnip_and_qualcomm_drivers_are_for">Os drivers Turnip e da Qualcomm são só para GPUs Adreno: com esta GPU, use o driver do sistema.</string>
     <string name="ultra_performance">Ultra desempenho</string>
+    <string name="mega_quality">Mega qualidade</string>
     <string name="ultra_quality">Ultra qualidade</string>
     <string name="under_the_fps_gpu_load_the" formatted="false">Abaixo do FPS: ocupação da GPU; CPU do jogo (de todos os núcleos) e a thread mais ocupada (perto de 100 % é ela que limita o FPS); memória do jogo e a livre do aparelho, em GB.</string>
     <string name="unlocked">desbloqueadas</string>
