@@ -423,6 +423,26 @@ class Presenter {
 
   static constexpr uint32_t kGuestOutputMailboxSize = 3;
 
+  /*
+   * The reconnection loop: the swapchain comes back outdated, is recreated, and comes back outdated
+   * again on the next frame. Seen on Mali in Xiaomi phones (usuario-20: black screen with the game and
+   * the sound running underneath). Every cycle writes about five lines, 15-20 a second, and in a few
+   * seconds they filled the 128 KB tail of the report, so the moment the loop began was always cut out.
+   *
+   * An episode starts with the first outdated result after a presented frame and ends with the next
+   * presented frame. Its lines go to the log only for the first kBucleCiclosConLog cycles, whatever
+   * log_detalhado says; after that one line every kBucleAvisoSegundos says it is still going, and one
+   * at the end says how long it lasted.
+   */
+  static constexpr uint32_t kBucleCiclosConLog = 3;
+  static constexpr int64_t kBucleAvisoSegundos = 5;
+  // Whether the lines of the loop still go to the log (always true outside an episode).
+  bool BucleReconexionRegistra() const {
+    return bucle_ciclos_.load(std::memory_order_relaxed) < kBucleCiclosConLog;
+  }
+  // True only before the first outdated result of an episode: the moment for a one-time state line.
+  bool BucleReconexionEmpieza() const { return bucle_ciclos_.load(std::memory_order_relaxed) == 0; }
+
   struct GuestOutputProperties {
     // At least any value being 0 here means the guest output is disabled for
     // this frame.
@@ -990,6 +1010,14 @@ class Presenter {
   // the connection has been suboptimal from the very beginning don't try to
   // reconnect every frame.
   bool surface_paint_connection_was_optimal_at_successful_paint_ = false;
+
+  // The reconnection loop episode (see BucleReconexionRegistra): outdated results since the last
+  // presented frame, and when the episode began and was last reported (steady_clock nanoseconds).
+  std::atomic<uint32_t> bucle_ciclos_{0};
+  std::atomic<int64_t> bucle_inicio_ns_{0};
+  std::atomic<int64_t> bucle_ultimo_aviso_ns_{0};
+  // Counts an outdated result, ends an episode on a presented one. Called from PaintAndPresent.
+  void ContarBucleReconexion(PaintResult result);
 
   // Modifiable only by the UI thread (therefore can be accessed by the UI
   // thread regardless of the paint mode) while (re)connecting painting to the

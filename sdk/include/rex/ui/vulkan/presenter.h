@@ -150,6 +150,11 @@ class VulkanPresenter final : public Presenter {
   PaintResult PaintAndPresentImpl(bool execute_ui_drawers) override;
 
  private:
+  // One line with the surface as the driver sees it, at the start of a reconnection loop episode
+  // (Presenter::BucleReconexionEmpieza): which call said outdated, with what result, and the swapchain
+  // against the surface capabilities, to tell a size or transform mismatch from a lost window.
+  void RegistrarSuperficieDesactualizada(const char* llamada, VkResult resultado);
+
   // Usable for both the guest output image itself and for intermediate images.
   class GuestOutputImage {
    public:
@@ -377,7 +382,7 @@ class VulkanPresenter final : public Presenter {
         const VulkanDevice* vulkan_device, VkSurfaceKHR surface, uint32_t width, uint32_t height,
         VkSwapchainKHR old_swapchain, uint32_t& present_queue_family_out,
         VkFormat& image_format_out, VkExtent2D& image_extent_out, bool& is_fifo_out,
-        bool& ui_surface_unusable_out);
+        bool& ui_surface_unusable_out, bool registrar);
 
     // Destroys the swapchain and its derivatives, nulls `swapchain` and returns
     // the original swapchain object, if it existed, for use as oldSwapchain if
