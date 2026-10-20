@@ -2,6 +2,7 @@
 <resources>
     <string name="a_counter_in_the_corner_frames">Contador no canto: quadros por segundo e milissegundos por quadro.</string>
     <string name="a_disc_image_the_xbox_360">Uma ISO do disco do Xbox 360 é lida direto, sem ocupar espaço a mais. Ou uma pasta com o jogo extraído, copiada para Armazenamento interno/%1$s (7,3 GB). Com a ISO, o fh2_shaders.nfsp do renderizador nativo fica ao lado dela ou em %1$s.</string>
+    <string name="a_driving_layout">Um layout de corrida: A/D viram, W acelera, S freia, Espaço freio de mão.</string>
     <string name="a_frame_that_misses_the_vsync">Um quadro que chega um pouco atrasado para a tela é mostrado na hora, em vez de esperar o próximo. Não muda o FPS; desligue se notar trepidação.</string>
     <string name="about">Sobre</string>
     <string name="above_normal_the_sound_may_distort">Acima de Normal o som pode distorcer nos picos.</string>
@@ -18,6 +19,8 @@
     <string name="back">Voltar</string>
     <string name="back_to_the_extracted_folder">Volta para a pasta extraída</string>
     <string name="balanced">Equilibrado</string>
+    <string name="brake">Freio</string>
+    <string name="camera">Câmera</string>
     <string name="cancel">Cancelar</string>
     <string name="car_reflections">Reflexos do carro</string>
     <string name="change_the_game_folder">Trocar pasta do jogo</string>
@@ -64,6 +67,9 @@
     <string name="direct_copies_to_textures">Cópias diretas para texturas</string>
     <string name="display">Tela</string>
     <string name="done">Pronto</string>
+    <string name="dpad">Direcional</string>
+    <string name="draws_the_reflection_mips_level_by_level">Desenha as versões menores dos reflexos todas juntas, em vez de uma por uma. A imagem não muda; alivia a GPU.</string>
+    <string name="drive_with_a_keyboard_and_a_mouse">Jogue com teclado e mouse</string>
     <string name="driver">Driver</string>
     <string name="driver_chosen">"Driver escolhido: "</string>
     <string name="driver_imported">"Driver importado: "</string>
@@ -121,9 +127,11 @@
     <string name="game_not_found">Jogo não encontrado</string>
     <string name="game_volume">Volume do jogo</string>
     <string name="gamepad_only">Somente o controle</string>
+    <string name="generic_layout">Genérico</string>
     <string name="gpu_driver">Driver da GPU</string>
     <string name="gpu_turbo">Turbo da GPU</string>
     <string name="graphics">Gráficos</string>
+    <string name="handbrake">Freio de mão</string>
     <string name="hidden">OCULTO</string>
     <string name="hide_the_controls_when_a_gamepad">Ocultar os controles ao usar um controle físico</string>
     <string name="high">Altos</string>
@@ -131,6 +139,7 @@
     <string name="high_smooths_more_edges_the_faint">Alta suaviza mais bordas, inclusive as fracas, e deixa a imagem um pouco mais suave.</string>
     <string name="home">Início</string>
     <string name="how_far_objects_cast_shadows_nearly">Até onde os objetos projetam sombra: é aí que está quase todo o custo delas. Longe é como o jogo.</string>
+    <string name="how_long_a_key_takes">Quanto tempo a tecla leva para chegar à curva cheia. Zero vira de uma vez.</string>
     <string name="how_much_of_the_xbox_360" formatted="false">Quanto da resolução original do Xbox 360 o jogo desenha, em passos de 12,5 %. Abaixo de 100 % a imagem fica menos nítida e a GPU trabalha bem menos.</string>
     <string name="how_much_of_the_xbox_360_2" formatted="false">Quanto da resolução original do Xbox 360 o jogo desenha, com os efeitos e o HUD. Abaixo de 100 % a imagem fica menos nítida e a GPU trabalha bem menos.</string>
     <string name="how_often_the_shadow_maps_are">A cada quanto os mapas de sombras são redesenhados. A cada 2 quadros custa menos e quase não se nota.</string>
@@ -150,6 +159,8 @@
     <string name="iso_chosen">ISO escolhida.</string>
     <string name="keep_playing_to_find_out">Continue jogando para descobrir.</string>
     <string name="keeps_the_game_on_the_processor" formatted="false">Deixa o jogo só nos núcleos mais rápidos do processador e reserva o mais rápido de todos para a parte que comanda os gráficos (+16 %).</string>
+    <string name="key_layout">Layout das teclas</string>
+    <string name="keyboard_and_mouse">Teclado e mouse</string>
     <string name="language">Idioma</string>
     <string name="locked">Bloqueadas</string>
     <string name="locks_the_gpu_clock_instead_of">Fixa o clock da GPU em vez de deixar o sistema ajustá-lo. Só com Turnip em uma GPU Adreno. Nem sempre ajuda: confira com o contador de FPS.</string>
@@ -163,10 +174,13 @@
     <string name="media_folder">Pasta media</string>
     <string name="medium">Médios</string>
     <string name="medium_2">Média</string>
+    <string name="mega_quality">Mega qualidade</string>
     <string name="meta_json_is_not_valid_json">o meta.json não é um JSON válido</string>
     <string name="mib_of_7500">" MiB de ~7500…"</string>
     <string name="missing">Falta</string>
     <string name="missing_2">Faltando</string>
+    <string name="mouse_looks_around">O mouse olha ao redor</string>
+    <string name="mouse_sensitivity">Sensibilidade do mouse</string>
     <string name="msaa_2x_4x_draws_the_3d">O MSAA 2x/4x suaviza melhor as bordas da cena, mas pesa na GPU; o FXAA é um filtro leve sobre a imagem final.</string>
     <string name="native_experimental_draws_the_game_s">Nativo (recomendado): desenha o jogo direto na GPU, sem emular a do Xbox 360. Bem mais rápido; ainda pode ter alguns erros de imagem.</string>
     <string name="native_image">Imagem do nativo</string>
@@ -191,6 +205,7 @@
     <string name="off_the_xbox_360_s_16">Desligado: a imagem 16:9 do Xbox 360, com barras pretas. Ligado: preenche a tela, mas distorce a imagem.</string>
     <string name="ok">ok</string>
     <string name="on_a_thread_of_its_own">Ligado: o som do jogo é processado à parte e alivia o processador, mas em alguns aparelhos o som sai travando ou robótico. Desligado: como antes. Vale na próxima vez que o jogo abrir.</string>
+    <string name="one_key_per_button">Uma tecla por botão, como um controle.</string>
     <string name="opening_the_driver_and_creating_a">Abrindo o driver e criando um dispositivo Vulkan…</string>
     <string name="opens_the_driver_the_way_the">Abre o driver como o jogo abre e confere se ele tem o que o jogo precisa. Roda à parte: um driver que trave não fecha o app.</string>
     <string name="others">Outros</string>
@@ -209,14 +224,17 @@
     <string name="preparing_diagnostics">Preparando diagnóstico…</string>
     <string name="present_mode">Modo de apresentação</string>
     <string name="presentation">Apresentação</string>
+    <string name="press_f4_to_change_the_keys">Aperte F4 no jogo para trocar qualquer tecla.</string>
     <string name="processor">Processador</string>
     <string name="project">Projeto</string>
     <string name="put_every_control_back_in_its">Voltar à posição e ao tamanho originais de todos os controles?</string>
     <string name="quality">Qualidade</string>
+    <string name="racing_layout">Corrida</string>
     <string name="read_straight_from_the_file_no">Lida direto do arquivo: sem extrair nem copiar</string>
     <string name="reading_straight_from_the_iso">"Lendo direto da ISO: "</string>
     <string name="ready_to_play">Pronto para jogar</string>
     <string name="record_a_performance_profile_root">Gravar perfil de desempenho (root)</string>
+    <string name="reflection_mips_in_one_pass">Mips do reflexo num passe por nível</string>
     <string name="render_resolution">Resolução de renderização</string>
     <string name="renderer">Renderizador</string>
     <string name="replace_the_current_progress">Trocar o progresso atual?</string>
@@ -255,7 +273,9 @@
     <string name="size_smaller">Tamanho −</string>
     <string name="small_targets_at_exact_size">Alvos pequenos em tamanho exato</string>
     <string name="smooths_jagged_edges_msaa_is_the" formatted="false">Tira o serrilhado das bordas. O MSAA é o do jogo e o mais pesado (desligado rende +91 %; o 2x pesa menos que o 4x, +37 %); o FXAA é um filtro leve sobre a imagem final.</string>
+    <string name="start">Start</string>
     <string name="steer_by_tilting_the_phone">Direção inclinando o celular</string>
+    <string name="steering">Direção</string>
     <string name="stop_using_the_iso">Parar de usar a ISO</string>
     <string name="stretch_to_the_whole_screen">Esticar para a tela inteira</string>
     <string name="system_driver">Driver do sistema</string>
@@ -266,6 +286,7 @@
     <string name="testing">Testando</string>
     <string name="testing_2">testando…</string>
     <string name="text_2">,</string>
+    <string name="the_change_is_read_when_the_game_starts">A mudança é lida quando o jogo começa.</string>
     <string name="the_driver_crashed_the_test_process">O driver derrubou o processo de teste ao abrir.</string>
     <string name="the_driver_failed_the_test">O driver não passou no teste</string>
     <string name="the_driver_is_no_longer_installed">O driver não está mais instalado</string>
@@ -284,11 +305,14 @@
     <string name="the_game_folder_has_an_invalid_2">A pasta do jogo contém um caminho inválido.</string>
     <string name="the_game_may_not_start_with">Com ele o jogo pode não abrir. Usar mesmo assim?</string>
     <string name="the_game_may_not_start_with_2">O jogo pode não abrir com este driver.</string>
+    <string name="the_game_reads_them_as_a_pad">O jogo os lê como um controle.</string>
     <string name="the_game_s_cap_30_is">O máximo de quadros por segundo; 30 é o do Xbox 360. Acima disso o jogo mostra mais quadros se o aparelho der conta. Telas de início e carregamentos podem ir ao dobro. Mais quadros esquentam mais.</string>
     <string name="the_game_s_language_and_this">O idioma do jogo e o deste app.</string>
     <string name="the_gpu_starts_a_pass_s">A GPU começa a próxima etapa do quadro sem esperar a anterior terminar. A imagem é a mesma.</string>
     <string name="the_imported_driver_did_not_load">O driver importado não carregou (falta alguma biblioteca dele, ou não é para esta GPU) e o sistema usou o driver de fábrica no lugar.</string>
     <string name="the_list_comes_from_the_game">A lista vem do próprio jogo: abra o jogo uma vez e ela aparece aqui.</string>
+    <string name="the_mouse">O mouse</string>
+    <string name="the_mouse_turns_the_camera">O mouse vira a câmera (o direcional direito).</string>
     <string name="the_original_resolution">" · a resolução original"</string>
     <string name="the_processor_and_the_gpu_driver">O processador e o driver da GPU.</string>
     <string name="the_report_is_no_longer_there">O relatório não está mais disponível. Gere outro.</string>
@@ -301,13 +325,13 @@
     <string name="this_driver_needs_android_api_or">este driver pede o Android de API %1$s ou mais novo (este é %2$s)</string>
     <string name="this_menu_and_the_touch_controls">Este menu e o painel dos controles de toque.</string>
     <string name="this_phone_s_gpu_lacks_a">⚠ A GPU deste aparelho não tem um recurso que o renderizador emulado exige: com ele o jogo não abre. Use o renderizador nativo.</string>
+    <string name="throttle">Acelerador</string>
     <string name="tilt_sensitivity">Sensibilidade da inclinação</string>
     <string name="to_jogos">Para jogos/</string>
     <string name="to_use_internal_storage_allow_the">Para achar o jogo, o app precisa de acesso aos seus arquivos: toque em Usar a ISO do jogo ou em Escolher pasta do jogo, abaixo, e o Android vai pedir a permissão.</string>
     <string name="turned_off_it_breaks_the_game">Desligada, quebra o jogo: só a faixa de baixo da tela aparece, com faixas preta e cinza em cima.</string>
     <string name="turnip_and_qualcomm_drivers_are_for">Os drivers Turnip e da Qualcomm são só para GPUs Adreno: com esta GPU, use o driver do sistema.</string>
     <string name="ultra_performance">Ultra desempenho</string>
-    <string name="mega_quality">Mega qualidade</string>
     <string name="ultra_quality">Ultra qualidade</string>
     <string name="under_the_fps_gpu_load_the" formatted="false">Abaixo do FPS: o uso da GPU; o uso do processador pelo jogo e o da parte mais ocupada dele (perto de 100 %, é ela que limita o FPS); a memória do jogo e a livre, em GB.</string>
     <string name="unlocked">desbloqueadas</string>
@@ -318,6 +342,7 @@
     <string name="use_it_anyway">Usar mesmo assim</string>
     <string name="use_native">Usar o nativo</string>
     <string name="use_the_game_iso">Usar a ISO do jogo</string>
+    <string name="use_the_keyboard_and_the_mouse">Usar o teclado e o mouse</string>
     <string name="verbose_log">Log detalhado</string>
     <string name="version">"Versão "</string>
     <string name="vertex_cache_across_frames">Cache de vértices entre quadros</string>
@@ -335,6 +360,4 @@
     <string name="without_msaa_the_scene_fits_whole" formatted="false">Desenha a cena de uma vez só, em vez de em partes: menos trabalho para o processador (+25 %).</string>
     <string name="writes_every_repetition_of_the_messages">Grava todas as repetições das mensagens que se repetem várias vezes por segundo (texturas do renderizador, funções não implementadas). Desligado, cada uma aparece só as 20 primeiras vezes, e o log guarda mais tempo de jogo. Só para investigar.</string>
     <string name="writes_to_the_log_how_long">Grava no log quanto tempo a GPU gasta em cada parte do quadro. Só para investigar: deixa o jogo mais lento, porque cada medição faz a GPU esperar.</string>
-    <string name="reflection_mips_in_one_pass">Mips do reflexo num passe por nível</string>
-    <string name="draws_the_reflection_mips_level_by_level">Desenha as versões menores dos reflexos todas juntas, em vez de uma por uma. A imagem não muda; alivia a GPU.</string>
 </resources>

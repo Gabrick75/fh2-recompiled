@@ -4,12 +4,16 @@
 # (mnk_mode): Enter or X = Start, Space = A, Backspace = B, L = X, P = Y, WASD = left stick,
 # arrows = right stick, E / O = right trigger (throttle), Q / I = left trigger (brake),
 # Tab = Back, 1 / 3 = shoulders, Shift + arrows = d-pad.
+# That is the "pad" layout. The "race" layout (--mnk_preset=race) is the driving one: A/D steer,
+# W throttle, S brake, Space handbrake, arrows camera, IJKL d-pad, Enter start, Esc back.
+# A key takes mnk_rampa seconds (0.15 by default) to reach the full turn; 0 turns at once.
 # gpu_allow_invalid_fetch_constants: the game leaves vertex fetch constants with type 0 in some draws
 # (vfetch 90); without it the emulated GPU dropped every such draw. The log rotates at 200 MB instead
 # of 5 MB, because the empty resolves of every frame are logged.
 # Extra arguments go to the game (cvars):
 #   tools/rodar_pc.sh                       play until the window is closed
 #   SEGUNDOS=120 tools/rodar_pc.sh          stop after 120 s (SIGINT), for unattended tests
+#   tools/rodar_pc.sh --mnk_preset=race    the driving layout of the keyboard
 set -e
 RAIZ=$(cd "$(dirname "$0")/.." && pwd)
 BUILD=${BUILD:-$RAIZ/app/out/linux}

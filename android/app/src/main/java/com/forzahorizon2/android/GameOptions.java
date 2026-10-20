@@ -70,7 +70,12 @@ final class GameOptions {
     static final String TURBO = "turbo";                      // not applied yet
     // Sound
     static final String VOLUME = "volume";
-    // audio_xma_en_trabajador: on = 1 (the XMA Decoder thread decodes everything), off = 2 (the game's audio
+    // Input: the keyboard and the mouse as a controller (the SDK's MnK driver).
+    static final String MNK_MODE = "mnk_mode";              // on = the keyboard and the mouse drive the game
+    static final String MNK_PRESET = "mnk_preset";          // "race" (a driving layout) or "pad" (one key per button)
+    static final String MNK_MOUSE = "mnk_mouse";            // the mouse looks around (the right stick)
+    static final String MNK_SENSITIVITY = "mnk_sensitivity";  // how fast the mouse turns the camera
+    static final String MNK_RAMP = "mnk_ramp";              // seconds a key takes to reach the full deflection    // audio_xma_en_trabajador: on = 1 (the XMA Decoder thread decodes everything), off = 2 (the game's audio
     // thread decodes, as before f47050e). Off by default: on several phones mode 1 made the sound stutter.
     static final String AUDIO_WORKER = "audio_worker";
     static final String VIBRATION_PHONE = "vibration_phone";
@@ -118,6 +123,9 @@ final class GameOptions {
             case SHADOW_MAP_SCALE: return "100";  // the Xbox 360's 1600x1600
             case DRIVER: return "";
             case VOLUME: return "100";
+            case MNK_PRESET: return "race";
+            case MNK_SENSITIVITY: return "1.0";
+            case MNK_RAMP: return "0.15";
             case VIBRATION_PHONE: return "true";
             case VIBRATION_MODE: return "both";
             case GAME_LANGUAGE: return systemGameLanguage();
@@ -169,7 +177,7 @@ final class GameOptions {
         boolean byDefault = PIN_THREADS.equals(key) || PERFORMANCE_HINTS.equals(key) || ONE_PASS.equals(key) ||
                 ADAPTIVE_VBLANK.equals(key) || RESOLVE_SHORTCUT.equals(key) || VERTEX_CACHE.equals(key) ||
                 INDEX_CACHE.equals(key) || VERTEX_NO_WAIT.equals(key) || EXACT_TARGETS.equals(key) ||
-                VIBRATION_PHONE.equals(key);
+                VIBRATION_PHONE.equals(key) || MNK_MOUSE.equals(key);
         return prefs(context).getBoolean(key, byDefault);
     }
 
@@ -274,6 +282,33 @@ final class GameOptions {
 
     static boolean nativeRenderer(Context context) {
         return "native".equals(get(context, RENDERER));
+    }
+
+    /** How fast the mouse turns the camera (mnk_sensitivity), 0.2 to 4. */
+    static float mouseSensitivity(Context context) {
+        return clampNumber(get(context, MNK_SENSITIVITY), 1.0f, 0.2f, 4.0f);
+    }
+
+    static void setMouseSensitivity(Context context, float value) {
+        set(context, MNK_SENSITIVITY, String.format(java.util.Locale.ROOT, "%.2f", value));
+    }
+
+    /** How long a key takes to reach the full turn (mnk_rampa), in seconds. */
+    static float keyRamp(Context context) {
+        return clampNumber(get(context, MNK_RAMP), 0.15f, 0.0f, 2.0f);
+    }
+
+    static void setKeyRamp(Context context, float value) {
+        set(context, MNK_RAMP, String.format(java.util.Locale.ROOT, "%.2f", value));
+    }
+
+    /** A number of the settings, with its limits, and the default when it is not one. */
+    private static float clampNumber(String text, float fallback, float min, float max) {
+        try {
+            return Math.max(min, Math.min(max, Float.parseFloat(text.trim())));
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
     /**
@@ -386,6 +421,13 @@ final class GameOptions {
         String vibrationMode = get(context, VIBRATION_MODE);
         if (!"phone".equals(vibrationMode) && !"gamepad".equals(vibrationMode)) vibrationMode = "both";
         args.add("--fh2_android_vibracao_modo=" + vibrationMode);  // never empty: the cvar parser aborts on it
+        // The keyboard and the mouse as a controller (the SDK's MnK driver, sdk/src/input/mnk). The layout and the
+        // keys it fills are the ones the player did not change: the game asks for the state before the first frame.
+        args.add("--mnk_mode=" + flag(context, MNK_MODE));
+        args.add("--mnk_preset=" + get(context, MNK_PRESET));
+        args.add("--mnk_mouse=" + flag(context, MNK_MOUSE));
+        args.add("--mnk_sensitivity=" + get(context, MNK_SENSITIVITY));
+        args.add("--mnk_rampa=" + get(context, MNK_RAMP));
         GpuDrivers.arguments(context, args);  // the chosen Vulkan driver, or the system's
         // The FPS limit is the guest vblank rate (fpsLimit).
         args.add("--video_mode_refresh_rate=" + vblankRate(context));

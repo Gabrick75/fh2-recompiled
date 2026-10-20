@@ -65,6 +65,8 @@ O que este projeto acrescenta ao SDK:
   filtro anisotrópico, qualidade das sombras (nativo), limite de FPS (de 30 a livre), modo de apresentação,
   fixação de threads, idioma do jogo e do app, um painel com FPS e uso de GPU, CPU e RAM, importar/exportar
   saves e cópias de segurança.
+- Teclado e mouse como controle: o jogo os lê como um controle de Xbox 360, com um layout de corrida, o mouse
+  virando a câmera e toda tecla rebindável dentro do jogo.
 - O jogo rodando direto da imagem do disco (.iso), sem precisar extrair.
 - Drivers Vulkan personalizados (Turnip, pacotes da Qualcomm) carregados pelo libadrenotools, com um teste de
   Vulkan antes do uso.
@@ -173,6 +175,14 @@ celular (ou junto da .iso), por exemplo com `tools/enviar_biblioteca_android.sh`
 **Drivers de GPU.** **Desempenho > Driver da GPU** importa um pacote de driver do adrenotools (.zip) e o testa
 com Vulkan antes de deixar escolhê-lo. Nos Adreno 6xx e 7xx um Turnip (Mesa) costuma ser mais rápido que o
 driver do próprio celular.
+
+**Teclado e mouse.** Com um teclado e um mouse por Bluetooth ou USB, a página **Teclado e mouse** do launcher
+transforma os dois em um controle para o jogo. Dois layouts: **Corrida** (A/D viram, W acelera, S freia, Espaço
+freio de mão, o mouse e as setas para a câmera, IJKL para o direcional, Enter start, Esc volta) e o **genérico**
+(uma tecla por botão, como um controle é mapeado). O mouse vira a câmera, e a sensibilidade dele e o tempo que a
+tecla leva para chegar à curva cheia estão na mesma página. Qualquer tecla pode ser trocada dentro do jogo com
+**F4** (a janela de opções do próprio jogo, categoria *Input/Keybinds/Controller*). Os controles de toque saem
+de cena enquanto um teclado ou um mouse estiver em uso e voltam no primeiro toque.
 
 ## Tutoriais
 
