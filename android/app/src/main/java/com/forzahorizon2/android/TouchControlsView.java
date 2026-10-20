@@ -120,8 +120,6 @@ public final class TouchControlsView extends View {
     private boolean editing;
     private boolean hiddenByGamepad;
     private boolean hiddenByKeyboard;
-    // Whether the game reads the keyboard and the mouse (the launcher's option).
-    boolean keyboardMode;
     private Control selected;
     private float dragDX, dragDY;
     private float pinchStart, sizeAtPinch;
@@ -294,12 +292,11 @@ public final class TouchControlsView extends View {
     }
 
     /**
-     * A keyboard or a mouse was used: the touch pad gets out of the way, but only when the game is
-     * reading them (the launcher's keyboard and mouse option). With the option off the player has
-     * only the touch pad, and hiding it would leave them with nothing.
+     * A keyboard or a mouse was connected or used: the game reads them as a controller, so the
+     * touch pad gets out of the way, as it does for a gamepad.
      */
     void onKeyboardActive() {
-        if (hideWithGamepad && keyboardMode && !hiddenByKeyboard && !editing) {
+        if (hideWithGamepad && !hiddenByKeyboard && !editing) {
             hiddenByKeyboard = true;
             releaseAll();
             invalidate();
@@ -311,14 +308,6 @@ public final class TouchControlsView extends View {
         if (hiddenByKeyboard) {
             hiddenByKeyboard = false;
             invalidate();
-        }
-    }
-
-    /** Whether the game reads the keyboard and the mouse (the launcher's option). */
-    void setKeyboardMode(boolean on) {
-        keyboardMode = on;
-        if (!on) {
-            onKeyboardGone();
         }
     }
 
