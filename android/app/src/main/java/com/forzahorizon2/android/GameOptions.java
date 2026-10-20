@@ -48,12 +48,13 @@ final class GameOptions {
     static final String WORLD_SHADOWS = "world_shadows";          // fh2_mundo_sombras
     static final String WORLD_CROWD = "world_crowd";              // fh2_mundo_multidao
     static final float[] WORLD_FACTORS = {0.25f, 0.5f, 0.75f, 1f, 1.5f, 2f, 3f, 4f};
-    // Grass (the bushes and tufts) and the crowd also go down to none (the native renderer skips their draws).
+    // All but objects also go down to off (0): grass and crowd skip their draws and shadows have no shadow map in the
+    // native renderer, reflections lose the live cubemap in both. Objects off would take the world away.
     static final float[] WORLD_FACTORS_OFF = {0f, 0.25f, 0.5f, 0.75f, 1f, 1.5f, 2f, 3f, 4f};
 
-    /** The positions of a world detail slider: WORLD_FACTORS_OFF for grass and crowd, WORLD_FACTORS for the others. */
+    /** The positions of a world detail slider: WORLD_FACTORS for objects, WORLD_FACTORS_OFF for the others. */
     static float[] worldFactors(String key) {
-        return WORLD_GRASS.equals(key) || WORLD_CROWD.equals(key) ? WORLD_FACTORS_OFF : WORLD_FACTORS;
+        return WORLD_OBJECTS.equals(key) ? WORLD_FACTORS : WORLD_FACTORS_OFF;
     }
     // Performance
     static final String PIN_THREADS = "pin_threads";
@@ -449,7 +450,9 @@ final class GameOptions {
             args.add("--fh2_nativo_msaa=" + (!"msaa".equals(get(context, ANTI_ALIASING)) ? 0
                     : "2".equals(get(context, MSAA_SAMPLES)) ? 2 : 4));
             args.add("--nfsmw_nativo_anisotropico=" + nativeAnisotropic(get(context, ANISOTROPIC)));
-            args.add("--nfsmw_nativo_sombras_escala=" + shadowMapScalePercent(context));
+            // World detail shadows off: no shadow map at all, whatever the shadow quality.
+            args.add("--nfsmw_nativo_sombras_escala="
+                    + (worldFactor(context, WORLD_SHADOWS) == 0f ? 0 : shadowMapScalePercent(context)));
             args.add("--nfsmw_nativo_compuesta_perezosa=" + flag(context, LAZY_COMPOSITE));
             // Off by default: each GPU timestamp makes a phone's GPU wait for the work in flight.
             args.add("--fh2_nativo_medir_gpu=" + flag(context, GPU_MEASUREMENTS));

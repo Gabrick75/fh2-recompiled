@@ -828,7 +828,9 @@ public final class MainActivity extends AppCompatActivity {
         Runnable show = () -> {
             float value = GameOptions.worldFactor(this, key);
             String text = (value == Math.round(value) ? String.valueOf(Math.round(value)) : String.valueOf(value)) + "x";
-            readout.setText(value == 0f ? tr(R.string.off_feminine)
+            // "Reflexos" is masculine in Portuguese and Spanish; grass, shadow distance and crowd are feminine.
+            String off = GameOptions.WORLD_REFLECTIONS.equals(key) ? tr(R.string.off_masculine) : tr(R.string.off_feminine);
+            readout.setText(value == 0f ? off
                     : value == 1f ? text + tr(R.string.as_on_the_xbox_360) : text);
         };
         slider.addOnChangeListener((s, value, fromUser) -> {

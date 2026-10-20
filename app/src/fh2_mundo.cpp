@@ -1,5 +1,5 @@
 // fh2 - world detail ("mundo" means "world"): grass, objects, reflections, shadows and crowd, each from 0.25x to 4x
-// of the Xbox 360's (grass and crowd from off).
+// of the Xbox 360's, and all but objects also off (0).
 //
 //   --fh2_mundo_grama=2 --fh2_mundo_objetos=1.5 --fh2_mundo_reflexos=1 --fh2_mundo_sombras=2 --fh2_mundo_multidao=0.5
 //
@@ -19,10 +19,12 @@
 // What each factor scales:
 //   objects     screenAreaDistances mainScene (350) and depth (60): the level of detail of the scene
 //   reflections the dynamic cubemap: FarDistance (200 m), MeshLimit (300), MeshSizeThreshold (divided),
-//               screenAreaDistances cubeMap and mirror. At 0.25x the cubemap is not drawn at all (DynamicCubemap 0;
+//               screenAreaDistances cubeMap and mirror. Off: the cubemap is not drawn at all (DynamicCubemap 0;
 //               +11 % on the Moto G9 Play in the festival, the car paint turns flat)
-//   shadows     ShadowEnds InGameShadowEnd (202 m) and TrackSegCamShadowEnd (replays); at 0.25x the other cars cast
-//               no projected shadow (NonFocusCarProjectedShadows 0)
+//   shadows     ShadowEnds InGameShadowEnd (202 m) and TrackSegCamShadowEnd (replays). Off: no car casts a projected
+//               shadow, and the launcher hands the native renderer a 0 % shadow map (nfsmw_nativo_sombras_escala),
+//               which is what takes the sun's shadows away: an InGameShadowEnd of 1 m left them on screen in both
+//               renderers
 //   crowd       CrowdSize (1024), Crowds lod0-lod3 (5/20/50/125 m) and SpriteDistance (60 m). Off (0) is the native
 //               renderer's: it skips the crowd's draws (PROC_CHARACTER_* vertex shaders; CrowdSize 0 still left
 //               people in the festival), with the file at 0.25x for either renderer
@@ -53,11 +55,11 @@ REXCVAR_DEFINE_DOUBLE(fh2_mundo_objetos, 1.0, "FH2",
     .range(0.25, 4.0)
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_DOUBLE(fh2_mundo_reflexos, 1.0, "FH2",
-                      "World detail: what the car reflections show, 0.25 (no live reflections) to 4 times the Xbox 360's")
-    .range(0.25, 4.0)
+                      "World detail: what the car reflections show, 0 (no live reflections) to 4 times the Xbox 360's")
+    .range(0.0, 4.0)
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-REXCVAR_DEFINE_DOUBLE(fh2_mundo_sombras, 1.0, "FH2", "World detail: how far shadows reach, 0.25 to 4 times the Xbox 360's")
-    .range(0.25, 4.0)
+REXCVAR_DEFINE_DOUBLE(fh2_mundo_sombras, 1.0, "FH2", "World detail: how far shadows reach, 0 (none) to 4 times the Xbox 360's")
+    .range(0.0, 4.0)
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_DOUBLE(fh2_mundo_multidao, 1.0, "FH2",
                       "World detail: how many people and how far, 0 (none, native renderer) to 4 times the Xbox 360's")
@@ -127,19 +129,22 @@ void ApplyFactors(std::string& xml, double objects, double reflections, double s
   ScaleFloat(xml, "screenAreaDistances", "mainScene", objects);
   ScaleFloat(xml, "screenAreaDistances", "depth", objects);
 
-  ScaleFloat(xml, "Cubemap", "FarDistance", reflections);
-  ScaleInteger(xml, "Cubemap", "MeshLimit", reflections);
-  ScaleFloat(xml, "Cubemap", "MeshSizeThreshold", 1.0 / reflections);
-  ScaleFloat(xml, "screenAreaDistances", "cubeMap", reflections);
-  ScaleFloat(xml, "screenAreaDistances", "mirror", reflections);
-  if (reflections <= 0.25) {
+  if (reflections <= 0) {
     Set(xml, "Performance", "DynamicCubemap", "0");
+  } else {
+    ScaleFloat(xml, "Cubemap", "FarDistance", reflections);
+    ScaleInteger(xml, "Cubemap", "MeshLimit", reflections);
+    ScaleFloat(xml, "Cubemap", "MeshSizeThreshold", 1.0 / reflections);
+    ScaleFloat(xml, "screenAreaDistances", "cubeMap", reflections);
+    ScaleFloat(xml, "screenAreaDistances", "mirror", reflections);
   }
 
-  ScaleFloat(xml, "ShadowEnds", "InGameShadowEnd", shadows);
-  ScaleFloat(xml, "ShadowEnds", "TrackSegCamShadowEnd", shadows);
-  if (shadows <= 0.25) {
+  if (shadows <= 0) {
     Set(xml, "Performance", "NonFocusCarProjectedShadows", "0");
+    Set(xml, "Performance", "FocusCarProjectedShadows", "0");
+  } else {
+    ScaleFloat(xml, "ShadowEnds", "InGameShadowEnd", shadows);
+    ScaleFloat(xml, "ShadowEnds", "TrackSegCamShadowEnd", shadows);
   }
 
   ScaleInteger(xml, "Performance", "CrowdSize", crowd);
