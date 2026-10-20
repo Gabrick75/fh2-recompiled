@@ -20,6 +20,7 @@ extern "C" void fh2_android_afinidade_iniciar();
 #endif
 
 void Fh2PerfilStart();  // fh2_perfil.cpp
+void Fh2MundoAplicar(rex::Runtime* runtime);  // fh2_mundo.cpp
 
 class Fh2App : public rex::ReXApp {
  public:
@@ -53,6 +54,8 @@ class Fh2App : public rex::ReXApp {
   // void OnPostLoadXexImage() override {}
   void OnPostSetup() override {
     Fh2PerfilStart();  // fh2_perfil.cpp, off unless fh2_perfil_s is set
+    // Grass, objects, reflections, shadows and crowd at the launcher's factors (fh2_mundo_*), before the game runs.
+    Fh2MundoAplicar(runtime());
 #if REX_PLATFORM_ANDROID
     fh2_android_afinidade_iniciar();  // android_rendimiento.cpp, off unless fh2_android_afinidade is set
 #endif

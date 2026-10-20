@@ -1086,7 +1086,8 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
     paint_context_.swapchain = PaintContext::CreateSwapchainForVulkanSurface(
         vulkan_device_, paint_context_.vulkan_surface, new_surface_width, new_surface_height,
         old_swapchain, paint_context_.present_queue_family, new_swapchain_format,
-        paint_context_.swapchain_extent, paint_context_.swapchain_is_fifo, surface_unusable);
+        paint_context_.swapchain_extent, paint_context_.swapchain_is_fifo, surface_unusable,
+        BucleReconexionRegistra());
     // Destroy the old swapchain that may be retired now.
     if (old_swapchain != VK_NULL_HANDLE) {
       dfn.vkDestroySwapchainKHR(device, old_swapchain, nullptr);
@@ -1211,7 +1212,8 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
     paint_context_.swapchain = PaintContext::CreateSwapchainForVulkanSurface(
         vulkan_device_, paint_context_.vulkan_surface, new_surface_width, new_surface_height,
         VK_NULL_HANDLE, paint_context_.present_queue_family, new_swapchain_format,
-        paint_context_.swapchain_extent, paint_context_.swapchain_is_fifo, surface_unusable);
+        paint_context_.swapchain_extent, paint_context_.swapchain_is_fifo, surface_unusable,
+        BucleReconexionRegistra());
     if (paint_context_.swapchain == VK_NULL_HANDLE) {
       // Failed to create the swapchain for the new Vulkan surface - destroy the
       // Vulkan surface.
@@ -1527,7 +1529,8 @@ bool VulkanPresenter::RefreshGuestOutputImpl(
 VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
     const VulkanDevice* vulkan_device, VkSurfaceKHR surface, uint32_t width, uint32_t height,
     VkSwapchainKHR old_swapchain, uint32_t& present_queue_family_out, VkFormat& image_format_out,
-    VkExtent2D& image_extent_out, bool& is_fifo_out, bool& ui_surface_unusable_out) {
+    VkExtent2D& image_extent_out, bool& is_fifo_out, bool& ui_surface_unusable_out,
+    bool registrar) {
   ui_surface_unusable_out = false;
 
   const VulkanInstance::Functions& ifn = vulkan_device->vulkan_instance()->functions();
@@ -1849,8 +1852,16 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
   swapchain_create_info.clipped = VK_TRUE;
   swapchain_create_info.oldSwapchain = old_swapchain;
   VkSwapchainKHR swapchain;
-  if (dfn.vkCreateSwapchainKHR(device, &swapchain_create_info, nullptr, &swapchain) != VK_SUCCESS) {
-    REXLOG_ERROR("VulkanPresenter: Failed to create a swapchain");
+  // registrar: false inside a long reconnection loop (Presenter::BucleReconexionRegistra), where these
+  // two lines come every cycle.
+  const VkResult create_result =
+      dfn.vkCreateSwapchainKHR(device, &swapchain_create_info, nullptr, &swapchain);
+  if (create_result != VK_SUCCESS) {
+    if (registrar) {
+      REXLOG_ERROR("VulkanPresenter: Failed to create a swapchain (VkResult {}, {}x{}, old swapchain {})",
+                   int32_t(create_result), image_extent.width, image_extent.height,
+                   old_swapchain != VK_NULL_HANDLE ? "si" : "no");
+    }
     return VK_NULL_HANDLE;
   }
   // The mode with its name. The whole frame pacing depends on it, and a bare number in the log
@@ -1872,13 +1883,15 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
     default:
       break;
   }
-  REXLOG_INFO(
-      "VulkanPresenter: Created {}x{} swapchain with format {}, color space "
-      "{}, presentation mode {} ({}), {} images requested",
-      swapchain_create_info.imageExtent.width, swapchain_create_info.imageExtent.height,
-      uint32_t(swapchain_create_info.imageFormat), uint32_t(swapchain_create_info.imageColorSpace),
-      uint32_t(swapchain_create_info.presentMode), nombre_modo,
-      swapchain_create_info.minImageCount);
+  if (registrar) {
+    REXLOG_INFO(
+        "VulkanPresenter: Created {}x{} swapchain with format {}, color space "
+        "{}, presentation mode {} ({}), {} images requested",
+        swapchain_create_info.imageExtent.width, swapchain_create_info.imageExtent.height,
+        uint32_t(swapchain_create_info.imageFormat), uint32_t(swapchain_create_info.imageColorSpace),
+        uint32_t(swapchain_create_info.presentMode), nombre_modo,
+        swapchain_create_info.minImageCount);
+  }
 
   present_queue_family_out = queue_family_index_present;
   image_format_out = swapchain_create_info.imageFormat;
@@ -1999,6 +2012,37 @@ bool VulkanPresenter::GuestOutputImage::Initialize() {
   return true;
 }
 
+void VulkanPresenter::RegistrarSuperficieDesactualizada(const char* llamada, VkResult resultado) {
+  const VulkanInstance::Functions& ifn = vulkan_device_->vulkan_instance()->functions();
+  VkSurfaceCapabilitiesKHR caps;
+  const VkResult caps_result =
+      paint_context_.vulkan_surface != VK_NULL_HANDLE
+          ? ifn.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vulkan_device_->physical_device(),
+                                                          paint_context_.vulkan_surface, &caps)
+          : VK_ERROR_SURFACE_LOST_KHR;
+  if (caps_result != VK_SUCCESS) {
+    REXLOG_WARN(
+        "[presentador] la swapchain {}x{} sale desactualizada: {} devolvio {}; las capacidades de la "
+        "superficie no se pueden leer (VkResult {})",
+        paint_context_.swapchain_extent.width, paint_context_.swapchain_extent.height, llamada,
+        int32_t(resultado), int32_t(caps_result));
+    return;
+  }
+  // The swapchain uses the identity transform when the surface supports it (CreateSwapchainForVulkanSurface).
+  // On Android a size other than currentExtent, or a currentTransform other than the one used, is the usual
+  // reason for the WSI to keep calling it outdated.
+  REXLOG_WARN(
+      "[presentador] la swapchain {}x{} sale desactualizada: {} devolvio {}. Superficie: actual {}x{}, "
+      "minima {}x{}, maxima {}x{}, transformacion actual {:#x} (soportadas {:#x}; la swapchain usa {}), "
+      "imagenes {}-{}, alfa {:#x}",
+      paint_context_.swapchain_extent.width, paint_context_.swapchain_extent.height, llamada, int32_t(resultado),
+      caps.currentExtent.width, caps.currentExtent.height, caps.minImageExtent.width,
+      caps.minImageExtent.height, caps.maxImageExtent.width, caps.maxImageExtent.height,
+      uint32_t(caps.currentTransform), uint32_t(caps.supportedTransforms),
+      (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) ? "identidad" : "heredada",
+      caps.minImageCount, caps.maxImageCount, uint32_t(caps.supportedCompositeAlpha));
+}
+
 Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_drawers) {
   // First mark of the fine-grained breakdown. With the switch off this is just a bool.
   uint64_t perfil = PintadoAhora();
@@ -2083,11 +2127,16 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
     case VK_ERROR_OUT_OF_DATE_KHR:
     case VK_ERROR_SURFACE_LOST_KHR:
     case VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT:
+      if (BucleReconexionEmpieza()) {
+        RegistrarSuperficieDesactualizada("vkAcquireNextImageKHR", acquire_result);
+      }
       // Not an error, reporting just as info (may normally occur while resizing
       // on some platforms).
-      REXLOG_INFO(
-          "VulkanPresenter: Presentation to the swapchain image has been "
-          "dropped as the swapchain or the surface has become outdated");
+      if (BucleReconexionRegistra()) {
+        REXLOG_INFO(
+            "VulkanPresenter: Presentation to the swapchain image has been "
+            "dropped as the swapchain or the surface has become outdated");
+      }
       return PaintResult::kNotPresentedConnectionOutdated;
     default:
       REXLOG_ERROR("VulkanPresenter: Failed to acquire the swapchain image");
@@ -2853,11 +2902,16 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
     case VK_ERROR_OUT_OF_DATE_KHR:
     case VK_ERROR_SURFACE_LOST_KHR:
     case VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT:
+      if (BucleReconexionEmpieza()) {
+        RegistrarSuperficieDesactualizada("vkQueuePresentKHR", present_result);
+      }
       // Not an error, reporting just as info (may normally occur while resizing
       // on some platforms).
-      REXLOG_INFO(
-          "VulkanPresenter: Presentation to the swapchain image has been "
-          "dropped as the swapchain or the surface has become outdated");
+      if (BucleReconexionRegistra()) {
+        REXLOG_INFO(
+            "VulkanPresenter: Presentation to the swapchain image has been "
+            "dropped as the swapchain or the surface has become outdated");
+      }
       // Note that the semaphore wait (followed by reset) has been enqueued,
       // however, this should have no effect on anything here likely.
       return PaintResult::kNotPresentedConnectionOutdated;

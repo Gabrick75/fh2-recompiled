@@ -28,7 +28,12 @@ import java.util.zip.ZipOutputStream;
 
 /** Own-app reports only. Generating a report never uploads or sends it. */
 final class Diagnostics {
-    private static final int LIMIT = 256 * 1024;
+    /*
+     * Per file. It was 256 KB: with the native renderer that is the first ~5 s and the last ~4 s of a session,
+     * and usuario-20's black screen fell in the cut middle of four reports in a row. Logs compress about 3.5x
+     * in the zip, so 5 MB per session log stays a reasonable attachment.
+     */
+    private static final int LIMIT = 5 * 1024 * 1024;
     private static JSONObject cachedGpu;
     // hooks, temp: the adrenotools hook folder and a temporary folder; directory, library: the driver ("" = system).
     private static native String nativeGpuReport(String hooks, String temp, String directory, String library);
@@ -474,8 +479,8 @@ final class Diagnostics {
 
     private static void addFile(ZipOutputStream zip, String name, File file) throws IOException {
         if (!file.isFile()) return;
-        // Keep startup and the last errors, even after a log storm. Never load
-        // a whole multi-megabyte native log or attach game data / saved games.
+        // Keep startup and the last errors, even after a log storm. Never load more
+        // than LIMIT of a native log or attach game data / saved games.
         try (RandomAccessFile input = new RandomAccessFile(file, "r"); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             long size = input.length();
             int head = (int) Math.min(size, LIMIT / 2);

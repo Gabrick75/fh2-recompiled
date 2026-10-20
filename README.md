@@ -64,7 +64,9 @@ rate on phones.
 What this project adds on top of the SDK:
 
 - An Android launcher: emulated or native renderer, render resolution in percent, MSAA/FXAA, anisotropic
-  filtering, shadow quality (native), FPS limit (30 to unlimited), present mode, thread pinning, game and app
+  filtering, shadow quality (native), world detail (grass, objects, reflections, shadow distance and crowd from
+  0.25x to 4x of the Xbox 360's, all but objects also off; grass, and shadows and crowd off, with the native
+  renderer), FPS limit (30 to unlimited), present mode, thread pinning, game and app
   language, an overlay with frame rate, GPU, CPU and RAM use, save import/export and backups.
 - A keyboard and a mouse as a controller: the game reads them as an Xbox 360 pad, with a racing layout, the mouse
   turning the camera and every key rebindable in game.
