@@ -90,6 +90,11 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_sincronizacion_gpu, true, "NFSMW",
 REXCVAR_DEFINE_INT32(nfsmw_nativo_resolver_sin_copia_alternar_s, 0, "NFSMW",
                      "Renderizador nativo (prueba, build 154): con N > 0 alterna copiar e intercambiar cada N "
                      "segundos, para comparar capturas del mismo sitio con el juego en pausa");
+#if defined(FH2_RECOMP)
+REXCVAR_DEFINE_DOUBLE(fh2_nativo_log_fps_s, 0.0, "FH2",
+                      "Renderizador nativo: con N > 0 escribe cada N segundos en el log los FPS, el tiempo medio y "
+                      "el peor fotograma ([nativo] fps:), para medir en el PC. 0 = no se escribe");
+#endif
 REXCVAR_DEFINE_INT32(nfsmw_nativo_sombras_escala, 100, "NFSMW",
                      "Renderizador nativo (19/09, build 201): dibuja los dos mapas de sombras de 1600x1600 "
                      "del juego a este porcentaje y los sube de tamano al resolverlos. 100 = como la Xbox 360 "
@@ -2727,6 +2732,24 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         anterior = ahora_fps;
         if (fh2_android_fotograma) {
           fh2_android_fotograma(periodo);
+        }
+        // fh2_nativo_log_fps_s: the same Swaps over a longer interval, with the worst frame in it.
+        const double intervalo_log = REXCVAR_GET(fh2_nativo_log_fps_s);
+        if (intervalo_log > 0) {
+          static auto inicio_log = ahora_fps;
+          static uint32_t swaps_log = 0;
+          static int64_t peor_ns = 0;
+          ++swaps_log;
+          peor_ns = std::max(peor_ns, periodo);
+          const double segundos_log = std::chrono::duration<double>(ahora_fps - inicio_log).count();
+          if (segundos_log >= intervalo_log) {
+            REXLOG_INFO("[nativo] fps: {:.1f} ({} fotogramas en {:.1f} s, {:.1f} ms de media, peor {:.1f} ms)",
+                        swaps_log / segundos_log, swaps_log, segundos_log, segundos_log * 1000.0 / swaps_log,
+                        peor_ns / 1e6);
+            swaps_log = 0;
+            peor_ns = 0;
+            inicio_log = ahora_fps;
+          }
         }
       }
       if (segundos >= 0.5) {
