@@ -30,7 +30,7 @@
         <activity
             android:name=".MainActivity"
             android:theme="@style/Theme.FH2.Launcher"
-            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:configChanges="orientation|screenSize|keyboardHidden|keyboard|navigation"
             android:screenOrientation="sensorLandscape"
             android:exported="true">
             <intent-filter>
@@ -48,7 +48,8 @@
             android:exported="false" />
         <activity
             android:name=".GameActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode|keyboard|navigation"
+            android:windowSoftInputMode="stateAlwaysHidden"
             android:exported="false"
             android:screenOrientation="sensorLandscape" />
     </application>

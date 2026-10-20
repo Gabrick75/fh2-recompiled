@@ -64,6 +64,11 @@ final class Menu {
         void chosen(int index);
     }
 
+    /** A control that takes a number (a slider). */
+    interface OnValue {
+        void set(float value);
+    }
+
     private final Context context;
 
     Menu(Context context) {
