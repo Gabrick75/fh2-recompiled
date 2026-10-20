@@ -1722,11 +1722,11 @@ public final class MainActivity extends AppCompatActivity {
         status.addView(importStatus);
         status.addView(checksList);
         selectFolder = ui.actionRow(tr(R.string.choose_the_game_folder), null, false,
-                view -> selectGameFolder());
+                view -> withStorageAccess(this::selectGameFolder));
 
         selectIso = ui.actionRow(tr(R.string.use_the_game_iso),
                 tr(R.string.read_straight_from_the_file_no),
-                false, view -> selectIsoFile());
+                false, view -> withStorageAccess(this::selectIsoFile));
         stopIso = ui.actionRow(tr(R.string.stop_using_the_iso),
                 tr(R.string.back_to_the_extracted_folder), true, view -> {
                     GameOptions.set(this, GameOptions.GAME_ISO, "");
@@ -1734,7 +1734,7 @@ public final class MainActivity extends AppCompatActivity {
                 });
 
         LinearLayout exportSave = ui.actionRow(tr(R.string.export_the_save),
-                tr(R.string.to_jogos) + GAME_FOLDER_NAME + "-saves-exportados", false, v -> {
+                tr(R.string.to_jogos) + GAME_FOLDER_NAME + "-saves-exportados", false, v -> withStorageAccess(() -> {
                     try {
                         File target = SaveTransfer.export(this);
                         toast(tr(R.string.save_exported_to_jogos) +
@@ -1742,14 +1742,14 @@ public final class MainActivity extends AppCompatActivity {
                     } catch (IOException e) {
                         toast(tr(R.string.could_not_export) + e.getMessage());
                     }
-                });
+                }));
         LinearLayout importSave = ui.actionRow(tr(R.string.import_a_save),
                 tr(R.string.from_an_export_or_an_automatic),
-                false, v -> chooseSaveToImport());
+                false, v -> withStorageAccess(this::chooseSaveToImport));
         return pageScroll(ui.pageTitle(pageName(GAME),
                         tr(R.string.the_game_files_and_your_progress)),
                 ui.header(tr(R.string.game_folder)),
-                ui.group(status, selectIso, stopIso, selectFolder),
+                ui.group(status, selectIso, selectFolder, stopIso),
 ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
                 ui.header("Save"),
                 ui.group(exportSave, importSave),
@@ -1929,16 +1929,28 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
                 PackageManager.PERMISSION_GRANTED;
     }
 
+    // Without file access the game page says how to get it: Android's prompt comes only when the player picks the
+    // game or a save (withStorageAccess), not when the app opens.
     private void prepareGameFolder() {
-        if (hasStorageAccess()) {
-            File root = gameRoot();
-            if (!root.isDirectory()) root.mkdirs();
-            showGameFolder(null);
+        if (!hasStorageAccess()) {
+            setGameReady(false);
+            setImportStatus(storageNotice());
             return;
         }
-        Menu.setRowEnabled(selectFolder, false);
-        setGameReady(false);
-        setImportStatus(storageNotice());
+        File root = gameRoot();
+        if (!root.isDirectory()) root.mkdirs();
+        showGameFolder(null);
+    }
+
+    private Runnable afterStorageAccess;  // what asked for file access, run once Android grants it
+
+    /** Runs then at once with file access, otherwise after Android's prompt grants it (denied, it is dropped). */
+    private void withStorageAccess(Runnable then) {
+        if (hasStorageAccess()) {
+            then.run();
+            return;
+        }
+        afterStorageAccess = then;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             startActivityForResult(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
                     Uri.parse("package:" + getPackageName())), REQUEST_STORAGE_ACCESS);
@@ -1946,6 +1958,13 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
             requestPermissions(new String[] {android.Manifest.permission.WRITE_EXTERNAL_STORAGE},
                     REQUEST_LEGACY_STORAGE);
         }
+    }
+
+    private void storageAccessAnswered() {
+        Runnable then = afterStorageAccess;
+        afterStorageAccess = null;
+        prepareGameFolder();
+        if (then != null && hasStorageAccess()) then.run();
     }
 
     private void showGameFolder(String notice) {
@@ -1984,10 +2003,6 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
     }
 
     private void selectGameFolder() {
-        if (!hasStorageAccess()) {
-            prepareGameFolder();
-            return;
-        }
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         String saved = getPreferences(MODE_PRIVATE).getString(TREE_URI, null);
@@ -1998,10 +2013,6 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
     }
 
     private void selectIsoFile() {
-        if (!hasStorageAccess()) {
-            prepareGameFolder();
-            return;
-        }
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");  // .iso has no MIME type every file manager knows
@@ -2025,8 +2036,7 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
             return;
         }
         if (requestCode == REQUEST_STORAGE_ACCESS || requestCode == REQUEST_LEGACY_STORAGE) {
-            if (hasStorageAccess()) prepareGameFolder();
-            else setImportStatus(storageNotice());
+            storageAccessAnswered();
             return;
         }
         if (requestCode == REQUEST_ISO) {
@@ -2051,7 +2061,7 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQUEST_LEGACY_STORAGE && hasStorageAccess()) prepareGameFolder();
+        if (requestCode == REQUEST_LEGACY_STORAGE) storageAccessAnswered();
     }
 
     // Copies the picked folder into a staging folder and only swaps it in once it is complete and valid, so an
@@ -2292,7 +2302,7 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
     // ---- Small helpers -------------------------------------------------------------------------------------
 
     private static String storageNotice() {
-        return tr(R.string.to_use_internal_storage_allow_the, GAME_FOLDER_NAME);
+        return tr(R.string.to_use_internal_storage_allow_the);
     }
 
     private void setImportStatus(String text) {

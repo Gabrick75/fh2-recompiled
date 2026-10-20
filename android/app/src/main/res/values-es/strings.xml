@@ -303,7 +303,7 @@
     <string name="this_phone_s_gpu_lacks_a">⚠ La GPU de este teléfono no tiene una función que exige el renderizador emulado (vertexPipelineStoresAndAtomics): con él el juego no abre. Usa el renderizador nativo.</string>
     <string name="tilt_sensitivity">Sensibilidad de la inclinación</string>
     <string name="to_jogos">A jogos/</string>
-    <string name="to_use_internal_storage_allow_the">Para usar Almacenamiento interno/%1$s, permite el acceso a archivos que pide Android.</string>
+    <string name="to_use_internal_storage_allow_the">Para encontrar el juego, la app necesita acceso a tus archivos: toca Usar la ISO del juego o Elegir la carpeta del juego, abajo, y Android pedirá el permiso.</string>
     <string name="turned_off_it_breaks_the_game">Desactivada, rompe el juego: solo aparece la franja inferior de la pantalla, con franjas negras y grises encima.</string>
     <string name="turnip_and_qualcomm_drivers_are_for">Los drivers Turnip y de Qualcomm son solo para GPUs Adreno: con esta GPU, usa el driver del sistema.</string>
     <string name="ultra_performance">Ultra rendimiento</string>
