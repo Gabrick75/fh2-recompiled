@@ -762,7 +762,7 @@ public final class MainActivity extends AppCompatActivity {
     private ScrollView graphicsPage() {
         boolean nativeRenderer = GameOptions.nativeRenderer(this);
         SegmentedControl renderer = new SegmentedControl(this,
-                new String[] {tr(R.string.emulated), tr(R.string.native_renderer)});
+                new String[] {tr(R.string.emulated), tr(R.string.native_recommended)});
         renderer.choose(nativeRenderer ? 1 : 0, false);
         rendererNote = ui.footer("");
         rendererOptions = ui.column();
@@ -782,13 +782,38 @@ public final class MainActivity extends AppCompatActivity {
             GameOptions.set(this, GameOptions.RENDERER, index == 1 ? "native" : "emulated");
             fillRendererOptions(index == 1);
             Menu.enter(rendererOptions);
+            rebuildPage(PERFORMANCE);  // its rows follow the renderer too
         });
         return pageScroll(ui.pageTitle(pageName(GRAPHICS),
                         tr(R.string.pick_the_renderer_the_options_below)),
                 ui.header(tr(R.string.renderer)),
                 ui.group(ui.stackedRow(tr(R.string.how_the_game_is_drawn), null, renderer)),
                 rendererNote,
-                rendererOptions);
+                rendererOptions,
+                restoreDefaultsGroup());
+    }
+
+    // The options the game does not apply yet (shadows, shadow distance, car reflections, GPU turbo): kept, hidden
+    // until it does.
+    private static final boolean SHOW_NOT_APPLIED = false;
+
+    /** At the foot of the Graphics and Performance pages: both pages' options back to their defaults, once confirmed. */
+    private View restoreDefaultsGroup() {
+        LinearLayout column = ui.column();
+        column.setPadding(0, dp(22), 0, 0);
+        column.addView(ui.group(ui.actionRow(tr(R.string.restore_defaults), tr(R.string.restore_defaults_description),
+                true, v -> new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                        .setTitle(tr(R.string.restore_defaults_question))
+                        .setMessage(tr(R.string.restore_defaults_message))
+                        .setPositiveButton(tr(R.string.restore), (d, w) -> {
+                            GameOptions.restoreDefaults(this);
+                            rebuildPage(GRAPHICS);
+                            rebuildPage(PERFORMANCE);
+                            toast(tr(R.string.defaults_restored));
+                        })
+                        .setNegativeButton(tr(R.string.cancel), null)
+                        .show())));
+        return column;
     }
 
     private void fillRendererOptions(boolean nativeRenderer) {
@@ -835,14 +860,18 @@ public final class MainActivity extends AppCompatActivity {
             rendererOptions.addView(ui.footer(tr(R.string.msaa_2x_4x_draws_the_3d)));
 
             rendererOptions.addView(ui.header(tr(R.string.native_performance)));
-            rendererOptions.addView(ui.group(fpsLimitRow(), onePassRow(
+            LinearLayout onePass = onePassRow(
                     tr(R.string.without_msaa_the_scene_fits_whole),
                     // B19: in 3 tiles the native renderer only shows the bottom one (black and grey bands above).
-                    tr(R.string.turned_off_it_breaks_the_game)),
+                    tr(R.string.turned_off_it_breaks_the_game));
+            onePass.setVisibility(View.GONE);  // off breaks the native renderer: kept on, out of the player's way
+            LinearLayout performance = ui.group(fpsLimitRow(), onePass,
                     ui.toggleRow(tr(R.string.deferred_scene_copy),
                             tr(R.string.experimental_the_copy_of_the_finished),
                             GameOptions.flag(this, GameOptions.LAZY_COMPOSITE),
-                            v -> GameOptions.flag(this, GameOptions.LAZY_COMPOSITE, v))));
+                            v -> GameOptions.flag(this, GameOptions.LAZY_COMPOSITE, v)));
+            Menu.refreshDividers(performance);
+            rendererOptions.addView(performance);
         } else {
             rendererOptions.addView(ui.header(tr(R.string.emulated_image)));
             LinearLayout image = ui.group();
@@ -884,9 +913,10 @@ public final class MainActivity extends AppCompatActivity {
                             GameOptions.flag(this, GameOptions.ASYNC_SHADERS),
                             v -> GameOptions.flag(this, GameOptions.ASYNC_SHADERS, v))));
         }
-            rendererOptions.addView(ui.header(tr(R.string.not_applied_yet)));
-            rendererOptions.addView(ui.group(
-                    ui.choiceRow(GameOptions.SHADOWS, tr(R.string.shadows),
+        if (!SHOW_NOT_APPLIED) return;
+        rendererOptions.addView(ui.header(tr(R.string.not_applied_yet)));
+        rendererOptions.addView(ui.group(
+                ui.choiceRow(GameOptions.SHADOWS, tr(R.string.shadows),
                         tr(R.string.how_often_the_shadow_maps_are),
                         new String[] {tr(R.string.every_frame), tr(R.string.every_2)},
                         new String[] {"1", "2"}),
@@ -1191,8 +1221,9 @@ public final class MainActivity extends AppCompatActivity {
                 ui.header(tr(R.string.vulkan_test)),
                 probeGroup(),
                 ui.footer(tr(R.string.opens_the_driver_the_way_the)),
-                ui.header(tr(R.string.not_applied_yet)),
-                turboGroup());
+                SHOW_NOT_APPLIED ? ui.header(tr(R.string.not_applied_yet)) : null,
+                SHOW_NOT_APPLIED ? turboGroup() : null,
+                restoreDefaultsGroup());
     }
 
     private String chosenDriver() {
@@ -1204,8 +1235,9 @@ public final class MainActivity extends AppCompatActivity {
         return name.isEmpty() ? tr(R.string.system_driver) : name;
     }
 
-    // The system driver or an imported one; tapping one tests it first (testDriver). Import, test, delete.
+    // The processor rows of both renderers, then the native renderer's own only when it is the chosen one.
     private View[] processorRows() {
+        boolean nativeRenderer = GameOptions.nativeRenderer(this);
         List<View> rows = new ArrayList<>();
         rows.add(ui.toggleRow(tr(R.string.pin_threads_to_cores),
                 tr(R.string.keeps_the_game_on_the_processor),
@@ -1215,26 +1247,28 @@ public final class MainActivity extends AppCompatActivity {
                 tr(R.string.instead_of_the_ring_gives_the),
                 GameOptions.flag(this, GameOptions.JOGO_RAPIDO),
                 v -> GameOptions.flag(this, GameOptions.JOGO_RAPIDO, v)));
-        rows.add(ui.toggleRow(tr(R.string.vertex_cache_across_frames),
-                tr(R.string.reuses_the_vertices_the_game_has),
-                GameOptions.flag(this, GameOptions.VERTEX_CACHE),
-                v -> GameOptions.flag(this, GameOptions.VERTEX_CACHE, v)));
-        rows.add(ui.toggleRow(tr(R.string.index_cache_across_frames),
-                tr(R.string.reuses_the_already_converted_indices_the),
-                GameOptions.flag(this, GameOptions.INDEX_CACHE),
-                v -> GameOptions.flag(this, GameOptions.INDEX_CACHE, v)));
-        rows.add(ui.toggleRow(tr(R.string.vertices_without_waiting_between_passes),
-                tr(R.string.the_gpu_starts_a_pass_s),
-                GameOptions.flag(this, GameOptions.VERTEX_NO_WAIT),
-                v -> GameOptions.flag(this, GameOptions.VERTEX_NO_WAIT, v)));
-        rows.add(ui.toggleRow(tr(R.string.small_targets_at_exact_size),
-                tr(R.string.creates_the_small_render_targets_reflect),
-                GameOptions.flag(this, GameOptions.EXACT_TARGETS),
-                v -> GameOptions.flag(this, GameOptions.EXACT_TARGETS, v)));
-        rows.add(ui.toggleRow(tr(R.string.reflection_mips_in_one_pass),
-                tr(R.string.draws_the_reflection_mips_level_by_level),
-                GameOptions.flag(this, GameOptions.REFLECTION_MIPS),
-                v -> GameOptions.flag(this, GameOptions.REFLECTION_MIPS, v)));
+        if (nativeRenderer) {
+            rows.add(ui.toggleRow(tr(R.string.vertex_cache_across_frames),
+                    tr(R.string.reuses_the_vertices_the_game_has),
+                    GameOptions.flag(this, GameOptions.VERTEX_CACHE),
+                    v -> GameOptions.flag(this, GameOptions.VERTEX_CACHE, v)));
+            rows.add(ui.toggleRow(tr(R.string.index_cache_across_frames),
+                    tr(R.string.reuses_the_already_converted_indices_the),
+                    GameOptions.flag(this, GameOptions.INDEX_CACHE),
+                    v -> GameOptions.flag(this, GameOptions.INDEX_CACHE, v)));
+            rows.add(ui.toggleRow(tr(R.string.vertices_without_waiting_between_passes),
+                    tr(R.string.the_gpu_starts_a_pass_s),
+                    GameOptions.flag(this, GameOptions.VERTEX_NO_WAIT),
+                    v -> GameOptions.flag(this, GameOptions.VERTEX_NO_WAIT, v)));
+            rows.add(ui.toggleRow(tr(R.string.small_targets_at_exact_size),
+                    tr(R.string.creates_the_small_render_targets_reflect),
+                    GameOptions.flag(this, GameOptions.EXACT_TARGETS),
+                    v -> GameOptions.flag(this, GameOptions.EXACT_TARGETS, v)));
+            rows.add(ui.toggleRow(tr(R.string.reflection_mips_in_one_pass),
+                    tr(R.string.draws_the_reflection_mips_level_by_level),
+                    GameOptions.flag(this, GameOptions.REFLECTION_MIPS),
+                    v -> GameOptions.flag(this, GameOptions.REFLECTION_MIPS, v)));
+        }
         if (GameOptions.PERFORMANCE_HINTS_IN_MENU) {
             rows.add(ui.toggleRow(tr(R.string.performance_hints_adpf),
                     tr(R.string.tells_android_how_long_each_frame),
@@ -1688,11 +1722,11 @@ public final class MainActivity extends AppCompatActivity {
         status.addView(importStatus);
         status.addView(checksList);
         selectFolder = ui.actionRow(tr(R.string.choose_the_game_folder), null, false,
-                view -> selectGameFolder());
+                view -> withStorageAccess(this::selectGameFolder));
 
         selectIso = ui.actionRow(tr(R.string.use_the_game_iso),
                 tr(R.string.read_straight_from_the_file_no),
-                false, view -> selectIsoFile());
+                false, view -> withStorageAccess(this::selectIsoFile));
         stopIso = ui.actionRow(tr(R.string.stop_using_the_iso),
                 tr(R.string.back_to_the_extracted_folder), true, view -> {
                     GameOptions.set(this, GameOptions.GAME_ISO, "");
@@ -1700,7 +1734,7 @@ public final class MainActivity extends AppCompatActivity {
                 });
 
         LinearLayout exportSave = ui.actionRow(tr(R.string.export_the_save),
-                tr(R.string.to_jogos) + GAME_FOLDER_NAME + "-saves-exportados", false, v -> {
+                tr(R.string.to_jogos) + GAME_FOLDER_NAME + "-saves-exportados", false, v -> withStorageAccess(() -> {
                     try {
                         File target = SaveTransfer.export(this);
                         toast(tr(R.string.save_exported_to_jogos) +
@@ -1708,14 +1742,14 @@ public final class MainActivity extends AppCompatActivity {
                     } catch (IOException e) {
                         toast(tr(R.string.could_not_export) + e.getMessage());
                     }
-                });
+                }));
         LinearLayout importSave = ui.actionRow(tr(R.string.import_a_save),
                 tr(R.string.from_an_export_or_an_automatic),
-                false, v -> chooseSaveToImport());
+                false, v -> withStorageAccess(this::chooseSaveToImport));
         return pageScroll(ui.pageTitle(pageName(GAME),
                         tr(R.string.the_game_files_and_your_progress)),
                 ui.header(tr(R.string.game_folder)),
-                ui.group(status, selectIso, stopIso, selectFolder),
+                ui.group(status, selectIso, selectFolder, stopIso),
 ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
                 ui.header("Save"),
                 ui.group(exportSave, importSave),
@@ -1833,6 +1867,7 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
                             .setPositiveButton(tr(R.string.use_native), (dialog, which) -> {
                                 GameOptions.set(this, GameOptions.RENDERER, "native");
                                 rebuildPage(GRAPHICS);
+                                rebuildPage(PERFORMANCE);
                                 startActivity(new Intent(this, GameActivity.class));
                             })
                             .setNeutralButton(tr(R.string.play_anyway),
@@ -1894,16 +1929,28 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
                 PackageManager.PERMISSION_GRANTED;
     }
 
+    // Without file access the game page says how to get it: Android's prompt comes only when the player picks the
+    // game or a save (withStorageAccess), not when the app opens.
     private void prepareGameFolder() {
-        if (hasStorageAccess()) {
-            File root = gameRoot();
-            if (!root.isDirectory()) root.mkdirs();
-            showGameFolder(null);
+        if (!hasStorageAccess()) {
+            setGameReady(false);
+            setImportStatus(storageNotice());
             return;
         }
-        Menu.setRowEnabled(selectFolder, false);
-        setGameReady(false);
-        setImportStatus(storageNotice());
+        File root = gameRoot();
+        if (!root.isDirectory()) root.mkdirs();
+        showGameFolder(null);
+    }
+
+    private Runnable afterStorageAccess;  // what asked for file access, run once Android grants it
+
+    /** Runs then at once with file access, otherwise after Android's prompt grants it (denied, it is dropped). */
+    private void withStorageAccess(Runnable then) {
+        if (hasStorageAccess()) {
+            then.run();
+            return;
+        }
+        afterStorageAccess = then;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             startActivityForResult(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
                     Uri.parse("package:" + getPackageName())), REQUEST_STORAGE_ACCESS);
@@ -1911,6 +1958,13 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
             requestPermissions(new String[] {android.Manifest.permission.WRITE_EXTERNAL_STORAGE},
                     REQUEST_LEGACY_STORAGE);
         }
+    }
+
+    private void storageAccessAnswered() {
+        Runnable then = afterStorageAccess;
+        afterStorageAccess = null;
+        prepareGameFolder();
+        if (then != null && hasStorageAccess()) then.run();
     }
 
     private void showGameFolder(String notice) {
@@ -1949,10 +2003,6 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
     }
 
     private void selectGameFolder() {
-        if (!hasStorageAccess()) {
-            prepareGameFolder();
-            return;
-        }
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         String saved = getPreferences(MODE_PRIVATE).getString(TREE_URI, null);
@@ -1963,10 +2013,6 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
     }
 
     private void selectIsoFile() {
-        if (!hasStorageAccess()) {
-            prepareGameFolder();
-            return;
-        }
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");  // .iso has no MIME type every file manager knows
@@ -1990,8 +2036,7 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
             return;
         }
         if (requestCode == REQUEST_STORAGE_ACCESS || requestCode == REQUEST_LEGACY_STORAGE) {
-            if (hasStorageAccess()) prepareGameFolder();
-            else setImportStatus(storageNotice());
+            storageAccessAnswered();
             return;
         }
         if (requestCode == REQUEST_ISO) {
@@ -2016,7 +2061,7 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQUEST_LEGACY_STORAGE && hasStorageAccess()) prepareGameFolder();
+        if (requestCode == REQUEST_LEGACY_STORAGE) storageAccessAnswered();
     }
 
     // Copies the picked folder into a staging folder and only swaps it in once it is complete and valid, so an
@@ -2257,7 +2302,7 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
     // ---- Small helpers -------------------------------------------------------------------------------------
 
     private static String storageNotice() {
-        return tr(R.string.to_use_internal_storage_allow_the, GAME_FOLDER_NAME);
+        return tr(R.string.to_use_internal_storage_allow_the);
     }
 
     private void setImportStatus(String text) {

@@ -3,8 +3,8 @@
      values-pt and values-es hold the same names in Portuguese and Spanish. -->
 <resources>
     <string name="a_counter_in_the_corner_frames">A counter in the corner: frames per second and milliseconds per frame.</string>
-    <string name="a_disc_image_the_xbox_360">A disc image (the Xbox 360 ISO) is read in place, taking no extra space. Or an extracted folder (default.xex, the two .xex DLLs and media), copied to Internal storage/%1$s (7.3 GB). With the ISO, the native renderer\'s fh2_shaders.nfsp goes next to it or in %1$s.</string>
-    <string name="a_frame_that_misses_the_vsync">A frame that misses the vsync by a little is shown at once, instead of waiting for the next one. It does not change the fps; turn it off if you notice judder.</string>
+    <string name="a_disc_image_the_xbox_360">An Xbox 360 disc ISO is read in place, taking no extra space. Or a folder with the extracted game, copied to Internal storage/%1$s (7.3 GB). With the ISO, the native renderer\'s fh2_shaders.nfsp goes next to it or in %1$s.</string>
+    <string name="a_frame_that_misses_the_vsync">A frame a little late for the screen is shown at once instead of waiting for the next one. It does not change the FPS; turn it off if you notice judder.</string>
     <string name="about">About</string>
     <string name="above_normal_the_sound_may_distort">Above Normal the sound may distort at its peaks.</string>
     <string name="achievements">Achievements</string>
@@ -53,8 +53,9 @@
     <string name="could_not_save_the_zip">"Could not save the ZIP: "</string>
     <string name="create_report">Create report</string>
     <string name="created">created</string>
-    <string name="creates_the_small_render_targets_reflect">Creates the small render targets (reflection cube) at their exact height instead of 720 rows: smaller passes and less tile traffic. If the game ever resolves below the image, it grows back to full height on its own.</string>
+    <string name="creates_the_small_render_targets_reflect">Draws the game\'s small images, like the reflections, only at the size they need instead of the whole screen\'s: less work for the GPU. When needed, it goes back to full size on its own.</string>
     <string name="decode_audio_in_the_background">Decode audio in the background</string>
+    <string name="defaults_restored">Defaults restored.</string>
     <string name="deferred_scene_copy">Deferred scene copy</string>
     <string name="delete">Delete</string>
     <string name="delete_2">Delete %1$s?</string>
@@ -73,13 +74,13 @@
     <string name="emulated_image">Emulated image</string>
     <string name="emulated_performance">Emulated performance</string>
     <string name="emulated_renderer_not_supported">Emulated renderer not supported</string>
-    <string name="emulated_the_xbox_360_gpu_emulated">Emulated: the Xbox 360 GPU, emulated. The tested mode, and the most faithful to the console\'s image.</string>
+    <string name="emulated_the_xbox_360_gpu_emulated">Emulated: imitates the Xbox 360\'s GPU. The most faithful to the console\'s image, but much slower.</string>
     <string name="error">Error</string>
     <string name="every_2">Every 2</string>
     <string name="every_frame">Every frame</string>
     <string name="every_language_on_the_disc_texts">Every language on the disc: texts, menus and the sat nav voice. The ones marked voiced also have the dialogue in that language. Takes effect the next time the game starts.</string>
-    <string name="experimental_the_copy_of_the_finished">Experimental. The copy of the finished scene (before the HUD) is only made if something will use it, like the raindrops; if the game does not, the GPU saves the copy. It turns itself off if it sees a difference. Gain not measured yet.</string>
-    <string name="experimental_when_the_game_copies_an">Experimental. When the game copies an image it drew to use it as a texture, the copy stays on the GPU, without going through the emulated console\'s memory. Turn it off if an image looks wrong.</string>
+    <string name="experimental_the_copy_of_the_finished">Experimental. Copies the scene\'s image only when an effect needs it, like the raindrops, and spares the GPU the rest of the time. It turns itself off if it sees a difference.</string>
+    <string name="experimental_when_the_game_copies_an">Experimental. When the game reuses an image it drew, it is copied straight on the GPU, which is faster. Turn it off if an image looks wrong.</string>
     <string name="export">" · export"</string>
     <string name="export_copies_your_progress_profile_and">Export copies your progress (profile and saves). Import replaces the current progress with an export or one of the automatic backups (jogos/%1$s-saves). To take the save to another phone, copy the exported folder to the same place on it and import.</string>
     <string name="export_the_save">Export the save</string>
@@ -92,7 +93,7 @@
     <string name="far">Far</string>
     <string name="fastest_core_for_the_game">Fastest core for the game</string>
     <string name="fh2_shaders_nfsp_next_to_the">fh2_shaders.nfsp, next to the game files (%1$s). Without it the native renderer has no translated shaders.</string>
-    <string name="fifo_waits_for_the_screen_s" formatted="false">FIFO waits for the screen\'s vsync: the fastest (+57 % in the menu), and it runs cooler. MAILBOX repaints nonstop: a little less lag, but it takes CPU and GPU from the game.</string>
+    <string name="fifo_waits_for_the_screen_s" formatted="false">FIFO follows the screen\'s pace: the fastest (+57 %), and it runs cooler. MAILBOX shows each frame as soon as it is ready: a little less lag, but it takes performance from the game.</string>
     <string name="forza_horizon_2_for_the_xbox">Forza Horizon 2 for the Xbox 360, recompiled for Android.</string>
     <string name="found">Found</string>
     <string name="fps_limit">FPS limit</string>
@@ -132,25 +133,25 @@
     <string name="high_smooths_more_edges_the_faint">High smooths more edges, the faint ones too, and softens the image a little.</string>
     <string name="home">Home</string>
     <string name="how_far_objects_cast_shadows_nearly">How far objects cast shadows: nearly all of their cost is there. Far is the game\'s own.</string>
-    <string name="how_much_of_the_xbox_360" formatted="false">How much of the Xbox 360\'s resolution (1280×720) the game draws, in 12.5 % steps. Below 100 % the image is less sharp and the GPU works much less.</string>
-    <string name="how_much_of_the_xbox_360_2" formatted="false">How much of the Xbox 360\'s resolution (1280×720) the game draws: the scene and the post-processing (the HUD gets less sharp too). Below 100 % the GPU works much less.</string>
+    <string name="how_much_of_the_xbox_360" formatted="false">How much of the Xbox 360\'s original resolution the game draws, in 12.5 % steps. Below 100 % the image is less sharp and the GPU works much less.</string>
+    <string name="how_much_of_the_xbox_360_2" formatted="false">How much of the Xbox 360\'s original resolution the game draws, effects and HUD included. Below 100 % the image is less sharp and the GPU works much less.</string>
     <string name="how_often_the_shadow_maps_are">How often the shadow maps are redrawn. Every 2 frames costs less and is hardly noticed.</string>
     <string name="how_the_game_is_drawn">How the game is drawn</string>
-    <string name="how_the_image_is_brought_to">How the image is brought to the screen\'s size. Off draws at 100 % with no upscaling. FSR is sharper when the game draws below the screen\'s resolution; CAS only sharpens.</string>
+    <string name="how_the_image_is_brought_to" formatted="false">How the image is enlarged to the screen\'s size. Off draws at 100 %, with no enlarging. FSR is sharper when the resolution is below 100 %; CAS only sharpens.</string>
     <string name="image">Image</string>
     <string name="image_stretched_to_the_whole_screen">Image stretched to the whole screen</string>
     <string name="import_a_driver_zip">Import a driver (.zip)</string>
     <string name="import_a_save">Import a save</string>
-    <string name="import_an_android_driver_s_zip">Import an Android driver\'s .zip (Turnip, Mesa\'s free driver for Adreno, or a Qualcomm one, with meta.json). Before a driver is chosen the app tests whether it opens Vulkan on this GPU. Takes effect the next time the game starts.</string>
+    <string name="import_an_android_driver_s_zip">Import a driver\'s .zip for Adreno GPUs (Turnip or Qualcomm\'s). Before a driver is used, the app tests whether it works on this GPU. Takes effect the next time the game starts.</string>
     <string name="import_failed">"Import failed: "</string>
     <string name="import_save">Import</string>
     <string name="index_cache_across_frames">Index cache across frames</string>
     <string name="install_the_game">Install the game</string>
-    <string name="instead_of_the_ring_gives_the">Instead of the ring, gives the fastest core to the game\'s busiest thread (it changes on loads, and the mode follows it). For heavy scenery, where the game thread saturates before the ring; off keeps the mode above.</string>
+    <string name="instead_of_the_ring_gives_the">Gives the fastest core to the game\'s busiest part instead of the graphics one. It may help in heavy scenery. Only with the option above on.</string>
     <string name="internal_storage">Internal storage/</string>
     <string name="iso_chosen">ISO chosen.</string>
     <string name="keep_playing_to_find_out">Keep playing to find out.</string>
-    <string name="keeps_the_game_on_the_processor" formatted="false">Keeps the game on the processor\'s fast cores only, and the GPU command processor (the emulated or the native one) alone on the fastest (+16 %).</string>
+    <string name="keeps_the_game_on_the_processor" formatted="false">Keeps the game on the processor\'s fastest cores only, and the very fastest for the part that drives the graphics (+16 %).</string>
     <string name="language">Language</string>
     <string name="locked">Locked</string>
     <string name="locks_the_gpu_clock_instead_of">Locks the GPU clock instead of letting the system adjust it. Only with Turnip on an Adreno GPU. It does not always help: check with the FPS counter.</string>
@@ -168,14 +169,15 @@
     <string name="mib_of_7500">" MiB of ~7500…"</string>
     <string name="missing">Missing</string>
     <string name="missing_2">Missing</string>
-    <string name="msaa_2x_4x_draws_the_3d">MSAA 2x/4x draws the 3D scene with 2/4 samples and resolves in the pass (costs GPU); FXAA is a cheap filter over the final image.</string>
-    <string name="native_experimental_draws_the_game_s">Native (experimental): draws the game\'s commands straight in Vulkan, with the translated shaders. Much faster, but it still has image errors.</string>
+    <string name="msaa_2x_4x_draws_the_3d">MSAA 2x/4x smooths the scene\'s edges better but weighs on the GPU; FXAA is a light filter over the final image.</string>
+    <string name="native_experimental_draws_the_game_s">Native (recommended): draws the game straight on the GPU, without emulating the Xbox 360\'s. Much faster; it may still have a few image errors.</string>
     <string name="native_image">Native image</string>
     <string name="native_performance">Native performance</string>
+    <string name="native_recommended">Native (recommended)</string>
     <string name="native_renderer">Native</string>
     <string name="native_resolution">Native</string>
     <string name="near">Near</string>
-    <string name="next_game_only_after_60_s">Next game only: after 60 s of play, records 10 s with simpleperf and saves where the game spends the CPU (per thread and per function) in the session log, which goes into the report. Needs root: the permission prompt shows when you turn it on, not during the game. Measures only.</string>
+    <string name="next_game_only_after_60_s">Next game only: after 60 s of play, measures for 10 s where the game spends the processor and saves it in the session log, which goes into the report. Needs root: the permission prompt shows when you turn it on, not during the game. Measures only.</string>
     <string name="no_achievements_yet">No achievements yet</string>
     <string name="no_root_the_phone_is_not">No root: the phone is not rooted or the permission was denied. The performance profile will not be recorded.</string>
     <string name="no_root_the_phone_is_not_2">No root: the phone is not rooted or the permission was denied. The usual diagnostics are still available.</string>
@@ -187,12 +189,12 @@
     <string name="off_masculine">Off</string>
     <string name="off_no">Off</string>
     <string name="off_plural">Off</string>
-    <string name="off_the_game_waits_for_each">Off: the game waits for each new shader to be ready, which can stutter. On: it goes on without waiting, with less stutter, but that shader\'s object may vanish or flicker for a moment.</string>
+    <string name="off_the_game_waits_for_each">Off: the game waits for each new graphics effect to be ready, which can stutter. On: it goes on without waiting, with less stutter, but an object may vanish or flicker for a moment.</string>
     <string name="off_the_xbox_360_s_16">Off: the Xbox 360\'s 16:9 image, with black bars. On: fills the screen, but distorts the image.</string>
     <string name="ok">ok</string>
-    <string name="on_a_thread_of_its_own">On: a thread of its own decodes the game\'s sound and spares the CPU, but on some phones the sound stutters or sounds robotic. Off: the game decodes its own sound, as before. Takes effect the next time the game starts.</string>
+    <string name="on_a_thread_of_its_own">On: the game\'s sound is processed apart and spares the processor, but on some devices it stutters or sounds robotic. Off: as before. Takes effect the next time the game starts.</string>
     <string name="opening_the_driver_and_creating_a">Opening the driver and creating a Vulkan device…</string>
-    <string name="opens_the_driver_the_way_the">Opens the driver the way the game does, creates a Vulkan device and checks what the renderers need. It runs in a separate process: a driver that crashes does not take the app with it.</string>
+    <string name="opens_the_driver_the_way_the">Opens the driver the way the game does and checks it has what the game needs. It runs apart: a driver that crashes does not close the app.</string>
     <string name="others">Others</string>
     <string name="overlay">Overlay</string>
     <string name="performance">Performance</string>
@@ -224,8 +226,13 @@
     <string name="reset">Reset</string>
     <string name="reset_the_controls">Reset the controls</string>
     <string name="resolution">Resolution</string>
-    <string name="reuses_the_already_converted_indices_the">Reuses the already converted indices the game has not changed since the previous frame, instead of converting and copying them again.</string>
-    <string name="reuses_the_vertices_the_game_has" formatted="false">Reuses the vertices the game has not changed since the previous frame instead of copying them again: 87 % less data sent to the GPU. On the S23 Ultra, standing still, +35 % fps (27 → 36.5); in a landscape with a lot of vegetation, from ~30 to ~40 fps.</string>
+    <string name="restore">Restore</string>
+    <string name="restore_defaults">Restore defaults</string>
+    <string name="restore_defaults_description">Graphics and Performance back to how they came. The chosen GPU driver stays.</string>
+    <string name="restore_defaults_message">Every Graphics and Performance option goes back to its default, and the renderer back to Native. The chosen GPU driver does not change.</string>
+    <string name="restore_defaults_question">Restore defaults?</string>
+    <string name="reuses_the_already_converted_indices_the">Reuses the already prepared geometry data that has not changed since the previous frame, instead of preparing it again.</string>
+    <string name="reuses_the_vertices_the_game_has" formatted="false">Reuses the geometry that has not changed since the previous frame instead of sending it to the GPU again: 87 % less data and up to +35 % FPS.</string>
     <string name="save_diagnostics_zip">Save diagnostics (ZIP)</string>
     <string name="save_exported_to_jogos">Save exported to jogos/</string>
     <string name="save_imported_from">"Save imported from "</string>
@@ -240,22 +247,22 @@
     <string name="shadow_quality">Shadow quality</string>
     <string name="shadows">Shadows</string>
     <string name="sharper_textures_seen_at_an_angle">Sharper textures seen at an angle, like the road in the distance.</string>
-    <string name="shortcut_render_scale_fsr_1_0" formatted="false">Render scale + FSR 1.0 together (100/77/67/59/50/33 % of 1280x720).</string>
+    <string name="shortcut_render_scale_fsr_1_0" formatted="false">Picks the resolution and FSR in one go: from Mega quality (100 %) to Ultra performance (33 %).</string>
     <string name="show_fps">Show FPS</string>
     <string name="show_gpu_cpu_and_ram_use">Show GPU, CPU and RAM use</string>
     <string name="show_hide">Show / hide</string>
     <string name="size_larger">Size +</string>
     <string name="size_of_the_final_image_on">Size of the final image on the screen (the native one is %1$s×%2$s). The game renders the same way.</string>
-    <string name="size_of_the_sun_s_shadow">Size of the sun\'s shadow maps (the game uses four of 1024×1024). Smaller makes shadow edges blurrier and eases the GPU; 0 turns shadows off. Applied when the game starts.</string>
+    <string name="size_of_the_sun_s_shadow">Size of the sun\'s shadows. Smaller makes shadow edges blurrier and eases the GPU; 0 turns shadows off. Applied when the game starts.</string>
     <string name="size_smaller">Size −</string>
     <string name="small_targets_at_exact_size">Small targets at exact size</string>
-    <string name="smooths_jagged_edges_msaa_is_the" formatted="false">Smooths jagged edges. MSAA is the game\'s own and the costliest for the GPU (off gives +91 %; 2x costs less than 4x, +37 %); FXAA is a cheap filter over the final image.</string>
+    <string name="smooths_jagged_edges_msaa_is_the" formatted="false">Smooths jagged edges. MSAA is the game\'s own and the heaviest (off gives +91 %; 2x is lighter than 4x, +37 %); FXAA is a light filter over the final image.</string>
     <string name="steer_by_tilting_the_phone">Steer by tilting the phone</string>
     <string name="stop_using_the_iso">Stop using the ISO</string>
     <string name="stretch_to_the_whole_screen">Stretch to the whole screen</string>
     <string name="system_driver">System driver</string>
     <string name="tap_a_control_to_pick_it">Tap a control to pick it · drag to move it · pinch to resize it</string>
-    <string name="tells_android_how_long_each_frame">Tells Android how long each frame worked and the FPS limit\'s target, so it raises the processor\'s clock when a frame does not fit the target.</string>
+    <string name="tells_android_how_long_each_frame">Tells Android when the game needs more power, so it speeds up the processor at the right time.</string>
     <string name="test_again">Test again</string>
     <string name="test_the_driver">Test the driver</string>
     <string name="testing">Testing</string>
@@ -273,15 +280,15 @@
     <string name="the_folder_has_no_save">"the folder has no save: "</string>
     <string name="the_folder_must_have_default_xex">The folder must have default.xex, XMediaFacade_default.xex, SpeechFacade_default.xex and media.</string>
     <string name="the_game_can_use_this_driver">The game can use this driver.</string>
-    <string name="the_game_draws_the_scene_in" formatted="false">The game draws the scene in 3 tiles because of MSAA; without it the scene fits whole and is drawn once: less work for the CPU (+25 %). Only with anti-aliasing off or FXAA.</string>
+    <string name="the_game_draws_the_scene_in" formatted="false">Draws the scene in one go instead of in parts: less work for the processor (+25 %). Only works with anti-aliasing off or on FXAA.</string>
     <string name="the_game_files_and_your_progress">The game files and your progress.</string>
     <string name="the_game_folder_has_an_invalid">The game folder has an invalid name.</string>
     <string name="the_game_folder_has_an_invalid_2">The game folder has an invalid path.</string>
     <string name="the_game_may_not_start_with">The game may not start with it. Use it anyway?</string>
     <string name="the_game_may_not_start_with_2">The game may not start with this driver.</string>
-    <string name="the_game_s_cap_30_is">The game\'s cap; 30 is the Xbox 360\'s. Above it the game shows more frames if the phone keeps up, and the screen switches to its highest rate. Start screens and loadings may reach twice the cap. More frames mean more heat.</string>
+    <string name="the_game_s_cap_30_is">The most frames per second; 30 is the Xbox 360\'s. Above it the game shows more frames if the device keeps up. Start screens and loadings may reach twice the limit. More frames mean more heat.</string>
     <string name="the_game_s_language_and_this">The game\'s language and this app\'s.</string>
-    <string name="the_gpu_starts_a_pass_s">The GPU starts a pass\'s geometry while it still shades the previous one, instead of waiting for every pass to finish. The image is the same.</string>
+    <string name="the_gpu_starts_a_pass_s">The GPU starts the frame\'s next step without waiting for the previous one to finish. The image is the same.</string>
     <string name="the_imported_driver_did_not_load">The imported driver did not load (one of its libraries is missing, or it is not for this GPU) and the system used the stock driver instead.</string>
     <string name="the_list_comes_from_the_game">The list comes from the game itself: open the game once and it shows up here.</string>
     <string name="the_original_resolution">" · the original resolution"</string>
@@ -295,16 +302,16 @@
     <string name="this_app_was_recompiled_from_the">This app was recompiled from the %1$s edition and your default.xex is from another one (SHA-256 %2$s…). The game does not run with another edition.\n\nUse a copy of the %1$s edition (the SHA-256 of its default.xex starts with %3$s).</string>
     <string name="this_driver_needs_android_api_or">this driver needs Android API %1$s or newer (this is %2$s)</string>
     <string name="this_menu_and_the_touch_controls">This menu and the touch controls panel.</string>
-    <string name="this_phone_s_gpu_lacks_a">⚠ This phone\'s GPU lacks a feature the emulated renderer needs (vertexPipelineStoresAndAtomics): with it the game does not start. Use the native renderer.</string>
+    <string name="this_phone_s_gpu_lacks_a">⚠ This device\'s GPU lacks a feature the emulated renderer needs: with it the game does not start. Use the native renderer.</string>
     <string name="tilt_sensitivity">Tilt sensitivity</string>
     <string name="to_jogos">To jogos/</string>
-    <string name="to_use_internal_storage_allow_the">To use Internal storage/%1$s, allow the file access Android asks for.</string>
+    <string name="to_use_internal_storage_allow_the">To find the game, the app needs access to your files: tap Use the game ISO or Choose the game folder below, and Android will ask for it.</string>
     <string name="turned_off_it_breaks_the_game">Turned off, it breaks the game: only the bottom band of the screen shows, with black and grey bands above.</string>
     <string name="turnip_and_qualcomm_drivers_are_for">Turnip and Qualcomm drivers are for Adreno GPUs only: with this GPU, use the system driver.</string>
     <string name="ultra_performance">Ultra performance</string>
     <string name="mega_quality">Mega quality</string>
     <string name="ultra_quality">Ultra quality</string>
-    <string name="under_the_fps_gpu_load_the" formatted="false">Under the FPS: GPU load; the game\'s CPU (of all cores) and the busiest thread (near 100 % it is what limits the FPS); the game\'s memory and the phone\'s free memory, in GB.</string>
+    <string name="under_the_fps_gpu_load_the" formatted="false">Under the FPS: GPU use; the game\'s processor use and that of its busiest part (near 100 %, it is what limits the FPS); the game\'s memory and the free memory, in GB.</string>
     <string name="unlocked">unlocked</string>
     <string name="unlocked_2">Unlocked</string>
     <string name="unlocked_on">"Unlocked on "</string>
@@ -327,9 +334,9 @@
     <string name="volume">Volume</string>
     <string name="vulkan_test">Vulkan test</string>
     <string name="what_happened_how_to_reproduce_it">What happened? How to reproduce it? (optional)</string>
-    <string name="without_msaa_the_scene_fits_whole" formatted="false">Without MSAA the scene fits whole and is drawn once, not in 3 tiles: less work for the CPU (+25 %).</string>
+    <string name="without_msaa_the_scene_fits_whole" formatted="false">Draws the scene in one go instead of in parts: less work for the processor (+25 %).</string>
     <string name="writes_every_repetition_of_the_messages">Writes every repetition of the messages that repeat many times a second (renderer textures, unimplemented functions). Off, each shows only its first 20 times, and the log keeps more play time. For investigating only.</string>
     <string name="writes_to_the_log_how_long">Writes to the log how long the GPU spends on each part of the frame. For investigating only: it slows the game down, since each measurement makes the GPU wait.</string>
     <string name="reflection_mips_in_one_pass">Reflection mips in one pass per level</string>
-    <string name="draws_the_reflection_mips_level_by_level">Draws the reflection cube\'s smaller levels with its six faces together: 8 render passes instead of 48. The image does not change; it saves GPU time on phones.</string>
+    <string name="draws_the_reflection_mips_level_by_level">Draws the reflections\' smaller versions all together instead of one by one. The image does not change; it eases the GPU.</string>
 </resources>

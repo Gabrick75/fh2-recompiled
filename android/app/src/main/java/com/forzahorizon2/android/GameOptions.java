@@ -11,8 +11,8 @@ import java.util.List;
  * GameActivity passes on the command line, which wins over fh2.toml; the display ones are applied by GameActivity
  * itself. Some are only stored for now: their option row says so (see MainActivity.notYet).
  *
- * Forza Horizon 2 runs on the emulated Xenos GPU by default, so the fixed arguments are the ones nfsmw-android found
- * the emulation needs on Android drivers. The native renderer (RENDERER) replaces it; it needs the translated shader
+ * Forza Horizon 2 runs on the native renderer by default (RENDERER); the emulated Xenos GPU's fixed arguments are the
+ * ones nfsmw-android found the emulation needs on Android drivers. The native renderer needs the translated shader
  * library, fh2_shaders.nfsp, next to the game files. For now it is built on the PC (tools/xenos/biblioteca.sh) and copied
  * with tools/enviar_biblioteca_android.sh; the plan is to build it on the phone from the player's own game files (see
  * docs/renderizador_nativo.md, "A biblioteca no celular").
@@ -53,9 +53,8 @@ final class GameOptions {
     // fh2_nativo_cache_indices (native), on by default. Not "indices_cache": test builds of 2026-10-14 used that key
     // and some phones saved it off to dodge a since-fixed bug.
     static final String INDEX_CACHE = "index_cache";
-    // fh2_nativo_vertices_sin_espera (native), off by default: no measurable gain in the 2026-10-18 A/B
-    static final String VERTEX_NO_WAIT = "vertex_no_wait";
-    static final String EXACT_TARGETS = "exact_targets";  // fh2_nativo_destinos_exactos (native), off by default
+    static final String VERTEX_NO_WAIT = "vertex_no_wait";  // fh2_nativo_vertices_sin_espera (native), on by default
+    static final String EXACT_TARGETS = "exact_targets";  // fh2_nativo_destinos_exactos (native), on by default
     // fh2_nativo_mips_reflejo_juntos (native), off by default until the phone A/B
     static final String REFLECTION_MIPS = "reflection_mips";
     // Diagnostics (About page)
@@ -99,7 +98,7 @@ final class GameOptions {
     static String defaultOf(String key) {
         switch (key) {
             case RESOLUTION: return RES_NATIVE;
-            case RENDERER: return "emulated";
+            case RENDERER: return "native";
             case PRESENT_MODE: return "fifo";
             case RENDER_SCALE: return "100";
             case FPS: return "30";  // the Xbox 360's
@@ -112,7 +111,7 @@ final class GameOptions {
             case SCALING: return "bilinear";
             case SHARPNESS: return "0";
             case FSR_MODE: return "mega_quality";
-            case ANISOTROPIC: return "3";
+            case ANISOTROPIC: return "0";
             case SHADOWS: return "1";
             case SHADOW_DISTANCE: return "far";
             case CAR_REFLECTIONS: return "high";
@@ -121,8 +120,7 @@ final class GameOptions {
             case VOLUME: return "100";
             case VIBRATION_PHONE: return "true";
             case VIBRATION_MODE: return "both";
-            // English (US), what the console settings said before this option existed.
-            case GAME_LANGUAGE: return "en-US";
+            case GAME_LANGUAGE: return systemGameLanguage();
             case GAME_ISO: return "";
             case GAMERTAG: return "Player";
             case APP_LANGUAGE: return "";  // the system's: Android picks from the phone's languages
@@ -170,8 +168,23 @@ final class GameOptions {
     static boolean flag(Context context, String key) {
         boolean byDefault = PIN_THREADS.equals(key) || PERFORMANCE_HINTS.equals(key) || ONE_PASS.equals(key) ||
                 ADAPTIVE_VBLANK.equals(key) || RESOLVE_SHORTCUT.equals(key) || VERTEX_CACHE.equals(key) ||
-                INDEX_CACHE.equals(key) || VIBRATION_PHONE.equals(key);
+                INDEX_CACHE.equals(key) || VERTEX_NO_WAIT.equals(key) || EXACT_TARGETS.equals(key) ||
+                VIBRATION_PHONE.equals(key);
         return prefs(context).getBoolean(key, byDefault);
+    }
+
+    // What "Restore defaults" (the Graphics and Performance pages) takes back: every option of those two pages, the
+    // hidden ones too, but the imported GPU driver.
+    private static final String[] RESTORABLE = {RENDERER, RENDER_SCALE, FPS, ANTI_ALIASING, MSAA_SAMPLES, FXAA_QUALITY,
+            SCALING, SHARPNESS, FSR_MODE, ANISOTROPIC, SHADOWS, SHADOW_DISTANCE, CAR_REFLECTIONS, SHADOW_MAP_SCALE,
+            ONE_PASS, RESOLVE_SHORTCUT, ASYNC_SHADERS, LAZY_COMPOSITE, PIN_THREADS, JOGO_RAPIDO, PERFORMANCE_HINTS,
+            VERTEX_CACHE, INDEX_CACHE, VERTEX_NO_WAIT, EXACT_TARGETS, REFLECTION_MIPS, TURBO};
+
+    /** The Graphics and Performance options back to their defaults (defaultOf, flag): the stored values go. */
+    static void restoreDefaults(Context context) {
+        SharedPreferences.Editor editor = prefs(context).edit();
+        for (String key : RESTORABLE) editor.remove(key);
+        editor.apply();
     }
 
     static void flag(Context context, String key, boolean value) {
@@ -336,6 +349,24 @@ final class GameOptions {
             fps = 30;
         }
         return fps <= 0 ? 240 : Math.max(30, Math.min(120, fps)) * 2;
+    }
+
+    /**
+     * The game's language until the player picks one: the closest to the phone's languages (not the app's), in
+     * their order. The exact one first (en-GB, es-ES), else the first of the same language (es: Mexico's, which is
+     * voiced); English (US) when none matches.
+     */
+    static String systemGameLanguage() {
+        android.os.LocaleList locales = android.content.res.Resources.getSystem().getConfiguration().getLocales();
+        for (int i = 0; i < locales.size(); i++) {
+            java.util.Locale locale = locales.get(i);
+            String language = locale.getLanguage();
+            String tag = language + "-" + locale.getCountry();
+            for (GameLanguage game : GAME_LANGUAGES) if (game.code.equalsIgnoreCase(tag)) return game.code;
+            if ("es".equals(language)) return "es-MX";
+            for (GameLanguage game : GAME_LANGUAGES) if (game.code.startsWith(language + "-")) return game.code;
+        }
+        return "en-US";
     }
 
     static GameLanguage gameLanguage(Context context) {
