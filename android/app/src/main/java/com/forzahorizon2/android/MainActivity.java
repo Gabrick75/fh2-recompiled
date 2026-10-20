@@ -211,12 +211,11 @@ public final class MainActivity extends AppCompatActivity {
     // three languages (AppLanguage.tr); changing the language builds the screen again.
 
     private static final int ACHIEVEMENTS = 0, GAME = 1, LANGUAGE = 2, DISPLAY = 3, GRAPHICS = 4, PERFORMANCE = 5,
-            SOUND = 6, ABOUT = 7, INPUT = 8;
-    private static final int HOME = 9;  // not in the sidebar's list: its name at the top opens it
+            SOUND = 6, ABOUT = 7;
+    private static final int HOME = 8;  // not in the sidebar's list: its name at the top opens it
     private static final int[] PAGE_ICONS = {R.drawable.ic_menu_conquistas, R.drawable.ic_menu_jogo,
             R.drawable.ic_menu_idioma, R.drawable.ic_menu_tela, R.drawable.ic_menu_graficos,
-            R.drawable.ic_menu_desempenho, R.drawable.ic_menu_outros, R.drawable.ic_menu_sobre,
-            R.drawable.ic_menu_teclado};
+            R.drawable.ic_menu_desempenho, R.drawable.ic_menu_outros, R.drawable.ic_menu_sobre};
     private static final String STATE_PAGE = "page";
 
     private Menu ui;
@@ -248,7 +247,6 @@ public final class MainActivity extends AppCompatActivity {
             case ACHIEVEMENTS: return tr(R.string.achievements);
             case LANGUAGE: return tr(R.string.language);
             case GAME: return tr(R.string.game_and_saves);
-            case INPUT: return tr(R.string.keyboard_and_mouse);
             default: return tr(R.string.about);
         }
     }
@@ -720,7 +718,6 @@ public final class MainActivity extends AppCompatActivity {
             case ACHIEVEMENTS: return achievementsPage();
             case LANGUAGE: return languagePage();
             case GAME: return gamePage();
-            case INPUT: return inputPage();
             default: return aboutPage();
         }
     }
@@ -1807,103 +1804,6 @@ ui.footer(tr(R.string.a_disc_image_the_xbox_360, GAME_FOLDER_NAME)),
                 ui.header("Save"),
                 ui.group(exportSave, importSave),
                 ui.footer(tr(R.string.export_copies_your_progress_profile_and, GAME_FOLDER_NAME)));
-    }
-
-    // ---- Input: the keyboard and the mouse as a controller -------------------------------------------------
-
-    /*
-     * The keys of each layout, the same ones the SDK's MnK driver uses (sdk/src/input/mnk). The mouse is not
-     * listed with a key: it moves the camera, and its buttons can be bound in the game (F4).
-     */
-    private static final Object[][] RACE_KEYS = {
-            {R.string.steering, "A / D"},
-            {R.string.throttle, "W"},
-            {R.string.brake, "S"},
-            {R.string.handbrake, "Space"},
-            {R.string.camera, "Mouse / \u2190 \u2191 \u2193 \u2192"},
-            {R.string.dpad, "I J K L"},
-            {R.string.start, "Enter"},
-            {R.string.back, "Esc"},
-    };
-
-    private static final Object[][] PAD_KEYS = {
-            {R.string.steering, "A / D"},
-            {R.string.throttle, "E / O"},
-            {R.string.brake, "Q / I"},
-            {R.string.handbrake, "Space"},
-            {R.string.camera, "Mouse / \u2190 \u2191 \u2193 \u2192"},
-            {R.string.dpad, "Shift + \u2190 \u2191 \u2193 \u2192"},
-            {R.string.start, "X / Enter"},
-            {R.string.back, "Z / Tab"},
-    };
-
-    private ScrollView inputPage() {
-        boolean on = GameOptions.flag(this, GameOptions.MNK_MODE);
-        boolean mouse = GameOptions.flag(this, GameOptions.MNK_MOUSE);
-
-        // The keys of the chosen layout.
-        boolean racing = "race".equals(GameOptions.get(this, GameOptions.MNK_PRESET));
-        LinearLayout keys = ui.group();
-        for (Object[] key : (racing ? RACE_KEYS : PAD_KEYS)) {
-            keys.addView(ui.row(tr((Integer) key[0]), (String) key[1], null));
-        }
-
-        // The mouse: a toggle and the sensitivity, shown only when the keyboard and the mouse are on.
-        LinearLayout mouseBox = ui.group(
-                ui.toggleRow(tr(R.string.mouse_looks_around), tr(R.string.the_mouse_turns_the_camera),
-                        mouse, v -> GameOptions.flag(this, GameOptions.MNK_MOUSE, v)),
-                sliderRow(tr(R.string.mouse_sensitivity), 0.2f, 4f, 0.1f,
-                        GameOptions.mouseSensitivity(this), value -> GameOptions.setMouseSensitivity(this, value)));
-        mouseBox.setVisibility(on ? View.VISIBLE : View.GONE);
-
-        // How long a key takes to reach the full turn.
-        LinearLayout rampBox = ui.group(sliderRow(tr(R.string.how_long_a_key_takes), 0f, 0.5f, 0.05f,
-                GameOptions.keyRamp(this), value -> GameOptions.setKeyRamp(this, value)));
-        rampBox.setVisibility(on ? View.VISIBLE : View.GONE);
-
-        LinearLayout toggle = ui.toggleRow(tr(R.string.use_the_keyboard_and_the_mouse),
-                tr(R.string.the_game_reads_them_as_a_pad), on, v -> {
-            GameOptions.flag(this, GameOptions.MNK_MODE, v);
-            mouseBox.setVisibility(v ? View.VISIBLE : View.GONE);
-            rampBox.setVisibility(v ? View.VISIBLE : View.GONE);
-        });
-
-        return pageScroll(ui.pageTitle(pageName(INPUT), tr(R.string.drive_with_a_keyboard_and_a_mouse)),
-                ui.header(tr(R.string.keyboard_and_mouse)),
-                ui.group(toggle),
-                ui.footer(tr(R.string.the_change_is_read_when_the_game_starts)),
-                ui.header(tr(R.string.key_layout)),
-                ui.choiceRow(GameOptions.MNK_PRESET, tr(R.string.key_layout),
-                        racing ? tr(R.string.a_driving_layout) : tr(R.string.one_key_per_button),
-                        new String[] {tr(R.string.racing_layout), tr(R.string.generic_layout)},
-                        new String[] {"race", "pad"},
-                        value -> rebuildPage(INPUT)),
-                keys,
-                ui.footer(tr(R.string.press_f4_to_change_the_keys)),
-                ui.header(tr(R.string.the_mouse)),
-                mouseBox,
-                rampBox);
-    }
-
-    /** A row with a slider under it and its value on the side. */
-    private LinearLayout sliderRow(String title, float from, float to, float step, float value,
-                                   Menu.OnValue changed) {
-        TextView readout = ui.text("", 15, Menu.PRIMARY, true);
-        LinearLayout box = ui.column();
-        box.setPadding(dp(16), dp(12), dp(16), dp(12));
-        box.addView(ui.text(title, 15, Menu.PRIMARY, false));
-        Slider slider = ui.slider(from, to, step, value);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(6);
-        box.addView(slider, lp);
-        box.addView(readout);
-        slider.addOnChangeListener((s, v, fromUser) -> {
-            changed.set(v);
-            readout.setText(String.format(java.util.Locale.ROOT, "%.2f", v));
-        });
-        readout.setText(String.format(java.util.Locale.ROOT, "%.2f", value));
-        return box;
     }
 
     private ScrollView aboutPage() {

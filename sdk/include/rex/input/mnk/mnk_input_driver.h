@@ -114,6 +114,15 @@ class MnkInputDriver final : public InputDriver,
 
   std::atomic<bool> has_focus_{true};
 
+  // Set by the first event of a real mouse. The driver is on even where there is no mouse
+  // (Android passes mnk_mode always), and only a mouse that was used takes the pointer.
+  std::atomic<bool> mouse_seen_{false};
+
+  // What the game saw last: the packet number only moves when this changes, as on a pad. The
+  // driver is merged into player 1 with any pad, and a number that moved on every read would
+  // tell the game something changed when nothing did.
+  X_INPUT_GAMEPAD last_gamepad_ = {};
+
   // The analog values the game sees, and the ones it is moving toward. Guest thread only.
   Ramp ramp_lx_, ramp_ly_, ramp_rx_, ramp_ry_, ramp_lt_, ramp_rt_;
 

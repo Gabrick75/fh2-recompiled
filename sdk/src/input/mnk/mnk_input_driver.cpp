@@ -374,10 +374,15 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
 
   // Mouse look is opt in. Without this gate, keyboard input alone would hide
   // and lock the cursor, breaking the ImGui overlays.
-  QueueMouseCaptureUpdate(IsEnabled() && REXCVAR_GET(mnk_mouse) && IsMouseLookActive() &&
-                          has_focus_ && is_active());
+  QueueMouseCaptureUpdate(IsEnabled() && REXCVAR_GET(mnk_mouse) && mouse_seen_ &&
+                          IsMouseLookActive() && has_focus_ && is_active());
 
   if (!is_active() || !has_focus_) {
+    const X_INPUT_GAMEPAD neutral = {};
+    if (std::memcmp(&last_gamepad_, &neutral, sizeof(last_gamepad_)) != 0) {
+      last_gamepad_ = neutral;
+      packet_number_++;
+    }
     if (out_state) {
       std::memset(out_state, 0, sizeof(*out_state));
       out_state->packet_number = packet_number_;
@@ -487,17 +492,22 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
     return static_cast<int16_t>(std::clamp(v, (float)INT16_MIN, (float)INT16_MAX));
   };
 
-  packet_number_++;
+  X_INPUT_GAMEPAD gamepad = {};
+  gamepad.buttons = buttons;
+  gamepad.left_trigger = static_cast<uint8_t>(std::clamp(lt_value, 0.0f, 255.0f));
+  gamepad.right_trigger = static_cast<uint8_t>(std::clamp(rt_value, 0.0f, 255.0f));
+  gamepad.thumb_lx = clamp16(lx_value);
+  gamepad.thumb_ly = clamp16(ly_value);
+  gamepad.thumb_rx = clamp16(rx_value);
+  gamepad.thumb_ry = clamp16(ry_value);
+  if (std::memcmp(&gamepad, &last_gamepad_, sizeof(gamepad)) != 0) {
+    last_gamepad_ = gamepad;
+    packet_number_++;
+  }
 
   if (out_state) {
     out_state->packet_number = packet_number_;
-    out_state->gamepad.buttons = buttons;
-    out_state->gamepad.left_trigger = static_cast<uint8_t>(std::clamp(lt_value, 0.0f, 255.0f));
-    out_state->gamepad.right_trigger = static_cast<uint8_t>(std::clamp(rt_value, 0.0f, 255.0f));
-    out_state->gamepad.thumb_lx = clamp16(lx_value);
-    out_state->gamepad.thumb_ly = clamp16(ly_value);
-    out_state->gamepad.thumb_rx = clamp16(rx_value);
-    out_state->gamepad.thumb_ry = clamp16(ry_value);
+    out_state->gamepad = gamepad;
   }
   return X_ERROR_SUCCESS;
 }
@@ -670,6 +680,10 @@ void MnkInputDriver::OnKeyUp(rex::ui::KeyEvent& e) {
 void MnkInputDriver::OnMouseDown(rex::ui::MouseEvent& e) {
   if (!IsEnabled() || !has_focus_)
     return;
+  if (!mouse_seen_.exchange(true)) {
+    prev_mouse_x_ = e.x();
+    prev_mouse_y_ = e.y();
+  }
   std::lock_guard lock(state_mutex_);
   switch (e.button()) {
     case rex::ui::MouseEvent::Button::kLeft:
@@ -710,6 +724,13 @@ void MnkInputDriver::OnMouseMove(rex::ui::MouseEvent& e) {
     return;
   int32_t x = e.x();
   int32_t y = e.y();
+  if (!mouse_seen_.exchange(true)) {
+    // The first event of the mouse: there is no earlier position to measure from yet, and
+    // the next read of the state asks for the pointer.
+    prev_mouse_x_ = x;
+    prev_mouse_y_ = y;
+    return;
+  }
   {
     std::lock_guard lock(state_mutex_);
     if (relative_mouse_mode_) {
