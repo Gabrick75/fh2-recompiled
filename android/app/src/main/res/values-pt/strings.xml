@@ -53,6 +53,7 @@
     <string name="created">criado</string>
     <string name="creates_the_small_render_targets_reflect">Cria os alvos de render pequenos (cubo de reflexo) na altura exata em vez de 720 linhas: passes menores e menos tráfego de blocos. Se o jogo resolver abaixo da imagem, ela volta sozinha ao tamanho cheio.</string>
     <string name="decode_audio_in_the_background">Decodificar áudio em segundo plano</string>
+    <string name="defaults_restored">Padrões restaurados.</string>
     <string name="deferred_scene_copy">Cópia adiada da cena</string>
     <string name="delete">Apagar</string>
     <string name="delete_2">Apagar %1$s?</string>
@@ -170,6 +171,7 @@
     <string name="native_experimental_draws_the_game_s">Nativo (experimental): desenha os comandos do jogo direto em Vulkan, com os shaders traduzidos. Bem mais rápido, mas ainda tem erros de imagem.</string>
     <string name="native_image">Imagem do nativo</string>
     <string name="native_performance">Desempenho do nativo</string>
+    <string name="native_recommended">Nativo (recomendado)</string>
     <string name="native_renderer">Nativo</string>
     <string name="native_resolution">Nativa</string>
     <string name="near">Perto</string>
@@ -222,6 +224,11 @@
     <string name="reset">Restaurar</string>
     <string name="reset_the_controls">Restaurar controles</string>
     <string name="resolution">Resolução</string>
+    <string name="restore">Restaurar</string>
+    <string name="restore_defaults">Restaurar padrões</string>
+    <string name="restore_defaults_description">Gráficos e Desempenho voltam a como vieram. O driver da GPU escolhido continua.</string>
+    <string name="restore_defaults_message">Todas as opções de Gráficos e Desempenho voltam ao padrão, e o renderizador volta ao Nativo. O driver da GPU escolhido não muda.</string>
+    <string name="restore_defaults_question">Restaurar padrões?</string>
     <string name="reuses_the_already_converted_indices_the">Reaproveita os índices já convertidos que o jogo não mudou desde o quadro anterior, em vez de convertê-los e copiá-los de novo.</string>
     <string name="reuses_the_vertices_the_game_has" formatted="false">Reaproveita os vértices que o jogo não mudou desde o quadro anterior, em vez de copiá-los de novo: 87 % menos dados enviados à GPU. No S23 Ultra, parado, +35 % de fps (27 → 36,5); numa paisagem com muita vegetação, de ~30 para ~40 fps.</string>
     <string name="save_diagnostics_zip">Salvar diagnóstico (ZIP)</string>

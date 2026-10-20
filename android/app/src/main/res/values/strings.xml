@@ -55,6 +55,7 @@
     <string name="created">created</string>
     <string name="creates_the_small_render_targets_reflect">Creates the small render targets (reflection cube) at their exact height instead of 720 rows: smaller passes and less tile traffic. If the game ever resolves below the image, it grows back to full height on its own.</string>
     <string name="decode_audio_in_the_background">Decode audio in the background</string>
+    <string name="defaults_restored">Defaults restored.</string>
     <string name="deferred_scene_copy">Deferred scene copy</string>
     <string name="delete">Delete</string>
     <string name="delete_2">Delete %1$s?</string>
@@ -172,6 +173,7 @@
     <string name="native_experimental_draws_the_game_s">Native (experimental): draws the game\'s commands straight in Vulkan, with the translated shaders. Much faster, but it still has image errors.</string>
     <string name="native_image">Native image</string>
     <string name="native_performance">Native performance</string>
+    <string name="native_recommended">Native (recommended)</string>
     <string name="native_renderer">Native</string>
     <string name="native_resolution">Native</string>
     <string name="near">Near</string>
@@ -224,6 +226,11 @@
     <string name="reset">Reset</string>
     <string name="reset_the_controls">Reset the controls</string>
     <string name="resolution">Resolution</string>
+    <string name="restore">Restore</string>
+    <string name="restore_defaults">Restore defaults</string>
+    <string name="restore_defaults_description">Graphics and Performance back to how they came. The chosen GPU driver stays.</string>
+    <string name="restore_defaults_message">Every Graphics and Performance option goes back to its default, and the renderer back to Native. The chosen GPU driver does not change.</string>
+    <string name="restore_defaults_question">Restore defaults?</string>
     <string name="reuses_the_already_converted_indices_the">Reuses the already converted indices the game has not changed since the previous frame, instead of converting and copying them again.</string>
     <string name="reuses_the_vertices_the_game_has" formatted="false">Reuses the vertices the game has not changed since the previous frame instead of copying them again: 87 % less data sent to the GPU. On the S23 Ultra, standing still, +35 % fps (27 → 36.5); in a landscape with a lot of vegetation, from ~30 to ~40 fps.</string>
     <string name="save_diagnostics_zip">Save diagnostics (ZIP)</string>
