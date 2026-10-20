@@ -790,7 +790,54 @@ public final class MainActivity extends AppCompatActivity {
                 ui.group(ui.stackedRow(tr(R.string.how_the_game_is_drawn), null, renderer)),
                 rendererNote,
                 rendererOptions,
+                ui.header(tr(R.string.world_detail)),
+                ui.group(
+                        worldFactorRow(GameOptions.WORLD_GRASS, tr(R.string.world_grass),
+                                tr(R.string.world_grass_description)),
+                        worldFactorRow(GameOptions.WORLD_OBJECTS, tr(R.string.world_objects),
+                                tr(R.string.world_objects_description)),
+                        worldFactorRow(GameOptions.WORLD_REFLECTIONS, tr(R.string.world_reflections),
+                                tr(R.string.world_reflections_description)),
+                        worldFactorRow(GameOptions.WORLD_SHADOWS, tr(R.string.world_shadows),
+                                tr(R.string.world_shadows_description)),
+                        worldFactorRow(GameOptions.WORLD_CROWD, tr(R.string.world_crowd),
+                                tr(R.string.world_crowd_description))),
+                ui.footer(tr(R.string.world_detail_footer)),
                 restoreDefaultsGroup());
+    }
+
+    /**
+     * A world detail factor (app/src/fh2_mundo.cpp, both renderers): a slider over GameOptions.WORLD_FACTORS, 0.25x to
+     * 4x of the Xbox 360's.
+     */
+    private LinearLayout worldFactorRow(String key, String title, String description) {
+        LinearLayout box = ui.column();
+        TextView readout = ui.text("", 22, Menu.PRIMARY, true);
+        box.addView(readout);
+        float[] factors = GameOptions.WORLD_FACTORS;
+        int chosen = 0;
+        float current = GameOptions.worldFactor(this, key);
+        for (int i = 0; i < factors.length; i++) {
+            if (factors[i] == current) chosen = i;
+        }
+        Slider slider = ui.slider(0, factors.length - 1, 1, chosen);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(2);
+        box.addView(slider, lp);
+        Runnable show = () -> {
+            float value = GameOptions.worldFactor(this, key);
+            String text = (value == Math.round(value) ? String.valueOf(Math.round(value)) : String.valueOf(value)) + "x";
+            readout.setText(value == 1f ? text + tr(R.string.as_on_the_xbox_360) : text);
+        };
+        slider.addOnChangeListener((s, value, fromUser) -> {
+            if (!fromUser) return;
+            int index = Math.max(0, Math.min(factors.length - 1, Math.round(value)));
+            GameOptions.worldFactor(this, key, factors[index]);
+            show.run();
+        });
+        show.run();
+        return ui.stackedRow(title, description, box);
     }
 
     // The options the game does not apply yet (shadows, shadow distance, car reflections, GPU turbo): kept, hidden
