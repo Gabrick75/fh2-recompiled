@@ -1686,16 +1686,23 @@ void Presenter::ContarBucleReconexion(PaintResult result) {
                             std::chrono::steady_clock::now().time_since_epoch())
                             .count();
   if (result == PaintResult::kPresented || result == PaintResult::kPresentedSuboptimal) {
-    const uint32_t ciclos = bucle_ciclos_.exchange(0, std::memory_order_relaxed);
-    if (ciclos) {
-      REXLOG_INFO("[presentador] bucle de reconexion terminado: {} reconexiones en {:.1f} s, vuelve a presentar",
-                  ciclos, double(ahora - bucle_inicio_ns_.load(std::memory_order_relaxed)) / 1e9);
+    if (!bucle_ciclos_.load(std::memory_order_relaxed) ||
+        bucle_presentados_.fetch_add(1, std::memory_order_relaxed) + 1 < kBucleQuadrosParaTerminar) {
+      return;
     }
+    const uint32_t ciclos = bucle_ciclos_.exchange(0, std::memory_order_relaxed);
+    bucle_presentados_.store(0, std::memory_order_relaxed);
+    REXLOG_INFO(
+        "[presentador] bucle de reconexion terminado: {} reconexiones en {:.1f} s, vuelve a presentar ({} "
+        "fotogramas seguidos)",
+        ciclos, double(ahora - bucle_inicio_ns_.load(std::memory_order_relaxed)) / 1e9,
+        kBucleQuadrosParaTerminar);
     return;
   }
   if (result != PaintResult::kNotPresentedConnectionOutdated) {
     return;
   }
+  bucle_presentados_.store(0, std::memory_order_relaxed);
   const uint32_t ciclos = bucle_ciclos_.fetch_add(1, std::memory_order_relaxed) + 1;
   if (ciclos == 1) {
     bucle_inicio_ns_.store(ahora, std::memory_order_relaxed);

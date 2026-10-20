@@ -429,13 +429,16 @@ class Presenter {
    * the sound running underneath). Every cycle writes about five lines, 15-20 a second, and in a few
    * seconds they filled the 128 KB tail of the report, so the moment the loop began was always cut out.
    *
-   * An episode starts with the first outdated result after a presented frame and ends with the next
-   * presented frame. Its lines go to the log only for the first kBucleCiclosConLog cycles, whatever
-   * log_detalhado says; after that one line every kBucleAvisoSegundos says it is still going, and one
-   * at the end says how long it lasted.
+   * An episode starts with the first outdated result and ends after kBucleQuadrosParaTerminar frames
+   * in a row are presented. Not after the first one: in usuario-21's loop every cycle "presented" one
+   * frame (the reconnection's repaint) before the next outdated, so the episode ended every cycle and
+   * nothing was ever left out. Its lines go to the log only for the first kBucleCiclosConLog cycles,
+   * whatever log_detalhado says; after that one line every kBucleAvisoSegundos says it is still going,
+   * and one at the end says how long it lasted.
    */
   static constexpr uint32_t kBucleCiclosConLog = 3;
   static constexpr int64_t kBucleAvisoSegundos = 5;
+  static constexpr uint32_t kBucleQuadrosParaTerminar = 30;
   // Whether the lines of the loop still go to the log (always true outside an episode).
   bool BucleReconexionRegistra() const {
     return bucle_ciclos_.load(std::memory_order_relaxed) < kBucleCiclosConLog;
@@ -1011,9 +1014,11 @@ class Presenter {
   // reconnect every frame.
   bool surface_paint_connection_was_optimal_at_successful_paint_ = false;
 
-  // The reconnection loop episode (see BucleReconexionRegistra): outdated results since the last
-  // presented frame, and when the episode began and was last reported (steady_clock nanoseconds).
+  // The reconnection loop episode (see BucleReconexionRegistra): outdated results in the episode,
+  // frames presented in a row since the last one, and when the episode began and was last reported
+  // (steady_clock nanoseconds).
   std::atomic<uint32_t> bucle_ciclos_{0};
+  std::atomic<uint32_t> bucle_presentados_{0};
   std::atomic<int64_t> bucle_inicio_ns_{0};
   std::atomic<int64_t> bucle_ultimo_aviso_ns_{0};
   // Counts an outdated result, ends an episode on a presented one. Called from PaintAndPresent.
