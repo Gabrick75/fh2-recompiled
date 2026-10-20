@@ -72,8 +72,10 @@ public final class GameActivity extends SDLActivity
     private final Handler clock = new Handler(Looper.getMainLooper());
     private boolean stretched = true;
     private TextView fpsLabel;
-    // Whether the mouse's pointer capture was already asked for.
+    // When the mouse's pointer capture was last asked for.
     private long lastMouseCapture;
+    // A mouse was used since the last one was unplugged.
+    private boolean mouseSeen;
     // How often the pointer capture is asked for again, so that it stays on the game's surface.
     private static final long MOUSE_CAPTURE_INTERVAL = 250;
 
@@ -118,9 +120,6 @@ public final class GameActivity extends SDLActivity
         ViewGroup root = findViewById(android.R.id.content);
         controls = new TouchControlsView(this);
         controls.setHost(this);
-        // The game reads the keyboard and the mouse: the touch pad gets out of the way when one of
-        // them is used, and stays when the player turned the option off.
-        controls.setKeyboardMode(GameOptions.flag(this, GameOptions.MNK_MODE));
         root.addView(controls, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.FILL));
         toolbar = buildToolbar();
@@ -644,23 +643,45 @@ public final class GameActivity extends SDLActivity
                 (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
     }
 
-    /** A keyboard or a mouse: the game reads them as a controller (the SDK's MnK driver). */
-    private static boolean isKeyboardOrMouse(InputDevice device) {
+    /*
+     * A keyboard or a mouse: the game always reads them as a controller (the SDK's MnK driver), so they are found
+     * the way a gamepad is. Phones list keyboards of their own: the volume and power keys, the fingerprint reader
+     * and the virtual keyboard of "adb shell input". None of them types letters, which is what a real keyboard
+     * does; the one that does and is not a gamepad is the player's.
+     */
+    private static boolean isKeyboard(InputDevice device) {
+        if (device == null || device.isVirtual() || isGamepad(device)) {
+            return false;
+        }
+        return (device.getSources() & InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD &&
+                device.getKeyboardType() == InputDevice.KEYBOARD_TYPE_ALPHABETIC;
+    }
+
+    private static boolean isMouse(InputDevice device) {
         if (device == null || device.isVirtual()) {
             return false;
         }
-        int sources = device.getSources();
-        return (sources & InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD ||
-                (sources & InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE;
+        return (device.getSources() & InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE;
+    }
+
+    /*
+     * Connected, and not only used: a keyboard or a mouse built into the device (a tablet's cover keyboard, a
+     * laptop's touchpad) is taken when it is used, not because it is there. Android 10 tells them apart; before
+     * it, only use counts.
+     */
+    private static boolean isExternal(InputDevice device) {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && device.isExternal();
     }
 
     private void refreshGamepads() {
         boolean any = false;
         boolean anyKeyboard = false;
+        boolean anyMouse = false;
         for (int id : inputManager.getInputDeviceIds()) {
             InputDevice device = inputManager.getInputDevice(id);
             any |= isGamepad(device);
-            anyKeyboard |= isKeyboardOrMouse(device);
+            anyKeyboard |= (isKeyboard(device) || isMouse(device)) && isExternal(device);
+            anyMouse |= isMouse(device);
         }
         if (any) {
             controls.onGamepadActive();
@@ -671,6 +692,9 @@ public final class GameActivity extends SDLActivity
             controls.onKeyboardActive();
         } else {
             controls.onKeyboardGone();
+        }
+        if (!anyMouse) {
+            mouseSeen = false;
         }
     }
 
@@ -693,7 +717,7 @@ public final class GameActivity extends SDLActivity
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (isGamepad(event.getDevice())) {
             controls.onGamepadActive();
-        } else if (isKeyboardOrMouse(event.getDevice())) {
+        } else if (isKeyboard(event.getDevice()) && !event.isSystem()) {
             controls.onKeyboardActive();
         }
         return super.dispatchKeyEvent(event);
@@ -706,7 +730,7 @@ public final class GameActivity extends SDLActivity
         }
         if (TouchControlsView.isMouse(event)) {
             // A mouse: the game reads it, and the touch pad gets out of the way.
-            controls.onKeyboardActive();
+            onMouseUsed();
             return deliverMouseToSurface(event);
         }
         return super.dispatchGenericMotionEvent(event);
@@ -722,7 +746,7 @@ public final class GameActivity extends SDLActivity
     @Override
     public boolean dispatchTouchEvent(MotionEvent event) {
         if (TouchControlsView.isMouse(event)) {
-            controls.onKeyboardActive();
+            onMouseUsed();
             if (mSurface != null) {
                 requestMouseCapture();
                 return mSurface.dispatchTouchEvent(event);
@@ -741,15 +765,21 @@ public final class GameActivity extends SDLActivity
         return mSurface.dispatchGenericMotionEvent(event);
     }
 
+    /** A mouse moved or clicked: the touch pad gets out of the way, and the mouse is the game's from now on. */
+    private void onMouseUsed() {
+        mouseSeen = true;
+        controls.onKeyboardActive();
+    }
+
     /*
      * The pointer capture (Android 8 and later) is what makes the mouse report movement instead of a
      * position, and so the camera follows it. The game asks for it too, but on the layout above the
      * surface, and the surface is the view that reads the mouse: the capture is asked for here, and asked
-     * for again from time to time, so that it is the surface's and not the layout's.
+     * for again from time to time, so that it is the surface's and not the layout's. Only once a mouse was
+     * used: without one the pointer stays as it is.
      */
     private void requestMouseCapture() {
-        if (mSurface == null || !GameOptions.flag(this, GameOptions.MNK_MODE) ||
-                !GameOptions.flag(this, GameOptions.MNK_MOUSE)) {
+        if (mSurface == null || !mouseSeen) {
             return;
         }
         long now = android.os.SystemClock.uptimeMillis();
