@@ -40,13 +40,21 @@ final class GameOptions {
     static final String SHADOW_DISTANCE = "shadow_distance";  // not applied yet
     static final String CAR_REFLECTIONS = "car_reflections";  // not applied yet
     static final String SHADOW_MAP_SCALE = "shadow_map_scale";  // nfsmw_nativo_sombras_escala: 0 (off) to 100 %
-    // World detail, both renderers (app/src/fh2_mundo.cpp): factors of the Xbox 360's, WORLD_FACTORS, "1" = as it.
+    // World detail (app/src/fh2_mundo.cpp): factors of the Xbox 360's, WORLD_FACTORS, "1" = as it. Both renderers but
+    // grass, which the native renderer draws (0 = none).
     static final String WORLD_GRASS = "world_grass";              // fh2_mundo_grama
     static final String WORLD_OBJECTS = "world_objects";          // fh2_mundo_objetos
     static final String WORLD_REFLECTIONS = "world_reflections";  // fh2_mundo_reflexos
     static final String WORLD_SHADOWS = "world_shadows";          // fh2_mundo_sombras
     static final String WORLD_CROWD = "world_crowd";              // fh2_mundo_multidao
     static final float[] WORLD_FACTORS = {0.25f, 0.5f, 0.75f, 1f, 1.5f, 2f, 3f, 4f};
+    // Grass (the bushes and tufts) and the crowd also go down to none (the native renderer skips their draws).
+    static final float[] WORLD_FACTORS_OFF = {0f, 0.25f, 0.5f, 0.75f, 1f, 1.5f, 2f, 3f, 4f};
+
+    /** The positions of a world detail slider: WORLD_FACTORS_OFF for grass and crowd, WORLD_FACTORS for the others. */
+    static float[] worldFactors(String key) {
+        return WORLD_GRASS.equals(key) || WORLD_CROWD.equals(key) ? WORLD_FACTORS_OFF : WORLD_FACTORS;
+    }
     // Performance
     static final String PIN_THREADS = "pin_threads";
     static final String JOGO_RAPIDO = "jogo_rapido";  // fh2_android_afinidade=jogo-rapido (off = auto)
@@ -265,11 +273,11 @@ final class GameOptions {
         return preset > 0 ? Math.max(12, preset) : nativeRenderScalePercent(context);
     }
 
-    /** A world detail factor (WORLD_GRASS and the others), one of WORLD_FACTORS; 1 when the stored one is not. */
+    /** A world detail factor (WORLD_GRASS and the others), one of worldFactors(key); 1 when the stored one is not. */
     static float worldFactor(Context context, String key) {
         try {
             float value = Float.parseFloat(get(context, key).trim());
-            for (float factor : WORLD_FACTORS) {
+            for (float factor : worldFactors(key)) {
                 if (Math.abs(factor - value) < 0.001f) return factor;
             }
         } catch (NumberFormatException e) {
@@ -418,7 +426,8 @@ final class GameOptions {
         GpuDrivers.arguments(context, args);  // the chosen Vulkan driver, or the system's
         // The FPS limit is the guest vblank rate (fpsLimit).
         args.add("--video_mode_refresh_rate=" + vblankRate(context));
-        // World detail: the game's TrackSettings.xml rewritten at start (fh2_mundo.cpp), both renderers.
+        // World detail: the game's TrackSettings.xml rewritten at start (fh2_mundo.cpp), both renderers; grass is the
+        // native renderer's (the vegetation's fade distances in its draws).
         args.add("--fh2_mundo_grama=" + worldFactor(context, WORLD_GRASS));
         args.add("--fh2_mundo_objetos=" + worldFactor(context, WORLD_OBJECTS));
         args.add("--fh2_mundo_reflexos=" + worldFactor(context, WORLD_REFLECTIONS));

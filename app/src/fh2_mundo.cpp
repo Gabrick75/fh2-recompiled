@@ -1,25 +1,33 @@
 // fh2 - world detail ("mundo" means "world"): grass, objects, reflections, shadows and crowd, each from 0.25x to 4x
-// of the Xbox 360's.
+// of the Xbox 360's (grass and crowd from off).
 //
 //   --fh2_mundo_grama=2 --fh2_mundo_objetos=1.5 --fh2_mundo_reflexos=1 --fh2_mundo_sombras=2 --fh2_mundo_multidao=0.5
 //
-// The open world reads these distances and limits from media\tracks\Anthem\TrackSettings.xml, a plain XML file the
+// Grass is the procedural vegetation, the bushes and tufts of the open world: each plant fades out between two
+// distances its vertex shader gets in FadeValues (52.5 to 97.5 m, 17.5 to 62.5 m), from the game's code, not from a
+// file. The native renderer scales them in each draw's constants, and with 0 draws none
+// (nfsmw_nativo_dibujos.cpp, EntradaShader::fh2_fade_vegetacion). The emulated renderer keeps the game's.
+//
+// The rest are read by the open world from media\tracks\Anthem\TrackSettings.xml, a plain XML file the
 // game does not check (renderscenarios.zip, by contrast, is a "secure file" whose size the game verifies). At
 // start, before the game runs, the original is read through the VFS (a folder or the disc image alike), the chosen
 // factors are applied and the result is written to <cache or user folder>/fh2_mundo/TrackSettings.xml, mounted
 // read-only as \Device\Fh2Mundo and served in place of the original (VirtualFileSystem::RegisterFileOverride).
-// With every factor at 1 nothing is mounted and the game reads its own file.
+// With those factors at 1 nothing is mounted and the game reads its own file. Its Grass* keys are not used: they
+// drive shell grass, which the open world has off (GrassMaxNumShells 0); 0.25x and 4x changed nothing on screen.
 //
 // What each factor scales:
-//   grass       GrassFadeStartDistance/EndDistance (250/280 m), GrassLODDist, GrassLODFadeRange
 //   objects     screenAreaDistances mainScene (350) and depth (60): the level of detail of the scene
 //   reflections the dynamic cubemap: FarDistance (200 m), MeshLimit (300), MeshSizeThreshold (divided),
 //               screenAreaDistances cubeMap and mirror. At 0.25x the cubemap is not drawn at all (DynamicCubemap 0;
 //               +11 % on the Moto G9 Play in the festival, the car paint turns flat)
 //   shadows     ShadowEnds InGameShadowEnd (202 m) and TrackSegCamShadowEnd (replays); at 0.25x the other cars cast
 //               no projected shadow (NonFocusCarProjectedShadows 0)
-//   crowd       CrowdSize (1024), Crowds lod0-lod3 (5/20/50/125 m) and SpriteDistance (60 m)
+//   crowd       CrowdSize (1024), Crowds lod0-lod3 (5/20/50/125 m) and SpriteDistance (60 m). Off (0) is the native
+//               renderer's: it skips the crowd's draws (PROC_CHARACTER_* vertex shaders; CrowdSize 0 still left
+//               people in the festival), with the file at 0.25x for either renderer
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -35,8 +43,10 @@
 #include <rex/logging.h>
 #include <rex/runtime.h>
 
-REXCVAR_DEFINE_DOUBLE(fh2_mundo_grama, 1.0, "FH2", "World detail: how far the grass is drawn, 0.25 to 4 times the Xbox 360's")
-    .range(0.25, 4.0)
+REXCVAR_DEFINE_DOUBLE(fh2_mundo_grama, 1.0, "FH2",
+                      "World detail: how far bushes and tufts are drawn, 0 (none) to 4 times the Xbox 360's (native "
+                      "renderer)")
+    .range(0.0, 4.0)
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_DOUBLE(fh2_mundo_objetos, 1.0, "FH2",
                       "World detail: how far objects keep their detail, 0.25 to 4 times the Xbox 360's")
@@ -49,8 +59,9 @@ REXCVAR_DEFINE_DOUBLE(fh2_mundo_reflexos, 1.0, "FH2",
 REXCVAR_DEFINE_DOUBLE(fh2_mundo_sombras, 1.0, "FH2", "World detail: how far shadows reach, 0.25 to 4 times the Xbox 360's")
     .range(0.25, 4.0)
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-REXCVAR_DEFINE_DOUBLE(fh2_mundo_multidao, 1.0, "FH2", "World detail: how many people and how far, 0.25 to 4 times the Xbox 360's")
-    .range(0.25, 4.0)
+REXCVAR_DEFINE_DOUBLE(fh2_mundo_multidao, 1.0, "FH2",
+                      "World detail: how many people and how far, 0 (none, native renderer) to 4 times the Xbox 360's")
+    .range(0.0, 4.0)
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace {
@@ -112,11 +123,7 @@ void Set(std::string& xml, const char* tag, const char* attr, const char* value)
   EditAttribute(xml, tag, attr, [&](const std::string&) { return std::string(value); });
 }
 
-void ApplyFactors(std::string& xml, double grass, double objects, double reflections, double shadows, double crowd) {
-  for (const char* tag : {"GrassFadeStartDistance", "GrassFadeEndDistance", "GrassLODDist", "GrassLODFadeRange"}) {
-    ScaleFloat(xml, tag, "value", grass);
-  }
-
+void ApplyFactors(std::string& xml, double objects, double reflections, double shadows, double crowd) {
   ScaleFloat(xml, "screenAreaDistances", "mainScene", objects);
   ScaleFloat(xml, "screenAreaDistances", "depth", objects);
 
@@ -145,12 +152,12 @@ void ApplyFactors(std::string& xml, double grass, double objects, double reflect
 
 // Called from OnPostSetup (fh2_app.h): the VFS is mounted and the game has not started.
 void Fh2MundoAplicar(rex::Runtime* runtime) {
-  const double grass = REXCVAR_GET(fh2_mundo_grama);
   const double objects = REXCVAR_GET(fh2_mundo_objetos);
   const double reflections = REXCVAR_GET(fh2_mundo_reflexos);
   const double shadows = REXCVAR_GET(fh2_mundo_sombras);
-  const double crowd = REXCVAR_GET(fh2_mundo_multidao);
-  if (!runtime || (grass == 1 && objects == 1 && reflections == 1 && shadows == 1 && crowd == 1)) {
+  // Off is the native renderer's (it skips the crowd's draws); the file gets the lowest factor.
+  const double crowd = std::max(0.25, REXCVAR_GET(fh2_mundo_multidao));
+  if (!runtime || (objects == 1 && reflections == 1 && shadows == 1 && crowd == 1)) {
     return;
   }
   rex::filesystem::VirtualFileSystem* vfs = runtime->file_system();
@@ -159,7 +166,7 @@ void Fh2MundoAplicar(rex::Runtime* runtime) {
     REXLOG_ERROR("[mundo] {} could not be read: the game keeps its own detail", kGamePath);
     return;
   }
-  ApplyFactors(xml, grass, objects, reflections, shadows, crowd);
+  ApplyFactors(xml, objects, reflections, shadows, crowd);
 
   const std::filesystem::path base = !runtime->cache_root().empty() ? runtime->cache_root() : runtime->user_data_root();
   const std::filesystem::path folder = base / "fh2_mundo";
@@ -179,6 +186,6 @@ void Fh2MundoAplicar(rex::Runtime* runtime) {
     return;
   }
   vfs->RegisterFileOverride(kGamePath, std::string(kMountPath) + "\\" + kFileName);
-  REXLOG_INFO("[mundo] grass {}x, objects {}x, reflections {}x, shadows {}x, crowd {}x (TrackSettings.xml from {})",
-              grass, objects, reflections, shadows, crowd, folder.string());
+  REXLOG_INFO("[mundo] objects {}x, reflections {}x, shadows {}x, crowd {}x (TrackSettings.xml from {})", objects,
+              reflections, shadows, crowd, folder.string());
 }

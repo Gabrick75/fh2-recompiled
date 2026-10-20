@@ -334,11 +334,11 @@
     <string name="what_happened_how_to_reproduce_it">O que aconteceu? Como reproduzir? (opcional)</string>
     <string name="without_msaa_the_scene_fits_whole" formatted="false">Desenha a cena de uma vez só, em vez de em partes: menos trabalho para o processador (+25 %).</string>
     <string name="world_crowd">Multidão</string>
-    <string name="world_crowd_description">Quantas pessoas aparecem e até que distância. É o que mais pesa no festival.</string>
+    <string name="world_crowd_description">Quantas pessoas aparecem e até que distância. É o que mais pesa no festival. Desligada: sem multidão, no renderizador nativo.</string>
     <string name="world_detail">Detalhe do mundo</string>
-    <string name="world_detail_footer">1x é o do Xbox 360. Acima disso o mundo fica mais cheio e o fps cai; abaixo, o jogo fica mais rápido. Vale ao abrir o jogo, nos dois renderizadores.</string>
+    <string name="world_detail_footer">1x é o do Xbox 360. Acima disso o mundo fica mais cheio e o fps cai; abaixo, o jogo fica mais rápido. Vale ao abrir o jogo; a grama no renderizador nativo, o resto nos dois.</string>
     <string name="world_grass">Grama</string>
-    <string name="world_grass_description">Até que distância a grama é desenhada.</string>
+    <string name="world_grass_description">Até que distância moitas e tufos de grama são desenhados. Desligada: nenhum, e o jogo fica mais rápido. Só no renderizador nativo.</string>
     <string name="world_objects">Objetos</string>
     <string name="world_objects_description">Até que distância prédios, árvores e objetos mantêm o detalhe.</string>
     <string name="world_reflections">Reflexos</string>

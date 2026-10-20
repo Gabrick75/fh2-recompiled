@@ -66,6 +66,13 @@ struct EntradaShader {
   // inputs that are only read directly), and whether it reads the direct vertex fetch buffer (set 4, binding 3).
   uint32_t fh2_entradas = 0;
   bool fh2_buscas = false;
+  // The procedural vegetation's vertex shaders (PROC_VEGETATION_*, PROC_WORLD_VEGETATION_*): the register of their
+  // FadeValues (x and y: the distances in metres between which each plant fades out), for fh2_mundo_grama; -1 in the
+  // other shaders.
+  int16_t fh2_fade_vegetacion = -1;
+  // A crowd vertex shader (PROC_CHARACTER_*, the festival's and the roadside people, their depth and shadow passes; not
+  // the dealership's AUTOSHOW ones), for fh2_mundo_multidao = 0.
+  bool fh2_multidao = false;
 #endif
 };
 

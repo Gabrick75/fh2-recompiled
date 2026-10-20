@@ -64,8 +64,9 @@ rate on phones.
 What this project adds on top of the SDK:
 
 - An Android launcher: emulated or native renderer, render resolution in percent, MSAA/FXAA, anisotropic
-  filtering, shadow quality (native), world detail (grass, objects, reflections, shadow distance and crowd, each
-  from 0.25x to 4x of the Xbox 360's), FPS limit (30 to unlimited), present mode, thread pinning, game and app
+  filtering, shadow quality (native), world detail (objects, reflections, shadow distance and crowd from 0.25x to
+  4x of the Xbox 360's, bushes, grass and the crowd down to off
+  with the native renderer), FPS limit (30 to unlimited), present mode, thread pinning, game and app
   language, an overlay with frame rate, GPU, CPU and RAM use, save import/export and backups.
 - The game played straight from its disc image (.iso): no extraction needed.
 - Custom Vulkan drivers (Turnip, Qualcomm packages) loaded through libadrenotools, with a Vulkan test before use.

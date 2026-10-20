@@ -336,11 +336,11 @@
     <string name="what_happened_how_to_reproduce_it">What happened? How to reproduce it? (optional)</string>
     <string name="without_msaa_the_scene_fits_whole" formatted="false">Draws the scene in one go instead of in parts: less work for the processor (+25 %).</string>
     <string name="world_crowd">Crowd</string>
-    <string name="world_crowd_description">How many people there are and how far away they are drawn. It weighs the most at the festival.</string>
+    <string name="world_crowd_description">How many people there are and how far away they are drawn. It weighs the most at the festival. Off: no crowd, with the native renderer.</string>
     <string name="world_detail">World detail</string>
-    <string name="world_detail_footer">1x is the Xbox 360\'s. Above it the world looks fuller and the frame rate drops; below it the game runs faster. Applied when the game starts, with either renderer.</string>
+    <string name="world_detail_footer">1x is the Xbox 360\'s. Above it the world looks fuller and the frame rate drops; below it the game runs faster. Applied when the game starts; grass with the native renderer, the rest with either.</string>
     <string name="world_grass">Grass</string>
-    <string name="world_grass_description">How far away grass is drawn.</string>
+    <string name="world_grass_description">How far away bushes and tufts are drawn. Off: none, and the game runs faster. Native renderer only.</string>
     <string name="world_objects">Objects</string>
     <string name="world_objects_description">How far away buildings, trees and props keep their detail.</string>
     <string name="world_reflections">Reflections</string>

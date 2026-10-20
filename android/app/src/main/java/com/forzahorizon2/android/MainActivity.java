@@ -807,14 +807,14 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * A world detail factor (app/src/fh2_mundo.cpp, both renderers): a slider over GameOptions.WORLD_FACTORS, 0.25x to
-     * 4x of the Xbox 360's.
+     * A world detail factor (app/src/fh2_mundo.cpp): a slider over GameOptions.worldFactors(key), 0.25x to 4x of the
+     * Xbox 360's, grass from off.
      */
     private LinearLayout worldFactorRow(String key, String title, String description) {
         LinearLayout box = ui.column();
         TextView readout = ui.text("", 22, Menu.PRIMARY, true);
         box.addView(readout);
-        float[] factors = GameOptions.WORLD_FACTORS;
+        float[] factors = GameOptions.worldFactors(key);
         int chosen = 0;
         float current = GameOptions.worldFactor(this, key);
         for (int i = 0; i < factors.length; i++) {
@@ -828,7 +828,8 @@ public final class MainActivity extends AppCompatActivity {
         Runnable show = () -> {
             float value = GameOptions.worldFactor(this, key);
             String text = (value == Math.round(value) ? String.valueOf(Math.round(value)) : String.valueOf(value)) + "x";
-            readout.setText(value == 1f ? text + tr(R.string.as_on_the_xbox_360) : text);
+            readout.setText(value == 0f ? tr(R.string.off_feminine)
+                    : value == 1f ? text + tr(R.string.as_on_the_xbox_360) : text);
         };
         slider.addOnChangeListener((s, value, fromUser) -> {
             if (!fromUser) return;

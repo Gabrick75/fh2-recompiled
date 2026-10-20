@@ -334,11 +334,11 @@
     <string name="what_happened_how_to_reproduce_it">¿Qué pasó? ¿Cómo reproducirlo? (opcional)</string>
     <string name="without_msaa_the_scene_fits_whole" formatted="false">Dibuja la escena de una sola vez, en lugar de por partes: menos trabajo para el procesador (+25 %).</string>
     <string name="world_crowd">Multitud</string>
-    <string name="world_crowd_description">Cuántas personas aparecen y hasta qué distancia. Es lo que más pesa en el festival.</string>
+    <string name="world_crowd_description">Cuántas personas aparecen y hasta qué distancia. Es lo que más pesa en el festival. Desactivada: sin multitud, con el renderizador nativo.</string>
     <string name="world_detail">Detalle del mundo</string>
-    <string name="world_detail_footer">1x es el de Xbox 360. Por encima el mundo se ve más lleno y los FPS bajan; por debajo el juego va más rápido. Se aplica al abrir el juego, con los dos renderizadores.</string>
+    <string name="world_detail_footer">1x es el de Xbox 360. Por encima el mundo se ve más lleno y los FPS bajan; por debajo el juego va más rápido. Se aplica al abrir el juego; la hierba con el renderizador nativo, el resto con los dos.</string>
     <string name="world_grass">Hierba</string>
-    <string name="world_grass_description">Hasta qué distancia se dibuja la hierba.</string>
+    <string name="world_grass_description">Hasta qué distancia se dibujan los arbustos y matas de hierba. Desactivada: ninguno, y el juego va más rápido. Solo con el renderizador nativo.</string>
     <string name="world_objects">Objetos</string>
     <string name="world_objects_description">Hasta qué distancia los edificios, árboles y objetos mantienen su detalle.</string>
     <string name="world_reflections">Reflejos</string>

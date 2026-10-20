@@ -73,6 +73,13 @@ bool NombreEs(const Contenedor& c, size_t posicion, const char* nombre) {
   return c.Hay(posicion, n + 1) && std::memcmp(c.o.data() + posicion, nombre, n) == 0 && c.o[posicion + n] == 0;
 }
 
+#if defined(FH2_RECOMP)
+// The text is somewhere in the container (the path of the shader's .updb names its source: PROC_VEGETATION_VS...).
+bool Contiene(const Contenedor& c, std::string_view texto) {
+  return std::search(c.o.begin(), c.o.end(), texto.begin(), texto.end()) != c.o.end();
+}
+#endif
+
 // Reads what is needed from the 2005 container, which is not the one in XenosRecomp
 // shader.h (that is the 2008 one): 24-byte header with signature, virtual part,
 // physical part, definitions (+12), CTAB (+16) and shader header (+20). The
@@ -177,6 +184,20 @@ const char* Leer(const nfsmw::native::Shader& shader, EntradaShader& e) {
     }
   }
   e.constantes_bytes = std::min<uint32_t>(std::max<uint32_t>(registros_float, 1), 256) * 16;
+#if defined(FH2_RECOMP)
+  // fh2_mundo_grama: the bushes and tufts of the open world are procedural vegetation (its depth and night variants
+  // too), each plant faded out between FadeValues.x and .y metres (52.5 to 97.5 m, 17.5 to 62.5 m).
+  if (e.vertices && (Contiene(c, "PROC_VEGETATION") || Contiene(c, "PROC_WORLD_VEGETATION"))) {
+    for (uint32_t i = 0; i < constantes; ++i) {
+      const size_t p = base + info + size_t(i) * 20;
+      if (c.U16(p + 4) == 2 && NombreEs(c, base + size_t(c.U32(p)), "FadeValues")) {
+        e.fh2_fade_vegetacion = int16_t(c.U16(p + 6));
+      }
+    }
+  }
+  // fh2_mundo_multidao: the crowd is procedural characters, billboards far away and skinned people near.
+  e.fh2_multidao = e.vertices && Contiene(c, "PROC_CHARACTER") && !Contiene(c, "AUTOSHOW");
+#endif
   for (uint32_t i = 0; i < constantes; ++i) {
     const size_t p = base + info + size_t(i) * 20;
     if (c.U16(p + 4) != 3) continue;  // RegisterSet::Sampler
