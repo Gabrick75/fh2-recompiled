@@ -62,7 +62,9 @@ quadros do console original.
 O que este projeto acrescenta ao SDK:
 
 - Um launcher Android: renderizador emulado ou nativo, resolução de renderização em porcentagem, MSAA/FXAA,
-  filtro anisotrópico, qualidade das sombras (nativo), limite de FPS (de 30 a livre), modo de apresentação,
+  filtro anisotrópico, qualidade das sombras (nativo), detalhe do mundo (grama, objetos, reflexos, distância das
+  sombras e multidão de 0,25x a 4x do Xbox 360, todos menos objetos também desligáveis; a grama, e desligar
+  sombras e multidão, no renderizador nativo), limite de FPS (de 30 a livre), modo de apresentação,
   fixação de threads, idioma do jogo e do app, um painel com FPS e uso de GPU, CPU e RAM, importar/exportar
   saves e cópias de segurança.
 - O jogo rodando direto da imagem do disco (.iso), sem precisar extrair.

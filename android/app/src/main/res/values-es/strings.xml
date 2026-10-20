@@ -333,6 +333,18 @@
     <string name="vulkan_test">Prueba de Vulkan</string>
     <string name="what_happened_how_to_reproduce_it">¿Qué pasó? ¿Cómo reproducirlo? (opcional)</string>
     <string name="without_msaa_the_scene_fits_whole" formatted="false">Dibuja la escena de una sola vez, en lugar de por partes: menos trabajo para el procesador (+25 %).</string>
+    <string name="world_crowd">Multitud</string>
+    <string name="world_crowd_description">Cuántas personas aparecen y hasta qué distancia. Es lo que más pesa en el festival. Desactivada: sin multitud, con el renderizador nativo.</string>
+    <string name="world_detail">Detalle del mundo</string>
+    <string name="world_detail_footer">1x es el de Xbox 360. Por encima el mundo se ve más lleno y los FPS bajan; por debajo el juego va más rápido. Se aplica al abrir el juego; la hierba, y desactivar sombras y multitud, con el renderizador nativo.</string>
+    <string name="world_grass">Hierba</string>
+    <string name="world_grass_description">Hasta qué distancia se dibujan los arbustos y matas de hierba. Desactivada: ninguno, y el juego va más rápido. Solo con el renderizador nativo.</string>
+    <string name="world_objects">Objetos</string>
+    <string name="world_objects_description">Hasta qué distancia los edificios, árboles y objetos mantienen su detalle.</string>
+    <string name="world_reflections">Reflejos</string>
+    <string name="world_reflections_description">Lo que reflejan la pintura y los retrovisores del coche, y hasta dónde. Desactivado: el coche no refleja nada en tiempo real, va más rápido y la pintura se ve mate.</string>
+    <string name="world_shadows">Distancia de las sombras</string>
+    <string name="world_shadows_description">Hasta qué distancia se dibujan las sombras. Desactivada: sin sombras, con el renderizador nativo.</string>
     <string name="writes_every_repetition_of_the_messages">Graba todas las repeticiones de los mensajes que se repiten varias veces por segundo (texturas del renderizador, funciones no implementadas). Desactivado, cada uno aparece solo las 20 primeras veces, y el log guarda más tiempo de juego. Solo para investigar.</string>
     <string name="writes_to_the_log_how_long">Graba en el log cuánto tiempo gasta la GPU en cada parte del cuadro. Solo para investigar: hace el juego más lento, porque cada medición hace esperar a la GPU.</string>
     <string name="reflection_mips_in_one_pass">Mips del reflejo en un pase por nivel</string>

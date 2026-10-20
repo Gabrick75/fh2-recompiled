@@ -1080,6 +1080,10 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_diag_vacias_blancas, false, "FH2",
 REXCVAR_DEFINE_BOOL(fh2_nativo_diag_luces, false, "FH2",
                     "Native renderer (debug): log the boolean constants the game sets (every 10 s) and the headlights' "
                     "parameters (pixel shader c168, c169) of a draw with the deferred light contribution on");
+#if defined(FH2_RECOMP)
+REXCVAR_DECLARE(double, fh2_mundo_grama);  // app/src/fh2_mundo.cpp
+REXCVAR_DECLARE(double, fh2_mundo_multidao);
+#endif
 REXCVAR_DEFINE_BOOL(fh2_nativo_diag_elementos, false, "FH2",
                     "Native renderer (debug): log each declared vertex element's fetch as the D3D patched it (format, "
                     "stride, offset, swizzle), once per vertex shader");
@@ -2490,6 +2494,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   }
 
   bool Inicializar() {
+#if defined(FH2_RECOMP)
+    fh2_vegetacion_ = float(REXCVAR_GET(fh2_mundo_grama));
+    fh2_sin_multidao_ = REXCVAR_GET(fh2_mundo_multidao) <= 0;
+#endif
     const auto& propiedades = dispositivo_->properties();
     const std::pair<bool, const char*> requisitos[] = {
         {propiedades.independentBlend, "independentBlend"},
@@ -2635,6 +2643,16 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         return Fh2DiagSalida(p, __LINE__, true);
       }
     }
+#if defined(FH2_RECOMP)
+    // fh2_mundo_grama = 0: no procedural vegetation (bushes and tufts), in any pass.
+    if (fh2_vegetacion_ <= 0.0f && p.vs->fh2_fade_vegetacion >= 0) {
+      return Fh2DiagSalida(p, __LINE__, true);
+    }
+    // fh2_mundo_multidao = 0: no crowd (21 % fewer draws in the festival on the PC).
+    if (fh2_sin_multidao_ && p.vs->fh2_multidao) {
+      return Fh2DiagSalida(p, __LINE__, true);
+    }
+#endif
     const uint32_t iniciador = r[gr::XE_GPU_REG_VGT_DRAW_INITIATOR];
     const uint32_t tipo = iniciador & 0x3F;
     const uint32_t fuente = (iniciador >> 6) & 0x3;
@@ -4160,8 +4178,27 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     // Only the registers each shader reads (EntradaShader::constantes_bytes). With the same generation, the
     // copy is reused if it already covers what this shader needs.
     const uint32_t bytes_vs = std::min<uint32_t>(p.vs->constantes_bytes, kRegistrosConstantes * 4);
-    if (constantes_vs_generacion_ != p.generacion_constantes_vs ||
-        constantes_vs_epoca_ != epoca_subida_ || bytes_vs > constantes_vs_bytes_) {
+    // fh2_mundo_grama: the procedural vegetation's fade distances (FadeValues.x and .y, in metres) scaled in a copy of
+    // this draw's constants, which the next draw does not reuse. The game's own registers stay as they are.
+    bool vegetacion_escalada = false;
+#if defined(FH2_RECOMP)
+    const int32_t registro_fade = p.vs->fh2_fade_vegetacion;
+    if (fh2_vegetacion_ != 1.0f && registro_fade >= 0 && bytes_vs >= uint32_t(registro_fade + 1) * 16) {
+      cat_subida_ = 3;
+      Reservar(usar_ubo_ ? std::max<VkDeviceSize>(bytes_vs, kUboBytesVs) : bytes_vs,
+               usar_ubo_ ? alineacion_ubo_ : 16, constantes_vs_offset_);
+      std::memcpy(subida_datos_ + constantes_vs_offset_, r + kRegConstantesVs, bytes_vs);
+      auto* fade = reinterpret_cast<float*>(subida_datos_ + constantes_vs_offset_) + registro_fade * 4;
+      fade[0] *= fh2_vegetacion_;  // where each plant starts to fade out
+      fade[1] *= fh2_vegetacion_;  // where it is gone
+      constantes_vs_generacion_ = UINT64_MAX;
+      constantes_vs_epoca_ = epoca_subida_;
+      constantes_vs_bytes_ = bytes_vs;
+      vegetacion_escalada = true;
+    }
+#endif
+    if (!vegetacion_escalada && (constantes_vs_generacion_ != p.generacion_constantes_vs ||
+        constantes_vs_epoca_ != epoca_subida_ || bytes_vs > constantes_vs_bytes_)) {
       // Why they are uploaded again (measurement only; each upload is another set 4 offset).
       ++resubidas_vs_[constantes_vs_generacion_ != p.generacion_constantes_vs ? 0
                       : constantes_vs_epoca_ != epoca_subida_                 ? 1
@@ -15363,6 +15400,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   int32_t diag_sin_z_vs_ = REXCVAR_GET(fh2_nativo_diag_sin_z_vs);
   std::set<uint64_t> fh2_diag_textura_vistos_;  // fh2_nativo_diag_textura: (PS, resolved) pairs logged
   std::string diag_omitir_vs_texto_;  // fh2_nativo_diag_omitir_vs, read once per frame
+  // fh2_mundo_grama (app/src/fh2_mundo.cpp): the procedural vegetation's fade distances times this; 0 = none drawn.
+  float fh2_vegetacion_ = 1.0f;
+  bool fh2_sin_multidao_ = false;  // fh2_mundo_multidao = 0: the crowd's draws are skipped
   std::string omitir_vs_texto_;
   std::unordered_set<uint32_t> omitir_vs_;
   bool diag_vertices_repetidos_ = false;

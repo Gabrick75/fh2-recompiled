@@ -40,6 +40,22 @@ final class GameOptions {
     static final String SHADOW_DISTANCE = "shadow_distance";  // not applied yet
     static final String CAR_REFLECTIONS = "car_reflections";  // not applied yet
     static final String SHADOW_MAP_SCALE = "shadow_map_scale";  // nfsmw_nativo_sombras_escala: 0 (off) to 100 %
+    // World detail (app/src/fh2_mundo.cpp): factors of the Xbox 360's, WORLD_FACTORS, "1" = as it. Both renderers but
+    // grass, which the native renderer draws (0 = none).
+    static final String WORLD_GRASS = "world_grass";              // fh2_mundo_grama
+    static final String WORLD_OBJECTS = "world_objects";          // fh2_mundo_objetos
+    static final String WORLD_REFLECTIONS = "world_reflections";  // fh2_mundo_reflexos
+    static final String WORLD_SHADOWS = "world_shadows";          // fh2_mundo_sombras
+    static final String WORLD_CROWD = "world_crowd";              // fh2_mundo_multidao
+    static final float[] WORLD_FACTORS = {0.25f, 0.5f, 0.75f, 1f, 1.5f, 2f, 3f, 4f};
+    // All but objects also go down to off (0): grass and crowd skip their draws and shadows have no shadow map in the
+    // native renderer, reflections lose the live cubemap in both. Objects off would take the world away.
+    static final float[] WORLD_FACTORS_OFF = {0f, 0.25f, 0.5f, 0.75f, 1f, 1.5f, 2f, 3f, 4f};
+
+    /** The positions of a world detail slider: WORLD_FACTORS for objects, WORLD_FACTORS_OFF for the others. */
+    static float[] worldFactors(String key) {
+        return WORLD_OBJECTS.equals(key) ? WORLD_FACTORS : WORLD_FACTORS_OFF;
+    }
     // Performance
     static final String PIN_THREADS = "pin_threads";
     static final String JOGO_RAPIDO = "jogo_rapido";  // fh2_android_afinidade=jogo-rapido (off = auto)
@@ -116,6 +132,11 @@ final class GameOptions {
             case SHADOW_DISTANCE: return "far";
             case CAR_REFLECTIONS: return "high";
             case SHADOW_MAP_SCALE: return "100";  // the Xbox 360's 1600x1600
+            case WORLD_GRASS:
+            case WORLD_OBJECTS:
+            case WORLD_REFLECTIONS:
+            case WORLD_SHADOWS:
+            case WORLD_CROWD: return "1";  // the Xbox 360's
             case DRIVER: return "";
             case VOLUME: return "100";
             case VIBRATION_PHONE: return "true";
@@ -177,7 +198,7 @@ final class GameOptions {
     // hidden ones too, but the imported GPU driver.
     private static final String[] RESTORABLE = {RENDERER, RENDER_SCALE, FPS, ANTI_ALIASING, MSAA_SAMPLES, FXAA_QUALITY,
             SCALING, SHARPNESS, FSR_MODE, ANISOTROPIC, SHADOWS, SHADOW_DISTANCE, CAR_REFLECTIONS, SHADOW_MAP_SCALE,
-            ONE_PASS, RESOLVE_SHORTCUT, ASYNC_SHADERS, LAZY_COMPOSITE, PIN_THREADS, JOGO_RAPIDO, PERFORMANCE_HINTS,
+            WORLD_GRASS, WORLD_OBJECTS, WORLD_REFLECTIONS, WORLD_SHADOWS, WORLD_CROWD, ONE_PASS, RESOLVE_SHORTCUT, ASYNC_SHADERS, LAZY_COMPOSITE, PIN_THREADS, JOGO_RAPIDO, PERFORMANCE_HINTS,
             VERTEX_CACHE, INDEX_CACHE, VERTEX_NO_WAIT, EXACT_TARGETS, REFLECTION_MIPS, TURBO};
 
     /** The Graphics and Performance options back to their defaults (defaultOf, flag): the stored values go. */
@@ -251,6 +272,23 @@ final class GameOptions {
     static int effectiveNativeRenderScalePercent(Context context) {
         int preset = fsrModeScalePercent(context);
         return preset > 0 ? Math.max(12, preset) : nativeRenderScalePercent(context);
+    }
+
+    /** A world detail factor (WORLD_GRASS and the others), one of worldFactors(key); 1 when the stored one is not. */
+    static float worldFactor(Context context, String key) {
+        try {
+            float value = Float.parseFloat(get(context, key).trim());
+            for (float factor : worldFactors(key)) {
+                if (Math.abs(factor - value) < 0.001f) return factor;
+            }
+        } catch (NumberFormatException e) {
+            // the default below
+        }
+        return 1f;
+    }
+
+    static void worldFactor(Context context, String key, float value) {
+        set(context, key, String.valueOf(value));
     }
 
     /** The native renderer's shadow map size, 0 (no shadows) to 100 percent of the game's 1600x1600. */
@@ -389,6 +427,13 @@ final class GameOptions {
         GpuDrivers.arguments(context, args);  // the chosen Vulkan driver, or the system's
         // The FPS limit is the guest vblank rate (fpsLimit).
         args.add("--video_mode_refresh_rate=" + vblankRate(context));
+        // World detail: the game's TrackSettings.xml rewritten at start (fh2_mundo.cpp), both renderers; grass is the
+        // native renderer's (the vegetation's fade distances in its draws).
+        args.add("--fh2_mundo_grama=" + worldFactor(context, WORLD_GRASS));
+        args.add("--fh2_mundo_objetos=" + worldFactor(context, WORLD_OBJECTS));
+        args.add("--fh2_mundo_reflexos=" + worldFactor(context, WORLD_REFLECTIONS));
+        args.add("--fh2_mundo_sombras=" + worldFactor(context, WORLD_SHADOWS));
+        args.add("--fh2_mundo_multidao=" + worldFactor(context, WORLD_CROWD));
         GameLanguage language = gameLanguage(context);
         args.add("--user_language=" + language.language);
         args.add("--user_country=" + language.country);
@@ -405,7 +450,9 @@ final class GameOptions {
             args.add("--fh2_nativo_msaa=" + (!"msaa".equals(get(context, ANTI_ALIASING)) ? 0
                     : "2".equals(get(context, MSAA_SAMPLES)) ? 2 : 4));
             args.add("--nfsmw_nativo_anisotropico=" + nativeAnisotropic(get(context, ANISOTROPIC)));
-            args.add("--nfsmw_nativo_sombras_escala=" + shadowMapScalePercent(context));
+            // World detail shadows off: no shadow map at all, whatever the shadow quality.
+            args.add("--nfsmw_nativo_sombras_escala="
+                    + (worldFactor(context, WORLD_SHADOWS) == 0f ? 0 : shadowMapScalePercent(context)));
             args.add("--nfsmw_nativo_compuesta_perezosa=" + flag(context, LAZY_COMPOSITE));
             // Off by default: each GPU timestamp makes a phone's GPU wait for the work in flight.
             args.add("--fh2_nativo_medir_gpu=" + flag(context, GPU_MEASUREMENTS));

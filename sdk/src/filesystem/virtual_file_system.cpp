@@ -102,6 +102,31 @@ bool VirtualFileSystem::ResolveSymbolicLink(const std::string_view path, std::st
   return was_resolved;
 }
 
+void VirtualFileSystem::RegisterFileOverride(const std::string_view path, const std::string_view replacement) {
+  auto global_lock = global_critical_region_.Acquire();
+  const auto canonical = [this](const std::string_view p) {
+    std::string normalized = rex::string::utf8_canonicalize_guest_path(p);
+    std::string resolved;
+    return ResolveSymbolicLink(normalized, resolved) ? resolved : normalized;
+  };
+  std::string from = canonical(path);
+  std::string to = canonical(replacement);
+  REXFS_INFO("VFS: '{}' is served from '{}'", from, to);
+  file_overrides_[rex::string::utf8_lower_ascii(from)] = std::move(to);
+}
+
+bool VirtualFileSystem::ApplyFileOverride(std::string& path) const {
+  if (file_overrides_.empty()) {
+    return false;
+  }
+  auto it = file_overrides_.find(rex::string::utf8_lower_ascii(path));
+  if (it == file_overrides_.end()) {
+    return false;
+  }
+  path = it->second;
+  return true;
+}
+
 Entry* VirtualFileSystem::ResolvePath(const std::string_view path) {
   auto global_lock = global_critical_region_.Acquire();
 
@@ -114,6 +139,7 @@ Entry* VirtualFileSystem::ResolvePath(const std::string_view path) {
   if (had_symlink) {
     normalized_path = resolved_path;
   }
+  ApplyFileOverride(normalized_path);
 
   // Find the device.
   auto it = std::find_if(devices_.cbegin(), devices_.cend(), [&](const auto& d) {
@@ -192,10 +218,12 @@ bool VirtualFileSystem::DeletePath(const std::string_view path) {
   return parent->Delete(entry);
 }
 
-X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry, const std::string_view path,
+X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry, const std::string_view requested_path,
                                      FileDisposition creation_disposition, uint32_t desired_access,
                                      bool is_directory, bool is_non_directory, File** out_file,
                                      FileAction* out_action) {
+  std::string_view path = requested_path;
+
   // TODO(gibbed): should 'is_directory' remain as a bool or should it be
   // flipped to a generic FileAttributeFlags?
 
@@ -208,6 +236,21 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry, const std::string_view p
   }
   if (desired_access & FileAccess::kGenericAll) {
     desired_access |= FileAccess::kFileReadData | FileAccess::kFileWriteData;
+  }
+
+  // RegisterFileOverride: the open goes to the replacement. The parent lookup below would miss it otherwise, as it
+  // resolves the folder and then asks it for the name.
+  std::string overridden;
+  if (!root_entry && !file_overrides_.empty()) {
+    auto global_lock = global_critical_region_.Acquire();
+    overridden = rex::string::utf8_canonicalize_guest_path(path);
+    std::string resolved;
+    if (ResolveSymbolicLink(overridden, resolved)) {
+      overridden = resolved;
+    }
+    if (ApplyFileOverride(overridden)) {
+      path = overridden;
+    }
   }
 
   // Lookup host device/parent path.

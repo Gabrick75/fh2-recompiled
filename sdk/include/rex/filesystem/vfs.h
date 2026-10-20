@@ -38,6 +38,11 @@ class VirtualFileSystem {
   bool UnregisterSymbolicLink(const std::string_view path);
   bool FindSymbolicLink(const std::string_view path, std::string& target);
 
+  // The guest file at `path` is served from `replacement` instead (a path on another registered device): opening,
+  // resolving or querying `path` reaches the replacement. Both as the guest names them, symbolic links allowed.
+  // For data files a title reads at run time, such as settings the launcher rewrites.
+  void RegisterFileOverride(const std::string_view path, const std::string_view replacement);
+
   Entry* ResolvePath(const std::string_view path);
 
   Entry* CreatePath(const std::string_view path, uint32_t attributes);
@@ -52,8 +57,12 @@ class VirtualFileSystem {
   rex::thread::global_critical_region global_critical_region_;
   std::vector<std::unique_ptr<Device>> devices_;
   std::unordered_map<std::string, std::string> symlinks_;
+  // RegisterFileOverride: canonical device path in lower case -> canonical device path of the replacement.
+  std::unordered_map<std::string, std::string> file_overrides_;
 
   bool ResolveSymbolicLink(const std::string_view path, std::string& result);
+  // A canonical path with its symbolic link resolved, replaced when it has an override.
+  bool ApplyFileOverride(std::string& path) const;
 };
 
 }  // namespace rex::filesystem

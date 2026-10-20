@@ -335,6 +335,18 @@
     <string name="vulkan_test">Vulkan test</string>
     <string name="what_happened_how_to_reproduce_it">What happened? How to reproduce it? (optional)</string>
     <string name="without_msaa_the_scene_fits_whole" formatted="false">Draws the scene in one go instead of in parts: less work for the processor (+25 %).</string>
+    <string name="world_crowd">Crowd</string>
+    <string name="world_crowd_description">How many people there are and how far away they are drawn. It weighs the most at the festival. Off: no crowd, with the native renderer.</string>
+    <string name="world_detail">World detail</string>
+    <string name="world_detail_footer">1x is the Xbox 360\'s. Above it the world looks fuller and the frame rate drops; below it the game runs faster. Applied when the game starts; grass, and turning shadows and the crowd off, with the native renderer.</string>
+    <string name="world_grass">Grass</string>
+    <string name="world_grass_description">How far away bushes and tufts are drawn. Off: none, and the game runs faster. Native renderer only.</string>
+    <string name="world_objects">Objects</string>
+    <string name="world_objects_description">How far away buildings, trees and props keep their detail.</string>
+    <string name="world_reflections">Reflections</string>
+    <string name="world_reflections_description">What the car\'s paint and mirrors reflect, and how far. Off: the car reflects nothing live, faster, and the paint looks flat.</string>
+    <string name="world_shadows">Shadow distance</string>
+    <string name="world_shadows_description">How far away shadows are drawn. Off: no shadows, with the native renderer.</string>
     <string name="writes_every_repetition_of_the_messages">Writes every repetition of the messages that repeat many times a second (renderer textures, unimplemented functions). Off, each shows only its first 20 times, and the log keeps more play time. For investigating only.</string>
     <string name="writes_to_the_log_how_long">Writes to the log how long the GPU spends on each part of the frame. For investigating only: it slows the game down, since each measurement makes the GPU wait.</string>
     <string name="reflection_mips_in_one_pass">Reflection mips in one pass per level</string>
