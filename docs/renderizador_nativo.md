@@ -357,6 +357,11 @@ renderizadores, tudo no padrão e tudo no máximo:
 - **Alpha-to-coverage real nos passes MSAA (opção, `fh2_nativo_msaa_a2c`, desligada).** Com
   `alphaToCoverageEnable` no lugar do teste de alfa, as moitas ficavam macias no PC, mas no celular, a 2x e a 4x,
   viravam pontinhos de cobertura espalhados ("farinha"). Por padrão fica o teste de alfa, como antes.
+- **FXAA do launcher nunca ligava (corrigido).** `nfsmw::ajustes::VigilarAjustesEnVivo()`, que copia
+  `nfsmw_antialiasing` (e o pós-processo opcional) para os atômicos que a passada de saída lê, só era chamada no app
+  do NFSMW; o `fh2_app.h` não a chamava. Agora é chamada ao criar o renderizador nativo, e o log mostra
+  `antialiasing en la salida: FXAA`. O resplendor do céu e o tratamento visual que ela também liga dependem de
+  hashes de shaders do NFSMW e não mudam nada no FH2.
 
 ### A biblioteca no celular (decidido, ainda não implementado)
 
