@@ -135,7 +135,7 @@
     <string name="how_much_of_the_xbox_360_2" formatted="false">Cuánto de la resolución original de Xbox 360 dibuja el juego, con los efectos y el HUD. Por debajo del 100 % la imagen queda menos nítida y la GPU trabaja mucho menos.</string>
     <string name="how_often_the_shadow_maps_are">Cada cuánto se redibujan los mapas de sombras. Cada 2 cuadros cuesta menos y casi no se nota.</string>
     <string name="how_the_game_is_drawn">Cómo se dibuja el juego</string>
-    <string name="how_the_image_is_brought_to" formatted="false">Cómo se amplía la imagen al tamaño de la pantalla. Desactivado dibuja al 100 %, sin ampliar. El FSR es más nítido cuando la resolución está por debajo del 100 %; el CAS solo aumenta la nitidez.</string>
+    <string name="how_the_image_is_brought_to" formatted="false">Cómo se amplía la imagen al tamaño de la pantalla. Desactivado muestra la resolución elegida tal cual, pixelada, sin filtro. El FSR es más nítido cuando la resolución está por debajo del 100 %; el CAS solo aumenta la nitidez.</string>
     <string name="image">Imagen</string>
     <string name="image_stretched_to_the_whole_screen">Imagen estirada a toda la pantalla</string>
     <string name="import_a_driver_zip">Importar driver (.zip)</string>

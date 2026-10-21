@@ -61,6 +61,14 @@ extern "C" {
 REXCVAR_DEFINE_BOOL(present_render_pass_clear, true, "UI/Presenter",
                     "Clear render pass during presentation");
 
+// The guest output sampled with nearest filtering instead of linear: a small render scale shows as blocks, with
+// no upscaling filter at all (the Android launcher's "Off" scaling). It is the sampler of every guest output
+// pass, so it is meant for present_effect=bilinear, the only one with a single pass.
+REXCVAR_DEFINE_BOOL(present_nearest, false, "UI/Presenter",
+                    "Sample the guest output with nearest filtering (no upscaling filter), with "
+                    "present_effect=bilinear")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
 // On NVK for Horizon, the acquire semaphore as a wait for the paint becomes a wait inside the GPU
 // channel (GPFIFO), which stalls everything behind it until the compositor releases the buffer. With
 // this, acquisition uses a fence that is waited on the CPU, without the queue lock, and the paint
@@ -3044,13 +3052,16 @@ bool VulkanPresenter::InitializeSurfaceIndependent() {
   guest_output_image_sampler_bindings[0].descriptorCount = 1;
   guest_output_image_sampler_bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
   guest_output_image_sampler_bindings[0].pImmutableSamplers = nullptr;
-  const VkSampler sampler_linear_clamp =
-      ui_samplers_->samplers()[UISamplers::kSamplerIndexLinearClampToEdge];
+  // present_nearest: the same passes, with point sampling.
+  const VkSampler sampler_clamp =
+      ui_samplers_->samplers()[REXCVAR_GET(present_nearest)
+                                   ? UISamplers::kSamplerIndexNearestClampToEdge
+                                   : UISamplers::kSamplerIndexLinearClampToEdge];
   guest_output_image_sampler_bindings[1].binding = 1;
   guest_output_image_sampler_bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
   guest_output_image_sampler_bindings[1].descriptorCount = 1;
   guest_output_image_sampler_bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-  guest_output_image_sampler_bindings[1].pImmutableSamplers = &sampler_linear_clamp;
+  guest_output_image_sampler_bindings[1].pImmutableSamplers = &sampler_clamp;
   VkDescriptorSetLayoutCreateInfo guest_output_paint_image_descriptor_set_layout_create_info;
   guest_output_paint_image_descriptor_set_layout_create_info.sType =
       VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;

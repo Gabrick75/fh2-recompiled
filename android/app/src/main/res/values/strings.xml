@@ -137,7 +137,7 @@
     <string name="how_much_of_the_xbox_360_2" formatted="false">How much of the Xbox 360\'s original resolution the game draws, effects and HUD included. Below 100 % the image is less sharp and the GPU works much less.</string>
     <string name="how_often_the_shadow_maps_are">How often the shadow maps are redrawn. Every 2 frames costs less and is hardly noticed.</string>
     <string name="how_the_game_is_drawn">How the game is drawn</string>
-    <string name="how_the_image_is_brought_to" formatted="false">How the image is enlarged to the screen\'s size. Off draws at 100 %, with no enlarging. FSR is sharper when the resolution is below 100 %; CAS only sharpens.</string>
+    <string name="how_the_image_is_brought_to" formatted="false">How the image is enlarged to the screen\'s size. Off shows the chosen resolution as it is, pixelated, with no filter. FSR is sharper when the resolution is below 100 %; CAS only sharpens.</string>
     <string name="image">Image</string>
     <string name="image_stretched_to_the_whole_screen">Image stretched to the whole screen</string>
     <string name="import_a_driver_zip">Import a driver (.zip)</string>
