@@ -37,6 +37,9 @@
 REXCVAR_DEFINE_STRING(fh2_nativo_volcar_sueltos, "", "FH2",
                       "Debug: folder where the native renderer writes the shader microcode its library does not "
                       "have (tools/xenos/d3d_internos.py wraps it)");
+REXCVAR_DEFINE_BOOL(fh2_nativo_desenfoque_tras_coche, true, "FH2",
+                    "Motion blur on the road behind the car, as on the Xbox 360: the velocity pass counts stencil "
+                    "128 (the car's ground decals) as world. false = the road behind the car stays sharp");
 #endif
 
 namespace nfsmw::nativo {
@@ -385,6 +388,54 @@ static uint32_t ContarKills(const std::vector<uint32_t>& spirv) {
   return kills;
 }
 
+#if defined(FH2_RECOMP)
+/*
+ * The motion blur behind the car (fh2_nativo_desenfoque_tras_coche).
+ *
+ * The velocity pass (PS n3223, p_003929) reads the scene's depth resolve as 8_8_8_8 and takes the stencil as an
+ * object id: 1-127 are cars, each with its own pair of matrices, and 0 or "128 and up" are the world, with the
+ * camera's. The world test is `stencil / 255 >= 0x3F008100`. The car's ground decals (n2599 marks with stencil
+ * 0x80, n2006 draws where it is 0x80) leave 128 on the road behind the car. Here 128 / 255 is 0x3F008081, just
+ * below the threshold, so that road became object 128 (index 172, past the 92-entry table): zero velocity, no
+ * blur. 0x3F008100 is exactly 128 * 0x3B808100, the Xbox 360's 1/255 at 16 bits, so on the console byte 128
+ * reaches the threshold and the road blurs. The threshold becomes 0.5, between 127 / 255 and 128 / 255: the same
+ * split the console makes, with the PC's conversion.
+ *
+ * Measured with the photo of the packed depth (26,572 pixels of stencil 128 behind the car) and with the library
+ * edited by hand: the road behind the car blurs and the car stays sharp. The constant is an OpConstant only this
+ * module has in the whole library; it is replaced in place (same word count).
+ */
+constexpr uint64_t kHuellaVelocidad = 0xDC5B04D673AAA96Cull;  // container of p_003929 (n3223)
+constexpr uint32_t kUmbralConsola = 0x3F008100u;
+constexpr uint32_t kUmbralPc = 0x3F000000u;  // 0.5
+
+static void CorregirUmbralVelocidad(std::vector<nfsmw::native::Shader>& shaders) {
+  if (!REXCVAR_GET(fh2_nativo_desenfoque_tras_coche)) {
+    REXLOG_INFO("[nativo] C5a: desenfoque tras el coche apagado (el umbral de la velocidad queda como en la consola)");
+    return;
+  }
+  constexpr uint32_t kOpConstant = 43;
+  for (nfsmw::native::Shader& s : shaders) {
+    if (s.huella != kHuellaVelocidad || s.vertices) continue;
+    std::vector<uint32_t>& w = s.spirv;
+    uint32_t cambiadas = 0;
+    for (size_t i = 5; i < w.size();) {
+      const uint32_t palabras = w[i] >> 16;
+      if (palabras == 0 || i + palabras > w.size()) break;
+      if ((w[i] & 0xFFFF) == kOpConstant && palabras == 4 && w[i + 3] == kUmbralConsola) {
+        w[i + 3] = kUmbralPc;
+        ++cambiadas;
+      }
+      i += palabras;
+    }
+    REXLOG_INFO("[nativo] C5a: desenfoque tras el coche: {} constante(s) del umbral de la velocidad cambiadas a 0.5",
+                cambiadas);
+    return;
+  }
+  REXLOG_WARN("[nativo] C5a: desenfoque tras el coche: la biblioteca no trae el shader de velocidad (p_003929)");
+}
+#endif
+
 bool ShadersNativos::Cargar(const std::filesystem::path& archivo) {
   Datos& d = *datos_;
   try {
@@ -394,6 +445,9 @@ bool ShadersNativos::Cargar(const std::filesystem::path& archivo) {
                 e.what());
     return false;
   }
+#if defined(FH2_RECOMP)
+  CorregirUmbralVelocidad(d.biblioteca.shaders_editables());
+#endif
   const auto& shaders = d.biblioteca.shaders();
   uint32_t con_kill = 0, sin_kill = 0;
   uint32_t con_mapa_sombras = 0, con_minimo = 0;  // nfsmw_nativo_sombra_minimo
