@@ -11,6 +11,7 @@
 
 #include "fh2_captura.h"
 #include "fh2_teste_entrada.h"
+#include "nfsmw_ajustes_graficos.h"
 #include "nfsmw_nativo_sistema.h"
 
 #if REX_PLATFORM_ANDROID
@@ -47,6 +48,9 @@ class Fh2App : public rex::ReXApp {
     // empty). The default is still the emulation.
     if (nfsmw::nativo::Activo()) {
       config.graphics = nfsmw::nativo::CrearSistemaGrafico();
+      // FXAA (nfsmw_antialiasing) and the optional post-processing reach the output pass through these atomics.
+      // NFSMW sets them up in its app; without this call the launcher's FXAA never switched on here.
+      nfsmw::ajustes::VigilarAjustesEnVivo();
     }
     fh2::teste::EnvolverEntrada(config);
   }

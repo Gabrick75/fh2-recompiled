@@ -47,6 +47,9 @@ final class GameOptions {
     static final String WORLD_REFLECTIONS = "world_reflections";  // fh2_mundo_reflexos
     static final String WORLD_SHADOWS = "world_shadows";          // fh2_mundo_sombras
     static final String WORLD_CROWD = "world_crowd";              // fh2_mundo_multidao
+    // fh2_nativo_msaa_a2c (native, with MSAA): foliage with real alpha to coverage, soft but grainy ("flour") on
+    // phones; off by default (the alpha test)
+    static final String FOLIAGE_COVERAGE = "foliage_coverage";
     static final float[] WORLD_FACTORS = {0.25f, 0.5f, 0.75f, 1f, 1.5f, 2f, 3f, 4f};
     // All but objects also go down to off (0): grass and crowd skip their draws and shadows have no shadow map in the
     // native renderer, reflections lose the live cubemap in both. Objects off would take the world away.
@@ -198,7 +201,7 @@ final class GameOptions {
     // hidden ones too, but the imported GPU driver.
     private static final String[] RESTORABLE = {RENDERER, RENDER_SCALE, FPS, ANTI_ALIASING, MSAA_SAMPLES, FXAA_QUALITY,
             SCALING, SHARPNESS, FSR_MODE, ANISOTROPIC, SHADOWS, SHADOW_DISTANCE, CAR_REFLECTIONS, SHADOW_MAP_SCALE,
-            WORLD_GRASS, WORLD_OBJECTS, WORLD_REFLECTIONS, WORLD_SHADOWS, WORLD_CROWD, ONE_PASS, RESOLVE_SHORTCUT, ASYNC_SHADERS, LAZY_COMPOSITE, PIN_THREADS, JOGO_RAPIDO, PERFORMANCE_HINTS,
+            WORLD_GRASS, WORLD_OBJECTS, WORLD_REFLECTIONS, WORLD_SHADOWS, WORLD_CROWD, FOLIAGE_COVERAGE, ONE_PASS, RESOLVE_SHORTCUT, ASYNC_SHADERS, LAZY_COMPOSITE, PIN_THREADS, JOGO_RAPIDO, PERFORMANCE_HINTS,
             VERTEX_CACHE, INDEX_CACHE, VERTEX_NO_WAIT, EXACT_TARGETS, REFLECTION_MIPS, TURBO};
 
     /** The Graphics and Performance options back to their defaults (defaultOf, flag): the stored values go. */
@@ -453,6 +456,9 @@ final class GameOptions {
             // World detail shadows off: no shadow map at all, whatever the shadow quality.
             args.add("--nfsmw_nativo_sombras_escala="
                     + (worldFactor(context, WORLD_SHADOWS) == 0f ? 0 : shadowMapScalePercent(context)));
+            // Trees, bushes and fences (the alpha-tested draws) cast shadows from 1x up, as on the Xbox 360; below 1x
+            // they are left out of the shadow map, as NFSMW does for speed (scene pass ~3.9 to ~2 ms of GPU on the PC).
+            args.add("--nfsmw_sombras_sin_vegetacion=" + (worldFactor(context, WORLD_SHADOWS) < 1f));
             args.add("--nfsmw_nativo_compuesta_perezosa=" + flag(context, LAZY_COMPOSITE));
             // Off by default: each GPU timestamp makes a phone's GPU wait for the work in flight.
             args.add("--fh2_nativo_medir_gpu=" + flag(context, GPU_MEASUREMENTS));
@@ -464,6 +470,8 @@ final class GameOptions {
             args.add("--fh2_nativo_vertices_sin_espera=" + flag(context, VERTEX_NO_WAIT));
             args.add("--fh2_nativo_destinos_exactos=" + flag(context, EXACT_TARGETS));
             args.add("--fh2_nativo_mips_reflejo_juntos=" + flag(context, REFLECTION_MIPS));
+            // Only does something with MSAA: soft but grainy foliage edges instead of the alpha test's hard cut.
+            args.add("--fh2_nativo_msaa_a2c=" + flag(context, FOLIAGE_COVERAGE));
         }
         switch (get(context, ANTI_ALIASING)) {
             case "off":

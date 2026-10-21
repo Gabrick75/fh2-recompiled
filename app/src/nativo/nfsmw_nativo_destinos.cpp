@@ -62,6 +62,8 @@ extern "C" void RexSwitchPerfTiron(uint64_t inicio, uint64_t fin);
 #endif
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -464,6 +466,10 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_borrar_area_util, false, "NFSMW",
 REXCVAR_DECLARE(int32_t, nfsmw_nativo_estadisticas_por_dibujo_s);
 // nfsmw_nativo_sombra_minimo only pays off with the single-sample PCF (defined in nfsmw_nativo_dibujos.cpp).
 REXCVAR_DECLARE(bool, nfsmw_nativo_pcf_barato);
+#if defined(FH2_RECOMP)
+// Clears outside a pass go to the multisample images too (defined in nfsmw_nativo_dibujos.cpp).
+REXCVAR_DECLARE(bool, fh2_nativo_msaa_persistente);
+#endif
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_estadisticas_pipeline, false, "NFSMW",
                     "Renderizador nativo (17/09, build 156): cuenta fragmentos sombreados, invocaciones de "
                     "vertice y primitivas recortadas por tipo de pasada (informe C2). La imagen no cambia, "
@@ -550,6 +556,16 @@ REXCVAR_DEFINE_INT32(nfsmw_nativo_leer_resueltas_texels, 4096, "NFSMW",
                      "Renderizador nativo: las texturas resueltas de hasta estos texels se copian "
                      "tambien a la memoria del invitado, que el juego lee para su exposicion (0 = "
                      "ninguna; 4096 = 64x64, las que usa la exposicion; 57600 = 320x180)");
+#if defined(FH2_RECOMP)
+// To compare a resolve with the emulated renderer's (its frame trace dumps them to traco_despejo): the car
+// reflection's faces and mips, for example 1C879000-1CA95000.
+REXCVAR_DEFINE_STRING(fh2_nativo_diag_volcar_resueltas, "", "FH2",
+                      "Debug: 'LO-HI' (hex): after fh2_nativo_diag_volcar_resueltas_s seconds, each resolve to a "
+                      "destination in that range is read back once and written, as the host image's rows, to "
+                      "volcado_resueltas/ in the run folder");
+REXCVAR_DEFINE_INT32(fh2_nativo_diag_volcar_resueltas_s, 90, "FH2",
+                     "Debug: seconds before fh2_nativo_diag_volcar_resueltas starts dumping");
+#endif
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_invalidar_texturas_cada_copia, false, "NFSMW",
                     "Renderizador nativo: tirar las caches de texturas en cada copia (lo de antes de la build 127). "
                     "Desde la 127 solo se tiran cuando una textura resuelta se crea, se rehace, se prepara o cambia "
@@ -915,6 +931,7 @@ struct LecturaPendiente {
   uint32_t alto_destino;
   uint32_t info;          // RB_COPY_DEST_INFO
   uint32_t bytes_texel = 4;  // 4 (8888) or 8 (FH2's 16_16_16_16_FLOAT tables)
+  bool fh2_volcar = false;   // fh2_nativo_diag_volcar_resueltas: to a file, not to guest memory
 };
 
 // Output slots with nfsmw_nativo_salida_sin_espera (without it, only slot 0 is used).
@@ -1873,6 +1890,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       const VkClearColorValue magenta{{1.0f, 0.0f, 1.0f, 1.0f}};
       dfn_.vkCmdClearColorImage(comandos_trabajo_, destino_render->imagen, VK_IMAGE_LAYOUT_GENERAL, &magenta, 1,
                                 &kRangoColor);
+      destino_render->ms_valida = false;  // only the resolved image is painted
       VkMemoryBarrier barrera{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
       barrera.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
       barrera.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -2162,10 +2180,18 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         } else
 #endif
         // nfsmw_nativo_borrar_area_util. Only the rows in use; the bottom band, if needed.
-        if (!BorrarColorAreaUtil(*destino_render, color)) {
-          dfn_.vkCmdClearColorImage(comandos_trabajo_, destino_render->imagen,
-                                    VK_IMAGE_LAYOUT_GENERAL, &color, 1, &kRangoColor);
-          QuitarBanda(*destino_render);
+        {
+          if (!BorrarColorAreaUtil(*destino_render, color)) {
+            dfn_.vkCmdClearColorImage(comandos_trabajo_, destino_render->imagen,
+                                      VK_IMAGE_LAYOUT_GENERAL, &color, 1, &kRangoColor);
+            QuitarBanda(*destino_render);
+          }
+#if defined(FH2_RECOMP)
+          // The multisample image whole: the rows below the useful area are never drawn nor resolved.
+          VkClearValue valor_ms{};
+          valor_ms.color = color;
+          Fh2BorrarMs(*destino_render, valor_ms);
+#endif
         }
         ++borrados_;
         AnotarBorradoDiag(*destino_render, info_color & 0xFFF, formato_color, pitch, false, false);
@@ -2232,10 +2258,22 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                       profundidad->ancho, profundidad->alto, borrados_en_pase_fallidos_);
         }
       }
+#if defined(FH2_RECOMP)
+      {
+        VkClearValue v{};
+        v.depthStencil = valor;
+        Fh2BorrarMs(*profundidad, v);
+      }
+#endif
       return;
     }
     borrar_profundidad_(comandos_trabajo_, profundidad->imagen, VK_IMAGE_LAYOUT_GENERAL, &valor, 1,
                         &kRangoProfundidad);
+#if defined(FH2_RECOMP)
+    VkClearValue v{};
+    v.depthStencil = valor;
+    Fh2BorrarMs(*profundidad, v);
+#endif
   }
 
   // Depth copy: the rectangle of the depth render target to a resolved texture
@@ -3550,6 +3588,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       if (dibujos_) dibujos_->TerminarPase();
       dfn_.vkCmdClearColorImage(comandos_trabajo_, mascara->imagen, VK_IMAGE_LAYOUT_GENERAL, &valor.color, 1,
                                 &kRangoColor);
+      Fh2BorrarMs(*mascara, valor);
     }
     QuitarBanda(*mascara);
     ++borrados_;
@@ -4713,6 +4752,37 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     }
   }
 
+  // fh2_nativo_msaa_persistente: a clear recorded outside a pass goes to the target's multisample image too, which
+  // then holds the cleared target, so the next pass that loads it stays multisampled. Nothing without one.
+  void Fh2BorrarMs(Imagen& imagen, const VkClearValue& valor) {
+    if (imagen.ms_imagen == VK_NULL_HANDLE || !REXCVAR_GET(fh2_nativo_msaa_persistente) ||
+        comandos_trabajo_ == VK_NULL_HANDLE) {
+      return;
+    }
+    const bool profundidad = EsProfundidadFormato(imagen.formato);
+    if (profundidad && !borrar_profundidad_) {
+      imagen.ms_valida = false;  // cannot follow it: the next pass that loads goes 1x
+      return;
+    }
+    if (profundidad) {
+      borrar_profundidad_(comandos_trabajo_, imagen.ms_imagen, VK_IMAGE_LAYOUT_GENERAL, &valor.depthStencil, 1,
+                          &kRangoProfundidad);
+    } else {
+      dfn_.vkCmdClearColorImage(comandos_trabajo_, imagen.ms_imagen, VK_IMAGE_LAYOUT_GENERAL, &valor.color, 1,
+                                &kRangoColor);
+    }
+    VkMemoryBarrier barrera{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrera.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrera.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dfn_.vkCmdPipelineBarrier(comandos_trabajo_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                  VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                  VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                              0, 1, &barrera, 0, nullptr, 0, nullptr);
+    imagen.ms_valida = true;
+  }
+
   // Records the held clear now, as a normal clear, if the image has one.
   void Fh2AplicarBorrado(Imagen& imagen) {
     if (!imagen.fh2_borrar) {
@@ -4738,6 +4808,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       dibujos_->BorrarProfundidadEnPase(comandos_trabajo_, imagen, imagen.fh2_valor_borrar.depthStencil.depth,
                                         imagen.fh2_valor_borrar.depthStencil.stencil);
     }
+    Fh2BorrarMs(imagen, imagen.fh2_valor_borrar);
     VkMemoryBarrier barrera{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     barrera.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
@@ -6033,6 +6104,13 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     MarcarGpu(kGpuBorrados);
     const VkClearDepthStencilValue valor{1.0f, 0};
     borrar_profundidad_(comandos_trabajo_, destino.imagen, VK_IMAGE_LAYOUT_GENERAL, &valor, 1, &kRangoProfundidad);
+#if defined(FH2_RECOMP)
+    {
+      VkClearValue v{};
+      v.depthStencil = valor;
+      Fh2BorrarMs(destino, v);  // the target's content changes here, not only its image
+    }
+#endif
     AnotarUsoBorrado(destino, destino.ancho, destino.alto);  // nfsmw_nativo_diag_borrados: like the restore
     OlvidarBorrado(destino);  // not a game clear: the game's next clear cannot be skipped
     sm_ciclo_borrado_ = true;
@@ -6218,7 +6296,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       dibujos_->OlvidarVista(imagen.vista);
     }
 #if defined(FH2_RECOMP)
-    // fh2_nativo_msaa: the transient multisample image goes with its target (same framebuffers).
+    // fh2_nativo_msaa: the multisample image goes with its target (same framebuffers).
     if (dibujos_ && imagen.ms_vista != VK_NULL_HANDLE) {
       dibujos_->OlvidarVista(imagen.ms_vista);
     }
@@ -7150,6 +7228,20 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
    * its bytes where the wheels read their light: they glowed pink. Only single-use destinations (the car photos) are
    * read back.
    */
+  // fh2_nativo_diag_volcar_resueltas: whether this resolve is dumped (once per address, once the delay has passed).
+  bool Fh2VolcarResuelta(uint32_t base) {
+    static const auto inicio = std::chrono::steady_clock::now();
+    const std::string rango = REXCVAR_GET(fh2_nativo_diag_volcar_resueltas);
+    if (rango.empty() || std::chrono::steady_clock::now() - inicio <
+                             std::chrono::seconds(REXCVAR_GET(fh2_nativo_diag_volcar_resueltas_s))) {
+      return false;
+    }
+    char* fin = nullptr;
+    const uint32_t desde = uint32_t(std::strtoul(rango.c_str(), &fin, 16));
+    const uint32_t hasta = fin && *fin == '-' ? uint32_t(std::strtoul(fin + 1, nullptr, 16)) : desde + 1;
+    return base >= desde && base < hasta && fh2_volcadas_.insert(base).second;
+  }
+
   bool Fh2ResueltaSuelta(uint32_t base, uint32_t pitch_destino, uint32_t alto_destino, uint32_t formato) {
     if (!REXCVAR_GET(fh2_nativo_leer_resueltas_sueltas)) {
       return false;
@@ -7206,11 +7298,25 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                     "ahora)", reg.rb_copy_dest_base & 0x1FFFFFFF, ancho, alto, fh2_tablas_leidas_);
       }
     }
+    // fh2_nativo_diag_volcar_resueltas: only destinations nothing else reads back, each one once.
+    bool fh2_volcar = false;
+    if (!leer && Fh2VolcarResuelta(reg.rb_copy_dest_base & 0x1FFFFFFF)) {
+      const VkFormat f = resuelta.imagen.formato;
+      if (f == VK_FORMAT_R8G8B8A8_UNORM || f == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
+          f == VK_FORMAT_R16G16B16A16_SFLOAT) {
+        leer = true;
+        fh2_volcar = true;
+      }
+    }
 #else
     constexpr bool fh2_tabla = false;
+    constexpr bool fh2_volcar = false;
 #endif
     // Guest bytes per texel: 8888, or the 16_16_16_16_FLOAT tables.
-    const uint32_t bytes_texel = resuelta.imagen.formato == kFormatoColor ? 4 : fh2_tabla ? 8 : 0;
+    const uint32_t bytes_texel = fh2_volcar ? (resuelta.imagen.formato == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4)
+                                 : resuelta.imagen.formato == kFormatoColor ? 4
+                                 : fh2_tabla                                ? 8
+                                                                            : 0;
     if (!leer || !bytes_texel) {
       return;
     }
@@ -7274,7 +7380,8 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                                 lectura.bufer, 1, &copia);
     lecturas_pendientes_.push_back({&lectura, reg.rb_copy_dest_base, x0, y0, ancho, alto,
                                     reg.rb_copy_dest_pitch & 0x3FFF,
-                                    (reg.rb_copy_dest_pitch >> 16) & 0x3FFF, reg.rb_copy_dest_info, bytes_texel});
+                                    (reg.rb_copy_dest_pitch >> 16) & 0x3FFF, reg.rb_copy_dest_info, bytes_texel,
+                                    fh2_volcar});
     if (lecturas_hechas_++ == 0) {
       REXLOG_INFO("[nativo] C2: lectura de vuelta de texturas resueltas de hasta {} texels (la "
                   "primera: {:08X}, {}x{})",
@@ -7320,6 +7427,18 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         rango.size = VK_WHOLE_SIZE;
         dfn_.vkInvalidateMappedMemoryRanges(device_, 1, &rango);
       }
+#if defined(FH2_RECOMP)
+      if (p.fh2_volcar) {
+        std::error_code error;
+        std::filesystem::create_directories("volcado_resueltas", error);
+        const std::string nombre =
+            fmt::format("volcado_resueltas/{:04}_{:08X}_b{}_{}x{}.bin", fh2_volcadas_.size(), p.base & 0x1FFFFFFF,
+                        p.bytes_texel, p.ancho, p.alto);
+        std::ofstream(nombre, std::ios::binary)
+            .write(reinterpret_cast<const char*>(lectura.datos), std::streamsize(p.ancho) * p.alto * p.bytes_texel);
+        continue;
+      }
+#endif
       if (p.bytes_texel == 8) {
         EscribirLectura64(p, lectura);
         continue;
@@ -8069,6 +8188,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 #if defined(FH2_RECOMP)
   std::unordered_map<uint32_t, Fh2CopiaDestino> fh2_copias_destino_;  // fh2_nativo_leer_resueltas_sueltas
   uint64_t fh2_sueltas_leidas_ = 0;
+  std::set<uint32_t> fh2_volcadas_;         // fh2_nativo_diag_volcar_resueltas: addresses already dumped
   uint64_t fh2_tablas_leidas_ = 0;          // fh2_nativo_leer_tablas_fijo16
   bool fh2_copia_desde_fijo16_ = false;     // the resolve being made reads a 16_16 / 16_16_16_16 target
 #endif

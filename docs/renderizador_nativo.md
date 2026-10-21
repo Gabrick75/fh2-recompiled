@@ -314,6 +314,55 @@ Comparação no PC, mesma cena (save do S23, noite na costa), traço de um quadr
 - **Depuração nova:** `fh2_nativo_diag_omitir_vs` (pula os draws de VS dados), `fh2_nativo_diag_sin_stencil_vs`,
   `fh2_censo` com cadeias de chamadores dos draws, e os traços listam os buffers indiretos.
 
+### Reflexo do carro e definição (2026-10-20)
+
+Comparação no PC, save do S23 no mato (`app/out/save_s23_mato`), carro parado, captura aos 90 s nos dois
+renderizadores, tudo no padrão e tudo no máximo:
+
+- **Pintura lavada, quase branca, e vidro sem as árvores (corrigido).** A direção da busca no cubo vinha do atalho
+  do Unleashed: `cube()` guardava o `xyz` do registro e o `tfetchCube` usava essa direção. O Xenos lê a direção
+  do operando 0 como `(z, _, x, y)`, com swizzle e modificadores (`spirv_translator_alu.cpp`, kCube). Os shaders do
+  Unleashed sempre passam `v.zzxy`; a pintura do FH2 (PS n1939, p_002583) passa `r6.xxzy`, ou seja, a direção é
+  `r6.zyx`. Com X e Z trocados, o carro refletia o céu e o sol onde estão as árvores. Cerca de 240 das ~940
+  instruções `cube` da biblioteca usam swizzles fora do padrão. O tradutor agora monta a direção a partir do
+  operando 0. **Exige regerar a biblioteca** (`tools/xenos/biblioteca.sh`) e enviá-la ao celular. As faces do
+  cubo já saíam iguais às da emulação (comparadas com `fh2_nativo_diag_volcar_resueltas` contra o
+  `traco_despejo` do emulado).
+- **Mips do cubo do reflexo (corrigido, `fh2_nativo_mips_cubo`).** O jogo reduz cada face até 1x1 na região de mips
+  do fetch, mas o cubo nativo era montado só com o nível base. Agora ele leva os 9 níveis.
+- **Viés de mip do fetch (corrigido, `fh2_nativo_sesgo_mip`).** O jogo pede −0,375 a −3 em texturas que quer
+  nítidas, e o sampler nativo ignorava. Agora vai em `mipLodBias` (limitado a `maxSamplerLodBias`), como na
+  emulação.
+- **Árvores sem sombra (opção).** `nfsmw_sombras_sin_vegetacion` (herdado do NFSMW, ligado) tira do mapa de sombras
+  tudo o que tem prova de alfa. No PC, desligá-lo custou o passe de cena de ~2 para ~3,9 ms. O launcher o desliga
+  com "Distância das sombras" em 1x ou mais (árvores com sombra, como no Xbox 360); abaixo de 1x ele fica ligado.
+- **Ainda diferente:** o céu da emulação sai mais branco e enevoado, e a cena mais clara (brilho médio 121 contra
+  107). A textura do chão e o grão das folhas já são iguais; a diferença de contraste na copa vem do céu atrás
+  das folhas. `nfsmw_resplandor_cielo` não muda nada no FH2.
+- **O tradutor ainda ignora** `setTexLOD`, o viés da instrução e o LOD explícito: 546 buscas em pixel shaders usam
+  LOD de registro. As buscas no cubo da pintura não usam (LOD calculado).
+- **MSAA que não suavizava (corrigido, `fh2_nativo_msaa_persistente`).** Com MSAA 4x, as bordas do nativo saíam tão
+  serrilhadas quanto sem MSAA. As imagens multiamostra eram transitórias (`storeOp DONT_CARE`), e só os passes
+  que o jogo começa limpando entravam em MSAA. Todo passe que continua a cena caía para 1x: no mato, 20.958
+  passes multiamostra contra 44.622 a 1x. Agora as imagens multiamostra são persistentes (memória comum,
+  `storeOp STORE`, `loadOp LOAD`), com uma marca `ms_valida` por alvo:
+  - um passe MSAA deixa a imagem válida;
+  - um passe 1x a invalida;
+  - as limpezas fora de passe (`Fh2BorrarMs`) são aplicadas também à imagem multiamostra;
+  - troca de imagens e restauração mantêm a marca, porque não mudam o conteúdo do alvo.
+
+  Resultado na mesma cena: 31.820 passes multiamostra (21.391 continuando a cena) contra 2.898 a 1x. Custo: a
+  imagem multiamostra ocupa memória de verdade (alvo de cena de 1280x1280 a 4x: ~52 MB só de cor), e cada passe
+  grava as amostras. `false` volta ao comportamento anterior.
+- **Alpha-to-coverage real nos passes MSAA (opção, `fh2_nativo_msaa_a2c`, desligada).** Com
+  `alphaToCoverageEnable` no lugar do teste de alfa, as moitas ficavam macias no PC, mas no celular, a 2x e a 4x,
+  viravam pontinhos de cobertura espalhados ("farinha"). Por padrão fica o teste de alfa, como antes.
+- **FXAA do launcher nunca ligava (corrigido).** `nfsmw::ajustes::VigilarAjustesEnVivo()`, que copia
+  `nfsmw_antialiasing` (e o pós-processo opcional) para os atômicos que a passada de saída lê, só era chamada no app
+  do NFSMW; o `fh2_app.h` não a chamava. Agora é chamada ao criar o renderizador nativo, e o log mostra
+  `antialiasing en la salida: FXAA`. O resplendor do céu e o tratamento visual que ela também liga dependem de
+  hashes de shaders do NFSMW e não mudam nada no FH2.
+
 ### A biblioteca no celular (decidido, ainda não implementado)
 
 `fh2_shaders.nfsp` é feito a partir dos arquivos do jogo de cada um, então não pode ir no APK. Decisão do dono do

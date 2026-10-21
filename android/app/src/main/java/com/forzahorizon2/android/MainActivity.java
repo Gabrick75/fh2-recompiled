@@ -794,6 +794,9 @@ public final class MainActivity extends AppCompatActivity {
                 ui.group(
                         worldFactorRow(GameOptions.WORLD_GRASS, tr(R.string.world_grass),
                                 tr(R.string.world_grass_description)),
+                        ui.toggleRow(tr(R.string.foliage_coverage), tr(R.string.foliage_coverage_description),
+                                GameOptions.flag(this, GameOptions.FOLIAGE_COVERAGE),
+                                v -> GameOptions.flag(this, GameOptions.FOLIAGE_COVERAGE, v)),
                         worldFactorRow(GameOptions.WORLD_OBJECTS, tr(R.string.world_objects),
                                 tr(R.string.world_objects_description)),
                         worldFactorRow(GameOptions.WORLD_REFLECTIONS, tr(R.string.world_reflections),

@@ -1009,7 +1009,16 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
             break;
 
         case AluVectorOpcode::Cube:
+        #ifdef FH2_RECOMP
+            // The direction is operand 0 read as (z, _, x, y), with its swizzle and modifiers, as the emulated
+            // translator does (spirv_translator_alu.cpp, kCube). Unleashed's shaders always pass v.zzxy, so taking
+            // the register's xyz worked there; FH2's car paint passes r6.xxzy (the direction is r6.zyx), and about
+            // 240 of its cube instructions use other swizzles: with xyz they reflected the wrong side (the sky and
+            // the sun where the trees are), and the paint came out washed out.
+            print("cube(({}).zwxx, cubeMapData)", op(VECTOR_0));
+        #else
             print("cube(r{}, cubeMapData)", instr.src1Register);
+        #endif
             break;
 
         case AluVectorOpcode::Max4:
