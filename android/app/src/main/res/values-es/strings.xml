@@ -339,6 +339,8 @@
     <string name="world_detail_footer">1x es el de Xbox 360. Por encima el mundo se ve más lleno y los FPS bajan; por debajo el juego va más rápido. Se aplica al abrir el juego; la hierba, y desactivar sombras y multitud, con el renderizador nativo.</string>
     <string name="world_grass">Hierba</string>
     <string name="world_grass_description">Hasta qué distancia se dibujan los arbustos y matas de hierba. Desactivada: ninguno, y el juego va más rápido. Solo con el renderizador nativo.</string>
+    <string name="foliage_coverage">Bordes suaves en los arbustos</string>
+    <string name="foliage_coverage_description">Con MSAA, los arbustos y las hojas tienen bordes suaves (alpha to coverage), pero en el móvil se ven granulados, como harina. Desactivada: bordes firmes, como sin MSAA. Solo con el renderizador nativo.</string>
     <string name="world_objects">Objetos</string>
     <string name="world_objects_description">Hasta qué distancia los edificios, árboles y objetos mantienen su detalle.</string>
     <string name="world_reflections">Reflejos</string>

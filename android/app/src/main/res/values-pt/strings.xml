@@ -339,6 +339,8 @@
     <string name="world_detail_footer">1x é o do Xbox 360. Acima disso o mundo fica mais cheio e o fps cai; abaixo, o jogo fica mais rápido. Vale ao abrir o jogo; a grama, e desligar sombras e multidão, no renderizador nativo.</string>
     <string name="world_grass">Grama</string>
     <string name="world_grass_description">Até que distância moitas e tufos de grama são desenhados. Desligada: nenhum, e o jogo fica mais rápido. Só no renderizador nativo.</string>
+    <string name="foliage_coverage">Bordas macias nas moitas</string>
+    <string name="foliage_coverage_description">Com MSAA, moitas e folhas ficam com bordas macias (alpha to coverage), mas no celular parecem granuladas, como farinha. Desligada: bordas firmes, como sem MSAA. Só no renderizador nativo.</string>
     <string name="world_objects">Objetos</string>
     <string name="world_objects_description">Até que distância prédios, árvores e objetos mantêm o detalhe.</string>
     <string name="world_reflections">Reflexos</string>
