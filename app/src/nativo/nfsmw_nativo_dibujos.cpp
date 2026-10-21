@@ -286,6 +286,10 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_msaa_persistente, true, "FH2",
                     "passes that continue the scene are antialiased too (more memory). false = transient images, "
                     "only the passes that clear are multisampled")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_BOOL(fh2_nativo_msaa_a2c, false, "FH2",
+                    "Native renderer: with MSAA, foliage, fences and crowd use real alpha to coverage instead of the "
+                    "alpha test (softer edges, but grainy bushes on phones)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_omitir_sombras, false, "NFSMW",
                     "Renderizador nativo (prueba de FPS): no graba los dibujos del mapa de sombras "
                     "(destino solo de profundidad de 1600 o mas de pitch); recorte visible");
@@ -4332,11 +4336,12 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     // (spirv_translator_rb.cpp) gives each pixel of a 2x2 block the threshold 1 - offset / 4, with the 2-bit
     // offsets of bits 24-31, and the leaves look full and soft at the edges; at 0.5 everywhere they came out
     // thinner and harder. The offsets go to the shader in the threshold's constant (alphaTestValue).
-    // In an MSAA pass it is real alpha to coverage (the pipeline's alphaToCoverageEnable), as the emulation draws it
-    // with MSAA: the edges of the leaves and the bushes get the samples' gradient instead of a hard cut. Only for
-    // draws that write color with the whole shader: the coverage comes from location 0's alpha, which the "no
-    // color" variant (kSpecSoloAlfa) prunes.
-    else if (ps && ((control_color >> 4) & 0x1) && muestras_pase_ >= 2 && mascaras && !solo_alfa) {
+    // fh2_nativo_msaa_a2c: in an MSAA pass, real alpha to coverage (the pipeline's alphaToCoverageEnable). Off by
+    // default: on the phone, at 2x and 4x, the bushes' soft alpha turned into scattered coverage dots ("flour").
+    // Only for draws that write color with the whole shader: the coverage comes from location 0's alpha, which the
+    // "no color" variant (kSpecSoloAlfa) prunes.
+    else if (ps && ((control_color >> 4) & 0x1) && muestras_pase_ >= 2 && mascaras && !solo_alfa &&
+             REXCVAR_GET(fh2_nativo_msaa_a2c)) {
       a2c_real = true;
     } else if (ps && ((control_color >> 4) & 0x1)) {
       funcion_alfa = 6;  // >=
