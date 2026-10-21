@@ -150,6 +150,24 @@ class VulkanPresenter final : public Presenter {
   PaintResult PaintAndPresentImpl(bool execute_ui_drawers) override;
 
  private:
+  // One line with the surface as the driver sees it, at the start of a reconnection loop episode
+  // (Presenter::BucleReconexionEmpieza): which call said outdated, with what result, and the swapchain
+  // against the surface capabilities, to tell a size or transform mismatch from a lost window.
+  void RegistrarSuperficieDesactualizada(const char* llamada, VkResult resultado);
+
+  /*
+   * On a reconnection, new acquisition and presentation semaphores for every paint submission.
+   *
+   * They used to be created once and survive every swapchain. When the driver's
+   * QueueSignalReleaseImageANDROID fails (Mali-G615, usuario-20 and usuario-21), Android drops the image
+   * without consuming the present semaphore's wait, so the semaphore stays signaled and the next frame
+   * signals it again: invalid usage, after which every swapchain failed the same way and the loop never
+   * ended. Called with the old swapchain already destroyed and every paint submission completed; waits
+   * for the presentation queue so no present still waits on them.
+   */
+  void RecrearSemaforosDePresentacion();
+  uint32_t semaforos_recreados_ = 0;
+
   // Usable for both the guest output image itself and for intermediate images.
   class GuestOutputImage {
    public:
@@ -288,6 +306,10 @@ class VulkanPresenter final : public Presenter {
       VkCommandPool draw_command_pool() const { return draw_command_pool_; }
       VkCommandBuffer draw_command_buffer() const { return draw_command_buffer_; }
 
+      // Replaces both semaphores with new ones. Only when nothing that uses them is in flight
+      // (RecrearSemaforosDePresentacion).
+      bool RecrearSemaforos();
+
      private:
       explicit Submission(const VulkanDevice* const vulkan_device)
           : vulkan_device_(vulkan_device) {}
@@ -377,7 +399,7 @@ class VulkanPresenter final : public Presenter {
         const VulkanDevice* vulkan_device, VkSurfaceKHR surface, uint32_t width, uint32_t height,
         VkSwapchainKHR old_swapchain, uint32_t& present_queue_family_out,
         VkFormat& image_format_out, VkExtent2D& image_extent_out, bool& is_fifo_out,
-        bool& ui_surface_unusable_out);
+        bool& ui_surface_unusable_out, bool registrar);
 
     // Destroys the swapchain and its derivatives, nulls `swapchain` and returns
     // the original swapchain object, if it existed, for use as oldSwapchain if
