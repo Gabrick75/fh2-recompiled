@@ -341,6 +341,20 @@ renderizadores, tudo no padrão e tudo no máximo:
   das folhas. `nfsmw_resplandor_cielo` não muda nada no FH2.
 - **O tradutor ainda ignora** `setTexLOD`, o viés da instrução e o LOD explícito: 546 buscas em pixel shaders usam
   LOD de registro. As buscas no cubo da pintura não usam (LOD calculado).
+- **MSAA que não suavizava (corrigido, `fh2_nativo_msaa_persistente`).** Com MSAA 4x, as bordas do nativo saíam tão
+  serrilhadas quanto sem MSAA. As imagens multiamostra eram transitórias (`storeOp DONT_CARE`), e só os passes
+  que o jogo começa limpando entravam em MSAA. Todo passe que continua a cena caía para 1x: no mato, 20.958
+  passes multiamostra contra 44.622 a 1x. Agora as imagens multiamostra são persistentes (memória comum,
+  `storeOp STORE`, `loadOp LOAD`), com uma marca `ms_valida` por alvo:
+  - um passe MSAA deixa a imagem válida;
+  - um passe 1x a invalida;
+  - as limpezas fora de passe (`Fh2BorrarMs`) são aplicadas também à imagem multiamostra;
+  - troca de imagens e restauração mantêm a marca, porque não mudam o conteúdo do alvo.
+
+  Resultado na mesma cena: 31.820 passes multiamostra (21.391 continuando a cena) contra 2.898 a 1x. Nos passes
+  MSAA, o alpha-to-coverage passou a ser real (`alphaToCoverageEnable`) em vez do teste de alfa; folhas e moitas
+  ficaram com bordas macias como na emulação. Custo: a imagem multiamostra ocupa memória de verdade (alvo de cena
+  de 1280x1280 a 4x: ~52 MB só de cor), e cada passe grava as amostras. `false` volta ao comportamento anterior.
 
 ### A biblioteca no celular (decidido, ainda não implementado)
 

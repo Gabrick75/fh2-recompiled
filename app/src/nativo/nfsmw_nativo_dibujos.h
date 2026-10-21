@@ -102,14 +102,18 @@ struct ImagenNativa {
 #endif
   uint32_t resuelta_base = 0;  // where its content is while contenido_invalido
 #if defined(FH2_RECOMP)
-  // fh2_nativo_msaa: the transient multisample image this target is drawn into (resolved in-subpass to the
-  // image above). Per target, allocated lazily on the first MSAA pass; content never carries between passes
-  // (MSAA passes always clear), so no validity tracking is needed. Stays valid across image swaps (same
-  // dimensions); freed with the target.
+  // fh2_nativo_msaa: the multisample image this target is drawn into (resolved in-subpass to the image above).
+  // Per target, allocated lazily on the first MSAA pass; freed with the target. It stays with the target across
+  // image swaps (same dimensions): a swap or a restore moves the target's content between its image and a
+  // texture, but does not change it.
   VkImage ms_imagen = VK_NULL_HANDLE;
   VkDeviceMemory ms_memoria = VK_NULL_HANDLE;
   VkImageView ms_vista = VK_NULL_HANDLE;
   uint32_t ms_muestras = 0;  // sample count of the images above, 0 = none
+  // fh2_nativo_msaa_persistente: the multisample image holds the target's content (an MSAA pass stored it, or a
+  // clear was mirrored into it), so a pass that loads the previous content can stay multisampled. A 1x pass on
+  // the target clears it.
+  bool ms_valida = false;
 #endif
 };
 

@@ -276,6 +276,16 @@ REXCVAR_DEFINE_INT32(fh2_nativo_msaa, 0, "FH2",
                      "Native renderer: MSAA 2x/4x on the 3D scene (0 = off, 2, 4). Needs a restart.")
     .range(0, 4)
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// The game draws its scene in many passes: only the first one clears, the others load what is there (after a
+// resolve, a pass on another target, a clear of another attachment). With transient multisample images those
+// went 1x, about two passes in three in the bush, and the trunks, the car and the bushes came out as jagged as
+// without MSAA. Persistent images keep the samples between passes (storeOp STORE, loadOp LOAD) at the price of
+// real memory for them (a 1280x1280 scene target at 4x: ~52 MB in color plus its depth) and of storing them.
+REXCVAR_DEFINE_BOOL(fh2_nativo_msaa_persistente, true, "FH2",
+                    "Native renderer: with MSAA, the multisample images keep their samples between passes, so the "
+                    "passes that continue the scene are antialiased too (more memory). false = transient images, "
+                    "only the passes that clear are multisampled")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_omitir_sombras, false, "NFSMW",
                     "Renderizador nativo (prueba de FPS): no graba los dibujos del mapa de sombras "
                     "(destino solo de profundidad de 1600 o mas de pitch); recorte visible");
@@ -4303,6 +4313,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     }
 #endif
     const uint32_t control_color = r[gr::XE_GPU_REG_RB_COLORCONTROL];
+    bool a2c_real = false;  // alpha to coverage in an MSAA pass (see below)
     float umbral_alfa = 0.0f;
     uint32_t funcion_alfa = 7;  // always
     // The 8 Xenos functions (0 never, 1 <, 2 ==, 3 <=, 4 >, 5 !=, 6 >=, 7 always) with alphaTestValue
@@ -4321,7 +4332,13 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     // (spirv_translator_rb.cpp) gives each pixel of a 2x2 block the threshold 1 - offset / 4, with the 2-bit
     // offsets of bits 24-31, and the leaves look full and soft at the edges; at 0.5 everywhere they came out
     // thinner and harder. The offsets go to the shader in the threshold's constant (alphaTestValue).
-    else if (ps && ((control_color >> 4) & 0x1)) {
+    // In an MSAA pass it is real alpha to coverage (the pipeline's alphaToCoverageEnable), as the emulation draws it
+    // with MSAA: the edges of the leaves and the bushes get the samples' gradient instead of a hard cut. Only for
+    // draws that write color with the whole shader: the coverage comes from location 0's alpha, which the "no
+    // color" variant (kSpecSoloAlfa) prunes.
+    else if (ps && ((control_color >> 4) & 0x1) && muestras_pase_ >= 2 && mascaras && !solo_alfa) {
+      a2c_real = true;
+    } else if (ps && ((control_color >> 4) & 0x1)) {
       funcion_alfa = 6;  // >=
       if (REXCVAR_GET(fh2_nativo_a2c_pontilhado)) {
         umbral_alfa = float(control_color >> 24);
@@ -4560,6 +4577,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     // fh2_nativo_msaa: the pass's sample count (0 = one sample). Pipelines only match passes with the same
     // count; the old prewarm list is cleanly rejected by its record-size check and rewarmed.
     clave.muestras = muestras_pase_;
+    clave.muestras_reserva = a2c_real ? 1u : 0u;  // bit 0: alphaToCoverageEnable
 #endif
     std::copy(std::begin(pase_formatos_), std::end(pase_formatos_), std::begin(clave.formatos));
     static constexpr uint32_t kMezcla[4] = {
@@ -8842,9 +8860,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 #if defined(FH2_RECOMP)
     // fh2_nativo_msaa: totals since the start.
     if (msaa_pases_ || msaa_fallos_) {
-      NFSMW_INFORME_ANILLO("[fh2 nativo] MSAA: {} pases multimuestra, {} a 1x por cargar lo anterior, "
-                           "{} fallos (1x para la sesion)",
-                           msaa_pases_, msaa_sin_borrado_, msaa_fallos_);
+      NFSMW_INFORME_ANILLO("[fh2 nativo] MSAA: {} pases multimuestra ({} de ellos cargan lo anterior), {} a 1x por "
+                           "cargar lo anterior sin muestras guardadas, {} fallos (1x para la sesion)",
+                           msaa_pases_, msaa_continuados_, msaa_sin_borrado_, msaa_fallos_);
     }
 #endif
 
@@ -12146,12 +12164,19 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       info.tiling = VK_IMAGE_TILING_OPTIMAL;
       // Transient: the multisample images only live inside a pass that clears them (EmpezarPase) and store
       // nothing (storeOp DONT_CARE), so a tiler keeps them in its tile memory and never backs them with RAM.
+      // Persistent (fh2_nativo_msaa_persistente): they keep the target's samples between passes in real memory,
+      // and ContextoDestinos clears them with the target (TRANSFER_DST).
+      const bool persistente = REXCVAR_GET(fh2_nativo_msaa_persistente);
       info.usage = (profundidad ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
                                 : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) |
-                   VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+                   (persistente ? VK_IMAGE_USAGE_TRANSFER_DST_BIT : VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT);
       info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
       info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-      bool bien = CrearImagenMsTransitoria(info, img->ms_imagen, img->ms_memoria);
+      img->ms_valida = false;
+      bool bien = persistente ? rex::ui::vulkan::util::CreateDedicatedAllocationImage(
+                                    dispositivo_, info, rex::ui::vulkan::util::MemoryPurpose::kDeviceLocal,
+                                    img->ms_imagen, img->ms_memoria)
+                              : CrearImagenMsTransitoria(info, img->ms_imagen, img->ms_memoria);
       if (bien) {
         VkImageAspectFlags aspecto = VK_IMAGE_ASPECT_COLOR_BIT;
         if (profundidad) {
@@ -12235,6 +12260,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       img.ms_memoria = VK_NULL_HANDLE;
     }
     img.ms_muestras = 0;
+    img.ms_valida = false;
   }
 #endif
 
@@ -12344,9 +12370,24 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         }
       }
     }
-    if (muestras_max >= 2 && !todo_borrado) {
+    // fh2_nativo_msaa_persistente: a pass that loads stays multisampled if every attachment it loads has its samples
+    // (ms_valida); the cleared ones start from the clear either way.
+    bool continua_ms = false;
+    if (muestras_max >= 2 && !todo_borrado && REXCVAR_GET(fh2_nativo_msaa_persistente)) {
+      continua_ms = true;
+      for (uint32_t i = 0; i < 5 && continua_ms; ++i) {
+        if (imagenes[i] && !(mascara_borrar & (1u << i))) {
+          continua_ms = imagenes[i]->ms_valida && imagenes[i]->ms_imagen != VK_NULL_HANDLE &&
+                        imagenes[i]->ms_muestras == muestras_max;
+        }
+      }
+    }
+    if (muestras_max >= 2 && !todo_borrado && !continua_ms) {
       ++msaa_sin_borrado_;
     } else if (muestras_max >= 2 && PrepararMs(imagenes, muestras_max)) {
+      if (continua_ms) {
+        ++msaa_continuados_;
+      }
       muestras = muestras_max;
       for (uint32_t i = 0; i < 5; ++i) {
         if (imagenes[i] && imagenes[i]->ms_vista != VK_NULL_HANDLE) {
@@ -12355,9 +12396,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
       ++msaa_pases_;
       if (msaa_pases_ == 1) {
-        REXLOG_INFO("[fh2 nativo] MSAA a {}x: los pases que el juego borra se dibujan con {} muestras y se "
-                    "resuelven en el pase; los que cargan lo anterior van a 1x",
-                    muestras, muestras);
+        REXLOG_INFO("[fh2 nativo] MSAA a {}x: los pases se dibujan con {} muestras y se resuelven en el pase; {}",
+                    muestras, muestras,
+                    REXCVAR_GET(fh2_nativo_msaa_persistente)
+                        ? "las muestras se guardan entre pases y los que cargan lo anterior siguen en MSAA"
+                        : "solo los que el juego borra (los que cargan lo anterior van a 1x)");
       }
     }
     muestras_pase_ = muestras;
@@ -12456,6 +12499,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     for (uint32_t i = 0; i < 5; ++i) {
       if (mascara_borrar & (1u << i)) {
         imagenes[i]->fh2_borrar = false;  // done (ContextoDestinos drops it from its list)
+      }
+      // fh2_nativo_msaa_persistente: an MSAA pass stores its samples; a 1x pass leaves them behind its resolved image.
+      if (imagenes[i]) {
+        imagenes[i]->ms_valida = muestras >= 2 && REXCVAR_GET(fh2_nativo_msaa_persistente);
       }
     }
 #endif
@@ -12695,6 +12742,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         muestras >= 4 ? VK_SAMPLE_COUNT_4_BIT : (muestras >= 2 ? VK_SAMPLE_COUNT_2_BIT
                                                               : VK_SAMPLE_COUNT_1_BIT);
     const bool con_ms = muestras >= 2;
+    // fh2_nativo_msaa_persistente: the samples are stored for the next pass on the target (loadOp LOAD). The flag is
+    // fixed for the session, so it needs no place in the render pass key.
+    const bool ms_guarda = con_ms && REXCVAR_GET(fh2_nativo_msaa_persistente);
 #endif
     std::array<VkAttachmentDescription, 10> adjuntos{};
     std::array<VkAttachmentReference, 4> colores{};
@@ -12725,15 +12775,15 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                                          : VK_ATTACHMENT_LOAD_OP_LOAD;
       a.storeOp =
 #if defined(FH2_RECOMP)
-          con_ms ? VK_ATTACHMENT_STORE_OP_DONT_CARE :
+          con_ms && !ms_guarda ? VK_ATTACHMENT_STORE_OP_DONT_CARE :
 #endif
-                   VK_ATTACHMENT_STORE_OP_STORE;
+                               VK_ATTACHMENT_STORE_OP_STORE;
       a.stencilLoadOp = i != 4                 ? VK_ATTACHMENT_LOAD_OP_DONT_CARE
                         : modo == kCargaBorrar ? VK_ATTACHMENT_LOAD_OP_CLEAR
                                                : VK_ATTACHMENT_LOAD_OP_LOAD;
       a.stencilStoreOp = i == 4 ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
 #if defined(FH2_RECOMP)
-      if (con_ms && i == 4) {
+      if (con_ms && !ms_guarda && i == 4) {
         a.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;  // only the resolve is read
       }
 #endif
@@ -13268,6 +13318,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     muestreo.rasterizationSamples =
         clave.muestras >= 4 ? VK_SAMPLE_COUNT_4_BIT : (clave.muestras >= 2 ? VK_SAMPLE_COUNT_2_BIT
                                                                            : VK_SAMPLE_COUNT_1_BIT);
+    muestreo.alphaToCoverageEnable = clave.muestras >= 2 && (clave.muestras_reserva & 1u) ? VK_TRUE : VK_FALSE;
 #else
     muestreo.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 #endif
@@ -15632,6 +15683,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   bool msaa_invalido_ = false;  // a multisample image/pass/pipeline failed: stay 1x for the session
   uint64_t msaa_pases_ = 0;
   uint64_t msaa_sin_borrado_ = 0;  // passes that wanted MSAA but load the previous content: opened 1x
+  uint64_t msaa_continuados_ = 0;  // fh2_nativo_msaa_persistente: MSAA passes that load the stored samples
   uint64_t msaa_fallos_ = 0;
 #endif
   uint64_t pase_generacion_ = UINT64_MAX;

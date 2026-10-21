@@ -466,6 +466,10 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_borrar_area_util, false, "NFSMW",
 REXCVAR_DECLARE(int32_t, nfsmw_nativo_estadisticas_por_dibujo_s);
 // nfsmw_nativo_sombra_minimo only pays off with the single-sample PCF (defined in nfsmw_nativo_dibujos.cpp).
 REXCVAR_DECLARE(bool, nfsmw_nativo_pcf_barato);
+#if defined(FH2_RECOMP)
+// Clears outside a pass go to the multisample images too (defined in nfsmw_nativo_dibujos.cpp).
+REXCVAR_DECLARE(bool, fh2_nativo_msaa_persistente);
+#endif
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_estadisticas_pipeline, false, "NFSMW",
                     "Renderizador nativo (17/09, build 156): cuenta fragmentos sombreados, invocaciones de "
                     "vertice y primitivas recortadas por tipo de pasada (informe C2). La imagen no cambia, "
@@ -1886,6 +1890,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       const VkClearColorValue magenta{{1.0f, 0.0f, 1.0f, 1.0f}};
       dfn_.vkCmdClearColorImage(comandos_trabajo_, destino_render->imagen, VK_IMAGE_LAYOUT_GENERAL, &magenta, 1,
                                 &kRangoColor);
+      destino_render->ms_valida = false;  // only the resolved image is painted
       VkMemoryBarrier barrera{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
       barrera.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
       barrera.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -2175,10 +2180,18 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         } else
 #endif
         // nfsmw_nativo_borrar_area_util. Only the rows in use; the bottom band, if needed.
-        if (!BorrarColorAreaUtil(*destino_render, color)) {
-          dfn_.vkCmdClearColorImage(comandos_trabajo_, destino_render->imagen,
-                                    VK_IMAGE_LAYOUT_GENERAL, &color, 1, &kRangoColor);
-          QuitarBanda(*destino_render);
+        {
+          if (!BorrarColorAreaUtil(*destino_render, color)) {
+            dfn_.vkCmdClearColorImage(comandos_trabajo_, destino_render->imagen,
+                                      VK_IMAGE_LAYOUT_GENERAL, &color, 1, &kRangoColor);
+            QuitarBanda(*destino_render);
+          }
+#if defined(FH2_RECOMP)
+          // The multisample image whole: the rows below the useful area are never drawn nor resolved.
+          VkClearValue valor_ms{};
+          valor_ms.color = color;
+          Fh2BorrarMs(*destino_render, valor_ms);
+#endif
         }
         ++borrados_;
         AnotarBorradoDiag(*destino_render, info_color & 0xFFF, formato_color, pitch, false, false);
@@ -2245,10 +2258,22 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                       profundidad->ancho, profundidad->alto, borrados_en_pase_fallidos_);
         }
       }
+#if defined(FH2_RECOMP)
+      {
+        VkClearValue v{};
+        v.depthStencil = valor;
+        Fh2BorrarMs(*profundidad, v);
+      }
+#endif
       return;
     }
     borrar_profundidad_(comandos_trabajo_, profundidad->imagen, VK_IMAGE_LAYOUT_GENERAL, &valor, 1,
                         &kRangoProfundidad);
+#if defined(FH2_RECOMP)
+    VkClearValue v{};
+    v.depthStencil = valor;
+    Fh2BorrarMs(*profundidad, v);
+#endif
   }
 
   // Depth copy: the rectangle of the depth render target to a resolved texture
@@ -3563,6 +3588,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       if (dibujos_) dibujos_->TerminarPase();
       dfn_.vkCmdClearColorImage(comandos_trabajo_, mascara->imagen, VK_IMAGE_LAYOUT_GENERAL, &valor.color, 1,
                                 &kRangoColor);
+      Fh2BorrarMs(*mascara, valor);
     }
     QuitarBanda(*mascara);
     ++borrados_;
@@ -4726,6 +4752,37 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     }
   }
 
+  // fh2_nativo_msaa_persistente: a clear recorded outside a pass goes to the target's multisample image too, which
+  // then holds the cleared target, so the next pass that loads it stays multisampled. Nothing without one.
+  void Fh2BorrarMs(Imagen& imagen, const VkClearValue& valor) {
+    if (imagen.ms_imagen == VK_NULL_HANDLE || !REXCVAR_GET(fh2_nativo_msaa_persistente) ||
+        comandos_trabajo_ == VK_NULL_HANDLE) {
+      return;
+    }
+    const bool profundidad = EsProfundidadFormato(imagen.formato);
+    if (profundidad && !borrar_profundidad_) {
+      imagen.ms_valida = false;  // cannot follow it: the next pass that loads goes 1x
+      return;
+    }
+    if (profundidad) {
+      borrar_profundidad_(comandos_trabajo_, imagen.ms_imagen, VK_IMAGE_LAYOUT_GENERAL, &valor.depthStencil, 1,
+                          &kRangoProfundidad);
+    } else {
+      dfn_.vkCmdClearColorImage(comandos_trabajo_, imagen.ms_imagen, VK_IMAGE_LAYOUT_GENERAL, &valor.color, 1,
+                                &kRangoColor);
+    }
+    VkMemoryBarrier barrera{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    barrera.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrera.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    dfn_.vkCmdPipelineBarrier(comandos_trabajo_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                                  VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                  VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                              0, 1, &barrera, 0, nullptr, 0, nullptr);
+    imagen.ms_valida = true;
+  }
+
   // Records the held clear now, as a normal clear, if the image has one.
   void Fh2AplicarBorrado(Imagen& imagen) {
     if (!imagen.fh2_borrar) {
@@ -4751,6 +4808,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       dibujos_->BorrarProfundidadEnPase(comandos_trabajo_, imagen, imagen.fh2_valor_borrar.depthStencil.depth,
                                         imagen.fh2_valor_borrar.depthStencil.stencil);
     }
+    Fh2BorrarMs(imagen, imagen.fh2_valor_borrar);
     VkMemoryBarrier barrera{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     barrera.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
@@ -6046,6 +6104,13 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     MarcarGpu(kGpuBorrados);
     const VkClearDepthStencilValue valor{1.0f, 0};
     borrar_profundidad_(comandos_trabajo_, destino.imagen, VK_IMAGE_LAYOUT_GENERAL, &valor, 1, &kRangoProfundidad);
+#if defined(FH2_RECOMP)
+    {
+      VkClearValue v{};
+      v.depthStencil = valor;
+      Fh2BorrarMs(destino, v);  // the target's content changes here, not only its image
+    }
+#endif
     AnotarUsoBorrado(destino, destino.ancho, destino.alto);  // nfsmw_nativo_diag_borrados: like the restore
     OlvidarBorrado(destino);  // not a game clear: the game's next clear cannot be skipped
     sm_ciclo_borrado_ = true;
@@ -6231,7 +6296,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       dibujos_->OlvidarVista(imagen.vista);
     }
 #if defined(FH2_RECOMP)
-    // fh2_nativo_msaa: the transient multisample image goes with its target (same framebuffers).
+    // fh2_nativo_msaa: the multisample image goes with its target (same framebuffers).
     if (dibujos_ && imagen.ms_vista != VK_NULL_HANDLE) {
       dibujos_->OlvidarVista(imagen.ms_vista);
     }
