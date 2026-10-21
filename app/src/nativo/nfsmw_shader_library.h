@@ -24,6 +24,9 @@ class BibliotecaShaders {
   void Cargar(const std::filesystem::path& archivo);
   const Shader* Buscar(std::span<const uint8_t> original) const;
   const std::vector<Shader>& shaders() const { return shaders_; }
+  // For fixes applied right after loading. Words may be replaced, never added or removed: pointers returned by
+  // Buscar and the sizes stay valid.
+  std::vector<Shader>& shaders_editables() { return shaders_; }
 
  private:
   std::vector<Shader> shaders_;
