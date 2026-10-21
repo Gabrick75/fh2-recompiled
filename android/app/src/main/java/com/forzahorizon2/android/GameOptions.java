@@ -453,6 +453,9 @@ final class GameOptions {
             // World detail shadows off: no shadow map at all, whatever the shadow quality.
             args.add("--nfsmw_nativo_sombras_escala="
                     + (worldFactor(context, WORLD_SHADOWS) == 0f ? 0 : shadowMapScalePercent(context)));
+            // Trees, bushes and fences (the alpha-tested draws) left out of the shadow map up to 1x, as NFSMW does for
+            // speed (scene pass ~2 to ~3.9 ms of GPU on the PC with them); above 1x they cast shadows like the Xbox 360.
+            args.add("--nfsmw_sombras_sin_vegetacion=" + (worldFactor(context, WORLD_SHADOWS) <= 1f));
             args.add("--nfsmw_nativo_compuesta_perezosa=" + flag(context, LAZY_COMPOSITE));
             // Off by default: each GPU timestamp makes a phone's GPU wait for the work in flight.
             args.add("--fh2_nativo_medir_gpu=" + flag(context, GPU_MEASUREMENTS));

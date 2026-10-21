@@ -346,7 +346,7 @@
     <string name="world_reflections">Reflections</string>
     <string name="world_reflections_description">What the car\'s paint and mirrors reflect, and how far. Off: the car reflects nothing live, faster, and the paint looks flat.</string>
     <string name="world_shadows">Shadow distance</string>
-    <string name="world_shadows_description">How far away shadows are drawn. Off: no shadows, with the native renderer.</string>
+    <string name="world_shadows_description">How far away shadows are drawn. Off: no shadows, with the native renderer. Above 1x, the native renderer also draws the shadows of trees and bushes (slower).</string>
     <string name="writes_every_repetition_of_the_messages">Writes every repetition of the messages that repeat many times a second (renderer textures, unimplemented functions). Off, each shows only its first 20 times, and the log keeps more play time. For investigating only.</string>
     <string name="writes_to_the_log_how_long">Writes to the log how long the GPU spends on each part of the frame. For investigating only: it slows the game down, since each measurement makes the GPU wait.</string>
     <string name="reflection_mips_in_one_pass">Reflection mips in one pass per level</string>

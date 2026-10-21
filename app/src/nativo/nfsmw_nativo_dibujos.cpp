@@ -762,6 +762,14 @@ REXCVAR_DEFINE_INT32(nfsmw_nativo_anisotropico, 0, "NFSMW",
                      "distancia); 2, 4, 8 o 16 = mas nitido, con coste de GPU")
     .range(0, 16)
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_BOOL(fh2_nativo_sesgo_mip, true, "FH2",
+                    "Native renderer: apply the mip bias each texture's fetch constant asks for (FH2 sharpens "
+                    "foliage and others with -0.375 to -3), as the emulated renderer does. false = ignored, as before")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_BOOL(fh2_nativo_mips_cubo, true, "FH2",
+                    "Native renderer: the car reflection cube with the mip levels the game resolves for it (the "
+                    "paint samples the blurred ones). false = only the base level, as before")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 /*
  * Alley door diagnostic (nfsmw_nativo_diag_mip_minimo).
@@ -9647,6 +9655,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         return false;
       }
       cuatro_conjuntos_ = fisicas.limits.maxBoundDescriptorSets < 5 || REXCVAR_GET(nfsmw_nativo_cuatro_conjuntos);
+      sesgo_lod_maximo_ = fisicas.limits.maxSamplerLodBias;
       if (cuatro_conjuntos_) {
         REXLOG_INFO("[compatibilidad] {} conjuntos de descriptores{}: el monton de cubos va en el conjunto del "
                     "3D y samplers y UBO bajan uno", fisicas.limits.maxBoundDescriptorSets,
@@ -10507,21 +10516,49 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 #endif
       }
       const VkFormat formato_cubo = resueltas ? caras[0]->formato : VK_FORMAT_R8G8B8A8_UNORM;
+      /*
+       * Its mips. After the six faces the game halves each face down to 1x1 (one draw and one resolve per level
+       * and face) into the fetch's mip region, and the car paint samples the cube with the computed LOD: on the
+       * body's curves and far away that lands on the blurred levels, which the base level alone replaced with
+       * the sharp faces. Levels are taken from 1 up while all six faces of a level are resolved like the base;
+       * the packed tail is left out.
+       */
+      uint32_t niveles_cubo = 1;
+      std::array<std::array<const ImagenNativa*, 6>, 16> mips_cubo{};
+      if (resueltas && REXCVAR_GET(fh2_nativo_mips_cubo)) {
+        for (uint32_t s = 1; s <= nivel_max && s < nivel_empaquetado && s < 16; ++s) {
+          const uint32_t lado_x = std::max(ancho >> s, 1u);
+          const uint32_t lado_y = std::max(alto >> s, 1u);
+          bool nivel = true;
+          for (uint32_t c = 0; c < 6 && nivel; ++c) {
+            const ImagenNativa* m = contexto_->TexturaResuelta(
+                uint32_t((dir_mips + regiones[s].desplazamiento + c * regiones[s].zancada) & 0x1FFFFFFF));
+            nivel = m && m->formato == formato_cubo && m->intercambio_rb == caras[0]->intercambio_rb &&
+                    m->ancho >= lado_x && m->alto >= lado_y;
+            mips_cubo[s][c] = m;
+          }
+          if (!nivel) {
+            break;
+          }
+          niveles_cubo = s + 1;
+        }
+      }
       if (resueltas) {
-        const uint64_t clave_resuelto = clave ^ 0x9E3779B97F4A7C15ull;
+        // A chain that shows up later (or shrinks) gets its own image instead of resizing this one.
+        const uint64_t clave_resuelto = clave ^ 0x9E3779B97F4A7C15ull ^ (uint64_t(niveles_cubo) << 56);
         Textura& textura = texturas_[clave_resuelto];
         if (textura.imagen.imagen == VK_NULL_HANDLE) {
-          if (!CrearTextura(textura.imagen, formato_cubo, ancho, alto, capas)) {
+          if (!CrearTextura(textura.imagen, formato_cubo, ancho, alto, capas, 0, niveles_cubo)) {
             texturas_.erase(clave_resuelto);
             Avisar(32, "no se pudo crear una textura");
             return;
           }
           textura.capas = capas;
-          textura.bytes = uint64_t(ancho) * alto * 4 * capas;
+          textura.bytes = uint64_t(ancho) * alto * 4 * capas * (niveles_cubo > 1 ? 4 : 3) / 3;
           bytes_texturas_ += textura.bytes;
-          REXLOG_INFO("[nativo] C3: cubo {:08X} {}x{} con sus caras resueltas por C2 (fetch {:08X} "
+          REXLOG_INFO("[nativo] C3: cubo {:08X} {}x{} con sus caras resueltas por C2, {} niveles (fetch {:08X} "
                       "{:08X} {:08X} {:08X} {:08X} {:08X})",
-                      base, ancho, alto, f[0], f[1], f[2], f[3], f[4], f[5]);
+                      base, ancho, alto, niveles_cubo, f[0], f[1], f[2], f[3], f[4], f[5]);
         }
         if (textura.fotograma != fotograma_) {
           const VkCommandBuffer subida = contexto_->ComandosSubida();
@@ -10540,6 +10577,16 @@ class DibujosVulkanImpl final : public DibujosVulkan {
             copia.extent = {ancho, alto, 1};
             copiar_imagen_(subida, caras[c]->imagen, VK_IMAGE_LAYOUT_GENERAL, textura.imagen.imagen,
                            VK_IMAGE_LAYOUT_GENERAL, 1, &copia);
+          }
+          for (uint32_t s = 1; s < niveles_cubo; ++s) {
+            for (uint32_t c = 0; c < 6; ++c) {
+              VkImageCopy copia{};
+              copia.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+              copia.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, s, c, 1};
+              copia.extent = {std::max(ancho >> s, 1u), std::max(alto >> s, 1u), 1};
+              copiar_imagen_(subida, mips_cubo[s][c]->imagen, VK_IMAGE_LAYOUT_GENERAL, textura.imagen.imagen,
+                             VK_IMAGE_LAYOUT_GENERAL, 1, &copia);
+            }
           }
           // Rear-view mirror diagnostic: how many times the faces are copied to the cubemap per submission.
           ++cubos_refrescados_;
@@ -11764,8 +11811,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 
   // point: no filtering (depth textures).
   uint32_t RanuraSampler(const uint32_t* f, bool puntual = false) {
-    // Diagnostic: filters the game requests that this renderer does not apply (anisotropy, mip bias and
-    // maximum mip level; the bias is not even part of the key). Each new value is logged once.
+    // Diagnostic: the filters the game requests (anisotropy, mip bias and maximum mip level; the anisotropy is
+    // not applied, see nfsmw_nativo_anisotropico). Each new value is logged once.
     {
       const uint32_t aniso = (f[3] >> 25) & 0x7;
       const int32_t sesgo = int32_t(f[4] << 10) >> 22;  // lod_bias: 10 bits con signo, 5 fraccionarios
@@ -11811,9 +11858,15 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         campo_mips = (campo_mips & 0xF0) | std::min(maximo, minimo + diag_mip_minimo_);
       }
     }
-    const uint32_t clave = ((f[0] >> 10) & 0x1FF) | (campo_filtros << 9) |
-                           (campo_mips << 21) | ((f[5] & 0x3) << 29) |
-                           (puntual ? 0x80000000u : 0u);
+    /*
+     * fh2_nativo_sesgo_mip: the fetch constant's mip bias (word 4 bits 12-21, signed, in 1/32), as the emulated
+     * renderer's sampler applies it. FH2 asks for -0.375 to -3 on textures it wants sharp (foliage among them):
+     * without it they were drawn one to three levels blurrier.
+     */
+    const int32_t sesgo_mip = REXCVAR_GET(fh2_nativo_sesgo_mip) && !puntual ? int32_t(f[4] << 10) >> 22 : 0;
+    const uint64_t clave = uint64_t(((f[0] >> 10) & 0x1FF) | (campo_filtros << 9) | (campo_mips << 21) |
+                                    ((f[5] & 0x3) << 29) | (puntual ? 0x80000000u : 0u)) |
+                           (uint64_t(uint32_t(sesgo_mip) & 0x3FF) << 32);
     if (const auto it = samplers_.find(clave); it != samplers_.end()) {
       return it->second.second;
     }
@@ -11845,6 +11898,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     // With real mips, the fetch constant's maximum level also limits (like the emulation's sampler);
     // single-level textures stay as before.
     info.maxLod = mip == 2 ? info.minLod + 0.25f : std::max(info.minLod, float((f[4] >> 6) & 0xF));
+    info.mipLodBias = std::clamp(float(sesgo_mip) / 32.0f, -sesgo_lod_maximo_, sesgo_lod_maximo_);
     info.borderColor = (f[5] & 0x3) == 1 ? VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE
                                          : VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     // nfsmw_nativo_anisotropico. Only linear samplers with mips (maxLod above minLod); the value is read at
@@ -15059,10 +15113,11 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   // vistas_: 2.7 % of the ring thread in a race. Maintained together with vistas_ in RanuraVista
   // (insertion) and in QuitarVista (every removal).
   std::unordered_map<VkImage, std::vector<uint64_t>> vistas_por_imagen_;
-  std::unordered_map<uint32_t, std::pair<VkSampler, uint32_t>> samplers_;
+  std::unordered_map<uint64_t, std::pair<VkSampler, uint32_t>> samplers_;
   // Diagnostic: filter values already logged (RanuraSampler).
   uint32_t aniso_vistos_ = 0;
   bool aniso_anotado_ = false;  // nfsmw_nativo_anisotropico, one line when the first one is created
+  float sesgo_lod_maximo_ = 2.0f;  // maxSamplerLodBias (2 is Vulkan's minimum), for the fetch's mip bias
   uint32_t diag_mip_minimo_ = 0;  // nfsmw_nativo_diag_mip_minimo, read once per frame
   // nfsmw_nativo_sombras_sesgo_*, read once per frame.
   int32_t sombras_sesgo_constante_ = 0;

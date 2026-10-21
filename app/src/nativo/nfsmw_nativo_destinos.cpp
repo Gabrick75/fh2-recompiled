@@ -62,6 +62,8 @@ extern "C" void RexSwitchPerfTiron(uint64_t inicio, uint64_t fin);
 #endif
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -550,6 +552,16 @@ REXCVAR_DEFINE_INT32(nfsmw_nativo_leer_resueltas_texels, 4096, "NFSMW",
                      "Renderizador nativo: las texturas resueltas de hasta estos texels se copian "
                      "tambien a la memoria del invitado, que el juego lee para su exposicion (0 = "
                      "ninguna; 4096 = 64x64, las que usa la exposicion; 57600 = 320x180)");
+#if defined(FH2_RECOMP)
+// To compare a resolve with the emulated renderer's (its frame trace dumps them to traco_despejo): the car
+// reflection's faces and mips, for example 1C879000-1CA95000.
+REXCVAR_DEFINE_STRING(fh2_nativo_diag_volcar_resueltas, "", "FH2",
+                      "Debug: 'LO-HI' (hex): after fh2_nativo_diag_volcar_resueltas_s seconds, each resolve to a "
+                      "destination in that range is read back once and written, as the host image's rows, to "
+                      "volcado_resueltas/ in the run folder");
+REXCVAR_DEFINE_INT32(fh2_nativo_diag_volcar_resueltas_s, 90, "FH2",
+                     "Debug: seconds before fh2_nativo_diag_volcar_resueltas starts dumping");
+#endif
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_invalidar_texturas_cada_copia, false, "NFSMW",
                     "Renderizador nativo: tirar las caches de texturas en cada copia (lo de antes de la build 127). "
                     "Desde la 127 solo se tiran cuando una textura resuelta se crea, se rehace, se prepara o cambia "
@@ -915,6 +927,7 @@ struct LecturaPendiente {
   uint32_t alto_destino;
   uint32_t info;          // RB_COPY_DEST_INFO
   uint32_t bytes_texel = 4;  // 4 (8888) or 8 (FH2's 16_16_16_16_FLOAT tables)
+  bool fh2_volcar = false;   // fh2_nativo_diag_volcar_resueltas: to a file, not to guest memory
 };
 
 // Output slots with nfsmw_nativo_salida_sin_espera (without it, only slot 0 is used).
@@ -7150,6 +7163,20 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
    * its bytes where the wheels read their light: they glowed pink. Only single-use destinations (the car photos) are
    * read back.
    */
+  // fh2_nativo_diag_volcar_resueltas: whether this resolve is dumped (once per address, once the delay has passed).
+  bool Fh2VolcarResuelta(uint32_t base) {
+    static const auto inicio = std::chrono::steady_clock::now();
+    const std::string rango = REXCVAR_GET(fh2_nativo_diag_volcar_resueltas);
+    if (rango.empty() || std::chrono::steady_clock::now() - inicio <
+                             std::chrono::seconds(REXCVAR_GET(fh2_nativo_diag_volcar_resueltas_s))) {
+      return false;
+    }
+    char* fin = nullptr;
+    const uint32_t desde = uint32_t(std::strtoul(rango.c_str(), &fin, 16));
+    const uint32_t hasta = fin && *fin == '-' ? uint32_t(std::strtoul(fin + 1, nullptr, 16)) : desde + 1;
+    return base >= desde && base < hasta && fh2_volcadas_.insert(base).second;
+  }
+
   bool Fh2ResueltaSuelta(uint32_t base, uint32_t pitch_destino, uint32_t alto_destino, uint32_t formato) {
     if (!REXCVAR_GET(fh2_nativo_leer_resueltas_sueltas)) {
       return false;
@@ -7206,11 +7233,25 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                     "ahora)", reg.rb_copy_dest_base & 0x1FFFFFFF, ancho, alto, fh2_tablas_leidas_);
       }
     }
+    // fh2_nativo_diag_volcar_resueltas: only destinations nothing else reads back, each one once.
+    bool fh2_volcar = false;
+    if (!leer && Fh2VolcarResuelta(reg.rb_copy_dest_base & 0x1FFFFFFF)) {
+      const VkFormat f = resuelta.imagen.formato;
+      if (f == VK_FORMAT_R8G8B8A8_UNORM || f == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
+          f == VK_FORMAT_R16G16B16A16_SFLOAT) {
+        leer = true;
+        fh2_volcar = true;
+      }
+    }
 #else
     constexpr bool fh2_tabla = false;
+    constexpr bool fh2_volcar = false;
 #endif
     // Guest bytes per texel: 8888, or the 16_16_16_16_FLOAT tables.
-    const uint32_t bytes_texel = resuelta.imagen.formato == kFormatoColor ? 4 : fh2_tabla ? 8 : 0;
+    const uint32_t bytes_texel = fh2_volcar ? (resuelta.imagen.formato == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : 4)
+                                 : resuelta.imagen.formato == kFormatoColor ? 4
+                                 : fh2_tabla                                ? 8
+                                                                            : 0;
     if (!leer || !bytes_texel) {
       return;
     }
@@ -7274,7 +7315,8 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                                 lectura.bufer, 1, &copia);
     lecturas_pendientes_.push_back({&lectura, reg.rb_copy_dest_base, x0, y0, ancho, alto,
                                     reg.rb_copy_dest_pitch & 0x3FFF,
-                                    (reg.rb_copy_dest_pitch >> 16) & 0x3FFF, reg.rb_copy_dest_info, bytes_texel});
+                                    (reg.rb_copy_dest_pitch >> 16) & 0x3FFF, reg.rb_copy_dest_info, bytes_texel,
+                                    fh2_volcar});
     if (lecturas_hechas_++ == 0) {
       REXLOG_INFO("[nativo] C2: lectura de vuelta de texturas resueltas de hasta {} texels (la "
                   "primera: {:08X}, {}x{})",
@@ -7320,6 +7362,18 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
         rango.size = VK_WHOLE_SIZE;
         dfn_.vkInvalidateMappedMemoryRanges(device_, 1, &rango);
       }
+#if defined(FH2_RECOMP)
+      if (p.fh2_volcar) {
+        std::error_code error;
+        std::filesystem::create_directories("volcado_resueltas", error);
+        const std::string nombre =
+            fmt::format("volcado_resueltas/{:04}_{:08X}_b{}_{}x{}.bin", fh2_volcadas_.size(), p.base & 0x1FFFFFFF,
+                        p.bytes_texel, p.ancho, p.alto);
+        std::ofstream(nombre, std::ios::binary)
+            .write(reinterpret_cast<const char*>(lectura.datos), std::streamsize(p.ancho) * p.alto * p.bytes_texel);
+        continue;
+      }
+#endif
       if (p.bytes_texel == 8) {
         EscribirLectura64(p, lectura);
         continue;
@@ -8069,6 +8123,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 #if defined(FH2_RECOMP)
   std::unordered_map<uint32_t, Fh2CopiaDestino> fh2_copias_destino_;  // fh2_nativo_leer_resueltas_sueltas
   uint64_t fh2_sueltas_leidas_ = 0;
+  std::set<uint32_t> fh2_volcadas_;         // fh2_nativo_diag_volcar_resueltas: addresses already dumped
   uint64_t fh2_tablas_leidas_ = 0;          // fh2_nativo_leer_tablas_fijo16
   bool fh2_copia_desde_fijo16_ = false;     // the resolve being made reads a 16_16 / 16_16_16_16 target
 #endif

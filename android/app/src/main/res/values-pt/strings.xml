@@ -344,7 +344,7 @@
     <string name="world_reflections">Reflexos</string>
     <string name="world_reflections_description">O que a pintura e os retrovisores do carro refletem, e até onde. Desligado: o carro não reflete nada em tempo real, fica mais rápido e a pintura fica fosca.</string>
     <string name="world_shadows">Distância das sombras</string>
-    <string name="world_shadows_description">Até que distância as sombras são desenhadas. Desligada: sem sombras, no renderizador nativo.</string>
+    <string name="world_shadows_description">Até que distância as sombras são desenhadas. Desligada: sem sombras, no renderizador nativo. Acima de 1x, o renderizador nativo também desenha as sombras de árvores e arbustos (mais lento).</string>
     <string name="writes_every_repetition_of_the_messages">Grava todas as repetições das mensagens que se repetem várias vezes por segundo (texturas do renderizador, funções não implementadas). Desligado, cada uma aparece só as 20 primeiras vezes, e o log guarda mais tempo de jogo. Só para investigar.</string>
     <string name="writes_to_the_log_how_long">Grava no log quanto tempo a GPU gasta em cada parte do quadro. Só para investigar: deixa o jogo mais lento, porque cada medição faz a GPU esperar.</string>
     <string name="reflection_mips_in_one_pass">Mips do reflexo num passe por nível</string>
