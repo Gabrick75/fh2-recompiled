@@ -445,6 +445,8 @@ class Presenter {
   }
   // True only before the first outdated result of an episode: the moment for a one-time state line.
   bool BucleReconexionEmpieza() const { return bucle_ciclos_.load(std::memory_order_relaxed) == 0; }
+  // Outdated results so far in the current episode (0 outside one).
+  uint32_t BucleReconexionCiclos() const { return bucle_ciclos_.load(std::memory_order_relaxed); }
 
   struct GuestOutputProperties {
     // At least any value being 0 here means the guest output is disabled for

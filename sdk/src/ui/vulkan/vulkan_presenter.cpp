@@ -92,6 +92,24 @@ REXCVAR_DEFINE_BOOL(present_esperar_adquisicion_en_cpu, false, "UI/Presenter",
 REXCVAR_DEFINE_BOOL(present_adquisicion_anticipada, REX_PRESENT_ADQUISICION_ANTICIPADA_DEFAULT, "UI/Presenter",
                     "Pedir la imagen del fotograma siguiente justo despues de presentar, sin esperar");
 
+/*
+ * vkQueuePresentKHR on the family's second queue (vulkan_device.cpp): the present may wait inside for the
+ * previous frame (queueBuffer on Android), and on queue 0 that wait held the lock the command processor
+ * submits through.
+ *
+ * On Mali-G615 (driver r44p1, usuario-20 and usuario-21) presenting there ends in a reconnection loop that
+ * never ends: QueueSignalReleaseImageANDROID returns VK_TIMEOUT on every present although every cycle has a
+ * new VkSurface, swapchain and semaphores (RecrearSemaforosDePresentacion). Only the queue stays the same,
+ * and it waits on a semaphore the paint signals on queue 0. present_cola_unica_auto moves presentation to
+ * queue 0 for the rest of the session when an episode reaches kCiclosParaColaUnica outdated results.
+ */
+REXCVAR_DEFINE_BOOL(present_segunda_cola, true, "UI/Presenter",
+                    "Presentar en la segunda cola de la familia cuando la tiene (si no, en la cola 0, la del "
+                    "pintado)")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_BOOL(present_cola_unica_auto, true, "UI/Presenter",
+                    "Pasar a presentar en la cola 0 cuando un bucle de reconexion no termina en la segunda cola");
+
 #if REX_PLATFORM_SWITCH
 // MAILBOX does not exist on the NVK VI surface: wsi_common_switch.c only exposes FIFO and IMMEDIATE.
 #define REX_VULKAN_ALLOW_UNSYNCED_PRESENT_DEFAULT false
@@ -2064,17 +2082,34 @@ bool VulkanPresenter::GuestOutputImage::Initialize() {
   return true;
 }
 
+uint32_t VulkanPresenter::ColaDePresentacion() const {
+  if (!REXCVAR_GET(present_segunda_cola) || cola_unica_por_bucle_.load(std::memory_order_relaxed)) {
+    return 0;
+  }
+  return vulkan_device_->queue_families()[paint_context_.present_queue_family].queues.size() > 1 ? 1 : 0;
+}
+
 void VulkanPresenter::RecrearSemaforosDePresentacion() {
   const VulkanDevice::Functions& dfn = vulkan_device_->functions();
   const VkDevice device = vulkan_device_->device();
   // The paint submissions are complete (PrepareForSwapchainRetirement); what may still wait on a present
-  // semaphore is the presentation queue. Same queue choice as in PaintAndPresentImpl.
+  // semaphore is the presentation queue.
   if (paint_context_.present_queue_family != UINT32_MAX) {
-    const uint32_t present_queue =
-        vulkan_device_->queue_families()[paint_context_.present_queue_family].queues.size() > 1 ? 1 : 0;
-    const VulkanDevice::Queue::Acquisition queue_acquisition =
-        vulkan_device_->AcquireQueue(paint_context_.present_queue_family, present_queue);
-    dfn.vkQueueWaitIdle(queue_acquisition.queue());
+    const uint32_t present_queue = ColaDePresentacion();
+    {
+      const VulkanDevice::Queue::Acquisition queue_acquisition =
+          vulkan_device_->AcquireQueue(paint_context_.present_queue_family, present_queue);
+      dfn.vkQueueWaitIdle(queue_acquisition.queue());
+    }
+    // With the second queue idle, the next present may already go to queue 0.
+    if (present_queue != 0 && REXCVAR_GET(present_cola_unica_auto) &&
+        BucleReconexionCiclos() >= kCiclosParaColaUnica) {
+      cola_unica_por_bucle_.store(true, std::memory_order_relaxed);
+      REXLOG_WARN(
+          "[presentador] bucle de reconexion en la cola {} de la familia {} ({} reconexiones): se presenta en la "
+          "cola 0, la del pintado, el resto de la sesion (present_cola_unica_auto)",
+          present_queue, paint_context_.present_queue_family, BucleReconexionCiclos());
+    }
   }
   uint32_t recreadas = 0;
   for (const std::unique_ptr<PaintContext::Submission>& submission : paint_context_.submissions) {
@@ -2917,13 +2952,13 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
   present_info.pResults = &resultado_swapchain;
   VkResult present_result;
   {
-    // On the family's second queue when there is one (vulkan_device.cpp): the present may wait inside for the
-    // previous frame (queueBuffer on Android), and on queue 0 that blocked the command processor.
-    const uint32_t present_queue =
-        vulkan_device_->queue_families()[paint_context_.present_queue_family].queues.size() > 1 ? 1 : 0;
-    static bool present_queue_logged = false;
-    if (!present_queue_logged) {
-      present_queue_logged = true;
+    // On the family's second queue when there is one (present_segunda_cola): the present may wait inside for
+    // the previous frame (queueBuffer on Android), and on queue 0 that blocked the command processor.
+    const uint32_t present_queue = ColaDePresentacion();
+    // Again when it changes (present_cola_unica_auto).
+    static uint32_t present_queue_logged = UINT32_MAX;
+    if (present_queue_logged != present_queue) {
+      present_queue_logged = present_queue;
       REXLOG_INFO("VulkanPresenter: presenting on queue {} of family {}", present_queue,
                   paint_context_.present_queue_family);
     }
