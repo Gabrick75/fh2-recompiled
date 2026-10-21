@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <utility>
 
 #include <rex/assert.h>
@@ -1437,13 +1438,16 @@ void Presenter::SetPaintModeFromUIThread(PaintMode new_mode) {
   if (paint_mode_ == new_mode) {
     return;
   }
-  // Say it in the log. Whether every rendered frame reaches the screen depends on this.
-  REXLOG_INFO("Presenter: modo de pintado -> {} (vsync implicito {}, dibujantes de interfaz {})",
-              new_mode == PaintMode::kGuestOutputThreadImmediately
-                  ? "desde el hilo del juego, presentando en el acto"
-                  : (new_mode == PaintMode::kUIThreadOnRequest ? "en el hilo de la interfaz, a peticion"
-                                                               : "ninguno"),
-              surface_paint_connection_has_implicit_vsync_ ? "si" : "no", ui_drawers_.size());
+  // Say it in the log. Whether every rendered frame reaches the screen depends on this. Inside a long
+  // reconnection loop it flips twice a cycle, so then it is left out (BucleReconexionRegistra).
+  if (BucleReconexionRegistra()) {
+    REXLOG_INFO("Presenter: modo de pintado -> {} (vsync implicito {}, dibujantes de interfaz {})",
+                new_mode == PaintMode::kGuestOutputThreadImmediately
+                    ? "desde el hilo del juego, presentando en el acto"
+                    : (new_mode == PaintMode::kUIThreadOnRequest ? "en el hilo de la interfaz, a peticion"
+                                                                 : "ninguno"),
+                surface_paint_connection_has_implicit_vsync_ ? "si" : "no", ui_drawers_.size());
+  }
   // The own thread is started before the mode is announced, so the game thread never sees
   // kGuestOutputThreadImmediately with the thread half set up.
   if (new_mode == PaintMode::kGuestOutputThreadImmediately) {
@@ -1673,7 +1677,51 @@ Presenter::PaintResult Presenter::PaintAndPresent(bool execute_ui_drawers) {
       // Another issue not directly related to the surface connection.
       break;
   }
+  ContarBucleReconexion(result);
   return result;
+}
+
+void Presenter::ContarBucleReconexion(PaintResult result) {
+  const int64_t ahora = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count();
+  if (result == PaintResult::kPresented || result == PaintResult::kPresentedSuboptimal) {
+    if (!bucle_ciclos_.load(std::memory_order_relaxed) ||
+        bucle_presentados_.fetch_add(1, std::memory_order_relaxed) + 1 < kBucleQuadrosParaTerminar) {
+      return;
+    }
+    const uint32_t ciclos = bucle_ciclos_.exchange(0, std::memory_order_relaxed);
+    bucle_presentados_.store(0, std::memory_order_relaxed);
+    REXLOG_INFO(
+        "[presentador] bucle de reconexion terminado: {} reconexiones en {:.1f} s, vuelve a presentar ({} "
+        "fotogramas seguidos)",
+        ciclos, double(ahora - bucle_inicio_ns_.load(std::memory_order_relaxed)) / 1e9,
+        kBucleQuadrosParaTerminar);
+    return;
+  }
+  if (result != PaintResult::kNotPresentedConnectionOutdated) {
+    return;
+  }
+  bucle_presentados_.store(0, std::memory_order_relaxed);
+  const uint32_t ciclos = bucle_ciclos_.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (ciclos == 1) {
+    bucle_inicio_ns_.store(ahora, std::memory_order_relaxed);
+    bucle_ultimo_aviso_ns_.store(ahora, std::memory_order_relaxed);
+    return;
+  }
+  const double segundos = double(ahora - bucle_inicio_ns_.load(std::memory_order_relaxed)) / 1e9;
+  if (ciclos == kBucleCiclosConLog) {
+    REXLOG_WARN(
+        "[presentador] bucle de reconexion: {} veces seguidas la swapchain sale desactualizada sin presentar "
+        "nada ({:.1f} s); sus lineas quedan fuera del log hasta que vuelva a presentar, con un aviso cada {} s",
+        ciclos, segundos, kBucleAvisoSegundos);
+    return;
+  }
+  if (ahora - bucle_ultimo_aviso_ns_.load(std::memory_order_relaxed) >= kBucleAvisoSegundos * 1000000000ll) {
+    bucle_ultimo_aviso_ns_.store(ahora, std::memory_order_relaxed);
+    REXLOG_WARN("[presentador] bucle de reconexion sigue: {} reconexiones en {:.1f} s sin presentar nada", ciclos,
+                segundos);
+  }
 }
 
 // The presenter's own thread. See the long comment in presenter.h.
