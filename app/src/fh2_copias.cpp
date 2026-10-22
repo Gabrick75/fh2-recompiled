@@ -23,12 +23,17 @@
 REXCVAR_DEFINE_BOOL(fh2_memcpy_nativo, true, "FH2",
                     "The game's memcpy (sub_824032E0, sub_82C009E0) done by the host's memcpy (app/src/fh2_copias.cpp)");
 
+REXCVAR_DEFINE_BOOL(fh2_memcpy_nativo_fisica, false, "FH2",
+                    "Also copy on the host when a range touches physical memory (0xA0000000 on, textures and GPU "
+                    "data): off, those copies run the game's own memcpy");
+
 REX_EXTERN(__imp__sub_824032E0);
 REX_EXTERN(__imp__sub_82C009E0);
 
 namespace {
 
 constexpr uint64_t kPhysical = 0xE0000000u;
+constexpr uint64_t kPhysicalViews = 0xA0000000u;
 
 // Copies on the host and returns true, or returns false for the cases the original must do.
 bool Copy(uint8_t* base, uint32_t dst, uint32_t src, uint32_t n) {
@@ -38,6 +43,7 @@ bool Copy(uint8_t* base, uint32_t dst, uint32_t src, uint32_t n) {
   if (end_d > 0x100000000ull || end_s > 0x100000000ull) return false;
   if ((d < kPhysical && end_d > kPhysical) || (s < kPhysical && end_s > kPhysical)) return false;
   if (d > s && d < end_s) return false;
+  if (!REXCVAR_GET(fh2_memcpy_nativo_fisica) && (end_d > kPhysicalViews || end_s > kPhysicalViews)) return false;
   uint8_t* host_d = base + d + (d >= kPhysical ? 0x1000u : 0u);
   const uint8_t* host_s = base + s + (s >= kPhysical ? 0x1000u : 0u);
   // Overlap with the destination before the source: a forward copy, which memmove is.
