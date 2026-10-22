@@ -15,6 +15,7 @@
 #include <rex/ui/window_listener.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <queue>
@@ -61,6 +62,16 @@ class MnkInputDriver final : public InputDriver,
   void SetKeyState(uint16_t vk, bool down);
   void EnqueueKeystroke(uint16_t vk_pad, bool down);
 
+  // One analog value that walks to the value the keys ask for: a key is a digital
+  // input, and without this the stick jumps to the limit and the car turns at once.
+  struct Ramp {
+    float value = 0.0f;   // what the game sees
+    float from = 0.0f;    // the value when the target last changed
+    float target = 0.0f;  // what the keys ask for now
+    std::chrono::steady_clock::time_point changed_at{};
+  };
+  static float RampValue(Ramp& ramp, float target, double ramp_seconds);
+
   // Called from the guest thread. The rest of the capture path stays on the UI
   // thread, since every Window call in it reaches SDL.
   void QueueMouseCaptureUpdate(bool should_capture);
@@ -88,6 +99,10 @@ class MnkInputDriver final : public InputDriver,
   bool mouse_captured_ = false;
   // Whether the window has the pointer locked and is reporting relative motion.
   bool relative_mouse_mode_ = false;
+  // Set when the cursor cannot be warped to the center (Android): the mouse look then
+  // follows the pointer until it reaches the edge of the screen.
+  bool mouse_warp_unavailable_ = false;
+  bool mouse_warp_warned_ = false;
   // Cursor visibility to restore on capture release - the window owner may run
   // an auto-hide policy that capture must not permanently override.
   rex::ui::Window::CursorVisibility precapture_cursor_visibility_ =
@@ -98,6 +113,18 @@ class MnkInputDriver final : public InputDriver,
   std::atomic<bool> mouse_capture_update_queued_{false};
 
   std::atomic<bool> has_focus_{true};
+
+  // Set by the first event of a real mouse. The driver is on even where there is no mouse
+  // (Android passes mnk_mode always), and only a mouse that was used takes the pointer.
+  std::atomic<bool> mouse_seen_{false};
+
+  // What the game saw last: the packet number only moves when this changes, as on a pad. The
+  // driver is merged into player 1 with any pad, and a number that moved on every read would
+  // tell the game something changed when nothing did.
+  X_INPUT_GAMEPAD last_gamepad_ = {};
+
+  // The analog values the game sees, and the ones it is moving toward. Guest thread only.
+  Ramp ramp_lx_, ramp_ly_, ramp_rx_, ramp_ry_, ramp_lt_, ramp_rt_;
 
   // Keystroke queue
   std::queue<X_INPUT_KEYSTROKE> keystroke_queue_;

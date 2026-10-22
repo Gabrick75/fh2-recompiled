@@ -68,6 +68,8 @@ What this project adds on top of the SDK:
   0.25x to 4x of the Xbox 360's, all but objects also off; grass, and shadows and crowd off, with the native
   renderer), FPS limit (30 to unlimited), present mode, thread pinning, game and app
   language, an overlay with frame rate, GPU, CPU and RAM use, save import/export and backups.
+- A keyboard and a mouse as a controller, found on their own like a gamepad: the game reads them as an Xbox 360
+  pad, with a racing layout, the mouse turning the camera and every key rebindable in game.
 - The game played straight from its disc image (.iso): no extraction needed.
 - Custom Vulkan drivers (Turnip, Qualcomm packages) loaded through libadrenotools, with a Vulkan test before use.
 - An achievements page that lists the game's achievements, unlocked ones in color with their date, and a small
@@ -174,6 +176,14 @@ files on the phone (or next to the .iso), for example with `tools/enviar_bibliot
 **GPU drivers.** **Performance > GPU driver** imports an adrenotools driver package (.zip) and tests it with
 Vulkan before it can be chosen. On Adreno 6xx and 7xx a Mesa Turnip build is often faster than the phone's own
 driver.
+
+**Keyboard and mouse.** A Bluetooth or USB keyboard and mouse are found on their own, the way a gamepad is:
+there is nothing to turn on. The game reads them as an Xbox 360 pad, together with any pad that is connected,
+in a racing layout: A/D steer, W throttle, S brake, Space handbrake (A), the mouse and the arrows turn the
+camera, IJKL is the d-pad, Enter is Start, Esc and Tab are Back, C is B, X is X and Z is Y. The mouse takes the
+pointer the first time it moves. Any key can be changed in game with **F4** (the game's own settings window,
+category *Input/Keybinds/Controller*). The on-screen pad gets out of the way when a keyboard or a mouse is
+connected or used, and comes back when they are gone or on the first touch.
 
 ## Tutorials
 

@@ -9,6 +9,7 @@ import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.view.HapticFeedbackConstants;
+import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
 
@@ -89,6 +90,12 @@ public final class TouchControlsView extends View {
     /** What the activity shows around the pad: the editor toolbar and the settings dialog. */
     interface Host {
         void onEditModeChanged(boolean editing);
+
+        /**
+         * The mouse was captured by this view (Android 8 and later): the activity hands the event
+         * to the game's surface, which is under this pad.
+         */
+        boolean onCapturedMouse(MotionEvent event);
     }
 
     private final List<Control> controls = new ArrayList<>();
@@ -112,6 +119,7 @@ public final class TouchControlsView extends View {
     // State.
     private boolean editing;
     private boolean hiddenByGamepad;
+    private boolean hiddenByKeyboard;
     private Control selected;
     private float dragDX, dragDY;
     private float pinchStart, sizeAtPinch;
@@ -283,25 +291,75 @@ public final class TouchControlsView extends View {
         }
     }
 
+    /**
+     * A keyboard or a mouse was connected or used: the game reads them as a controller, so the
+     * touch pad gets out of the way, as it does for a gamepad.
+     */
+    void onKeyboardActive() {
+        if (hideWithGamepad && !hiddenByKeyboard && !editing) {
+            hiddenByKeyboard = true;
+            releaseAll();
+            invalidate();
+        }
+    }
+
+    /** The last keyboard or mouse went away. */
+    void onKeyboardGone() {
+        if (hiddenByKeyboard) {
+            hiddenByKeyboard = false;
+            invalidate();
+        }
+    }
+
     /** Tilt from the gravity sensor, -1 (left) to 1 (right), already corrected for the screen rotation. */
     void setTilt(float value) {
         tilt = value;
-        if (tiltSteering && !editing && !hiddenByGamepad) {
+        if (tiltSteering && !editing && !hidden()) {
             send();
         }
+    }
+
+    /** Whether the pad is out of the way: a gamepad or the keyboard took over. */
+    private boolean hidden() {
+        return hiddenByGamepad || hiddenByKeyboard;
+    }
+
+    /** Whether the event comes from a mouse (and not from a finger or a pen). */
+    static boolean isMouse(MotionEvent event) {
+        if (event.getPointerCount() > 0 && event.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE) {
+            return true;
+        }
+        int source = event.getSource();
+        return (source & InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE;
+    }
+
+    /**
+     * The mouse was captured by this pad (the pointer capture of Android 8 and later, which is what
+     * makes the mouse report movement and not a position). The game's surface is under this pad, so
+     * the event goes there.
+     */
+    @Override
+    public boolean onCapturedPointerEvent(MotionEvent event) {
+        return host != null && host.onCapturedMouse(event);
     }
 
     // ---- Input -------------------------------------------------------------------------------------------
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
+        if (isMouse(event)) {
+            // A mouse is not a finger: the click belongs to the game, not to the on-screen pad.
+            // The activity hands it to the game's surface.
+            return false;
+        }
         if (editing) {
             return editTouch(event);
         }
-        if (hiddenByGamepad) {
+        if (hidden()) {
             // A touch brings the pad back.
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
                 hiddenByGamepad = false;
+                hiddenByKeyboard = false;
                 invalidate();
             }
             return true;
@@ -530,7 +588,7 @@ public final class TouchControlsView extends View {
 
     /** Sends the pad to the game if it changed, and redraws. */
     private void send() {
-        boolean active = !editing && !hiddenByGamepad;
+        boolean active = !editing && !hidden();
         int buttons = active ? buttonState() : 0;
         int lx = 0, ly = 0, rx = 0, ry = 0, lt = 0, rt = 0;
         boolean steeringHeld = false;
@@ -581,7 +639,7 @@ public final class TouchControlsView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        if (hiddenByGamepad && !editing) {
+        if (hidden() && !editing) {
             return;
         }
         final float w = getWidth();

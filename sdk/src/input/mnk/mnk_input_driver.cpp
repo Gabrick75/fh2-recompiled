@@ -18,9 +18,12 @@
 #include <rex/ui/window.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
+#include <string>
 #include <string_view>
 
 REXCVAR_DEFINE_BOOL(mnk_mode, false, "Input", "Enable keyboard/mouse controller emulation");
@@ -29,6 +32,18 @@ REXCVAR_DEFINE_BOOL(mnk_mouse, false, "Input",
                     "from the keybind_rstick_* keys only");
 REXCVAR_DEFINE_DOUBLE(mnk_sensitivity, 1.0, "Input", "Mouse sensitivity for right stick")
     .range(0.01, 10.0);
+REXCVAR_DEFINE_DOUBLE(mnk_rampa, 0.15, "Input",
+                      "Seconds a key takes to reach the full deflection of an axis or of a trigger "
+                      "(0 = instant). A key is a digital input: without this the stick jumps to the "
+                      "limit and the car turns at once")
+    .range(0.0, 2.0);
+REXCVAR_DEFINE_STRING(mnk_preset, "pad", "Input",
+                      "Key layout of the keyboard/mouse: 'pad' (the XInput buttons, one key each) "
+                      "or 'race' (a driving layout: A/D steer, W throttle, S brake, Space "
+                      "handbrake, IJKL d-pad, arrows camera). It only fills the keys the player "
+                      "has not changed")
+    .allowed({"pad", "race"})
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 REXCVAR_DEFINE_STRING(keybind_a, "Semicolon,Space", "Input/Keybinds/Controller", "A button");
 REXCVAR_DEFINE_STRING(keybind_b, "Quote,Backspace", "Input/Keybinds/Controller", "B button");
@@ -64,6 +79,101 @@ namespace {
 
 // A single device, so its handle is a constant.
 constexpr rex::input::DeviceId kMnkDevice = static_cast<rex::input::DeviceId>(0x4D4E4B00);
+
+// ---- Key layouts (mnk_preset) ------------------------------------------------------------------------------
+//
+// A key name is one ParseVirtualKey understands (see keybinds.cpp): a letter, a digit, a named
+// key, or one of them with a modifier prefix ("Shift+Up"). A bind may list several keys,
+// separated by commas; the first one that is down wins.
+
+struct PresetBind {
+  const char* cvar;   // the keybind_* cvar that holds the key
+  const char* value;  // the key (or keys) of the layout
+};
+
+// 'pad': the compiled-in default, one key per XInput button, the way a pad is mapped.
+constexpr PresetBind kPadPreset[] = {
+    {"keybind_a", "Semicolon,Space"},
+    {"keybind_b", "Quote,Backspace"},
+    {"keybind_x", "L"},
+    {"keybind_y", "P"},
+    {"keybind_left_trigger", "Q,I"},
+    {"keybind_right_trigger", "E,O"},
+    {"keybind_left_shoulder", "1"},
+    {"keybind_right_shoulder", "3"},
+    {"keybind_lstick_up", "W"},
+    {"keybind_lstick_down", "S"},
+    {"keybind_lstick_left", "A"},
+    {"keybind_lstick_right", "D"},
+    {"keybind_lstick_press", "F"},
+    {"keybind_rstick_up", "Up"},
+    {"keybind_rstick_down", "Down"},
+    {"keybind_rstick_left", "Left"},
+    {"keybind_rstick_right", "Right"},
+    {"keybind_rstick_press", "K"},
+    {"keybind_dpad_up", "Shift+Up"},
+    {"keybind_dpad_down", "Shift+Down"},
+    {"keybind_dpad_left", "Shift+Left"},
+    {"keybind_dpad_right", "Shift+Right"},
+    {"keybind_back", "Z,Tab"},
+    {"keybind_start", "X,Return"},
+    {"keybind_guide", ""},
+};
+
+// 'race': a driving layout, for a game where the car is steered with the left stick and driven
+// with the triggers: A/D steer, W throttle, S brake, Space handbrake, the arrows camera (the
+// mouse does that too), IJKL d-pad for the menus, Return start and Escape back.
+constexpr PresetBind kRacePreset[] = {
+    {"keybind_a", "Space"},
+    {"keybind_b", "C"},
+    {"keybind_x", "X"},
+    {"keybind_y", "Z"},
+    {"keybind_left_trigger", "S"},
+    {"keybind_right_trigger", "W"},
+    {"keybind_left_shoulder", "Q"},
+    {"keybind_right_shoulder", "E"},
+    {"keybind_lstick_up", ""},
+    {"keybind_lstick_down", ""},
+    {"keybind_lstick_left", "A"},
+    {"keybind_lstick_right", "D"},
+    {"keybind_lstick_press", "N"},
+    {"keybind_rstick_up", "Up"},
+    {"keybind_rstick_down", "Down"},
+    {"keybind_rstick_left", "Left"},
+    {"keybind_rstick_right", "Right"},
+    {"keybind_rstick_press", "M"},
+    {"keybind_dpad_up", "I"},
+    {"keybind_dpad_down", "K"},
+    {"keybind_dpad_left", "J"},
+    {"keybind_dpad_right", "L"},
+    {"keybind_back", "Escape,Tab"},
+    {"keybind_start", "Return"},
+    {"keybind_guide", ""},
+};
+
+// Fills the keys the player has not chosen: a bind still at its compiled-in default takes the
+// layout's value, and the registry's default follows, so that the in-game "Reset" brings the
+// layout back and not the compiled-in one.
+void ApplyPreset() {
+  const std::string preset = REXCVAR_GET(mnk_preset);
+  const PresetBind* binds = preset == "race" ? kRacePreset : kPadPreset;
+  const size_t count = preset == "race" ? std::size(kRacePreset) : std::size(kPadPreset);
+  int applied = 0;
+  for (size_t i = 0; i < count; i++) {
+    if (rex::cvar::GetFlagSource(binds[i].cvar) != rex::cvar::Source::kDefault) {
+      continue;  // the player (a file, the command line) chose this one: the layout leaves it alone
+    }
+    rex::cvar::SetFlagByName(binds[i].cvar, binds[i].value);
+    for (auto& entry : rex::cvar::GetRegistry()) {
+      if (entry.name == binds[i].cvar) {
+        entry.default_value = binds[i].value;
+        break;
+      }
+    }
+    applied++;
+  }
+  REXLOG_INFO("Keyboard/mouse: layout '{}' applied to {} key(s).", preset, applied);
+}
 
 // Bind values are a comma-separated list of alternatives, each optionally
 // carrying modifier prefixes: "Q,I" or "Shift+W". Modifier matching is exact,
@@ -158,6 +268,9 @@ MnkInputDriver::~MnkInputDriver() {
 }
 
 X_STATUS MnkInputDriver::Setup() {
+  // The layout is chosen before the game asks for the first state, so the keys are already in
+  // place when the first frame is drawn.
+  ApplyPreset();
   return X_STATUS_SUCCESS;
 }
 
@@ -261,14 +374,26 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
 
   // Mouse look is opt in. Without this gate, keyboard input alone would hide
   // and lock the cursor, breaking the ImGui overlays.
-  QueueMouseCaptureUpdate(IsEnabled() && REXCVAR_GET(mnk_mouse) && IsMouseLookActive() &&
-                          has_focus_ && is_active());
+  QueueMouseCaptureUpdate(IsEnabled() && REXCVAR_GET(mnk_mouse) && mouse_seen_ &&
+                          IsMouseLookActive() && has_focus_ && is_active());
 
   if (!is_active() || !has_focus_) {
+    const X_INPUT_GAMEPAD neutral = {};
+    if (std::memcmp(&last_gamepad_, &neutral, sizeof(last_gamepad_)) != 0) {
+      last_gamepad_ = neutral;
+      packet_number_++;
+    }
     if (out_state) {
       std::memset(out_state, 0, sizeof(*out_state));
       out_state->packet_number = packet_number_;
     }
+    // The game sees a centered stick, so the ramp starts from the center too.
+    ramp_lx_ = Ramp{};
+    ramp_ly_ = Ramp{};
+    ramp_rx_ = Ramp{};
+    ramp_ry_ = Ramp{};
+    ramp_lt_ = Ramp{};
+    ramp_rt_ = Ramp{};
     return X_ERROR_SUCCESS;
   }
 
@@ -331,11 +456,31 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
   if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_down)))
     ry -= INT16_MAX;
 
+  // The keys are digital: the values walk to what they ask for, so the car turns
+  // with the key instead of snapping to the lock.
+  const double ramp_seconds = REXCVAR_GET(mnk_rampa);
+  const float lx_value = RampValue(ramp_lx_, static_cast<float>(lx), ramp_seconds);
+  const float ly_value = RampValue(ramp_ly_, static_cast<float>(ly), ramp_seconds);
+  float rx_value = RampValue(ramp_rx_, static_cast<float>(rx), ramp_seconds);
+  float ry_value = RampValue(ramp_ry_, static_cast<float>(ry), ramp_seconds);
+  const float lt_value = RampValue(ramp_lt_, static_cast<float>(lt), ramp_seconds);
+  const float rt_value = RampValue(ramp_rt_, static_cast<float>(rt), ramp_seconds);
+
   if (REXCVAR_GET(mnk_mouse) && IsMouseLookActive()) {
+    // The mouse moves the camera. It is a movement and not a position, so it joins
+    // the value the game sees and not the target: the ramp would take it back. The
+    // value carries it, so a game that reads the state more than once a frame does
+    // not lose the movement, and the ramp brings the camera back to the middle.
     double sensitivity = REXCVAR_GET(mnk_sensitivity);
     constexpr double kBaseScale = 200.0;
-    rx += static_cast<int32_t>(double(mouse_dx_) * sensitivity * kBaseScale);
-    ry += static_cast<int32_t>(double(-mouse_dy_) * sensitivity * kBaseScale);
+    const float dx = static_cast<float>(double(mouse_dx_) * sensitivity * kBaseScale);
+    const float dy = static_cast<float>(double(-mouse_dy_) * sensitivity * kBaseScale);
+    ramp_rx_.value += dx;
+    ramp_rx_.from += dx;
+    ramp_ry_.value += dy;
+    ramp_ry_.from += dy;
+    rx_value = ramp_rx_.value;
+    ry_value = ramp_ry_.value;
   }
   // Drained unconditionally: deltas keep accumulating in OnMouseMove while the
   // mouse is off, and toggling it on would otherwise dump the whole backlog
@@ -343,23 +488,49 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
   mouse_dx_ = 0.0f;
   mouse_dy_ = 0.0f;
 
-  auto clamp16 = [](int32_t v) -> int16_t {
-    return static_cast<int16_t>(std::clamp(v, (int32_t)INT16_MIN, (int32_t)INT16_MAX));
+  auto clamp16 = [](float v) -> int16_t {
+    return static_cast<int16_t>(std::clamp(v, (float)INT16_MIN, (float)INT16_MAX));
   };
 
-  packet_number_++;
+  X_INPUT_GAMEPAD gamepad = {};
+  gamepad.buttons = buttons;
+  gamepad.left_trigger = static_cast<uint8_t>(std::clamp(lt_value, 0.0f, 255.0f));
+  gamepad.right_trigger = static_cast<uint8_t>(std::clamp(rt_value, 0.0f, 255.0f));
+  gamepad.thumb_lx = clamp16(lx_value);
+  gamepad.thumb_ly = clamp16(ly_value);
+  gamepad.thumb_rx = clamp16(rx_value);
+  gamepad.thumb_ry = clamp16(ry_value);
+  if (std::memcmp(&gamepad, &last_gamepad_, sizeof(gamepad)) != 0) {
+    last_gamepad_ = gamepad;
+    packet_number_++;
+  }
 
   if (out_state) {
     out_state->packet_number = packet_number_;
-    out_state->gamepad.buttons = buttons;
-    out_state->gamepad.left_trigger = lt;
-    out_state->gamepad.right_trigger = rt;
-    out_state->gamepad.thumb_lx = clamp16(lx);
-    out_state->gamepad.thumb_ly = clamp16(ly);
-    out_state->gamepad.thumb_rx = clamp16(rx);
-    out_state->gamepad.thumb_ry = clamp16(ry);
+    out_state->gamepad = gamepad;
   }
   return X_ERROR_SUCCESS;
+}
+
+// The value the game sees: the one the keys ask for, reached over mnk_rampa seconds.
+// The time is what drives it, and not the number of reads: the game asks for the
+// state several times a frame, and a ramp counted per read would run that many
+// times too fast.
+float MnkInputDriver::RampValue(Ramp& ramp, float target, double ramp_seconds) {
+  const auto now = std::chrono::steady_clock::now();
+  if (target != ramp.target) {
+    ramp.from = ramp.value;
+    ramp.target = target;
+    ramp.changed_at = now;
+  }
+  if (ramp_seconds <= 0.0) {
+    ramp.value = target;
+    return ramp.value;
+  }
+  const double elapsed = std::chrono::duration<double>(now - ramp.changed_at).count();
+  const double t = std::clamp(elapsed / ramp_seconds, 0.0, 1.0);
+  ramp.value = ramp.from + (ramp.target - ramp.from) * static_cast<float>(t);
+  return ramp.value;
 }
 
 X_RESULT MnkInputDriver::SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION* vibration) {
@@ -433,6 +604,9 @@ void MnkInputDriver::ApplyMouseCaptureFromUIThread() {
   window->CaptureMouse();
   relative_mouse_mode_ = window->SetRelativeMouseMode(true);
   if (!relative_mouse_mode_) {
+    // Without the pointer locked the mouse moves the camera by the distance it
+    // travels, and the cursor has to be kept away from the edge of the screen.
+    // Android cannot warp the cursor, so the camera stops when the pointer does.
     REXLOG_WARN("Pointer lock unavailable, mouse look falls back to recentering the cursor");
   }
   // Reset deltas to avoid a spike on capture start
@@ -454,7 +628,7 @@ void MnkInputDriver::ReleaseMouseCaptureFromUIThread(rex::ui::Window* window) {
 
 void MnkInputDriver::RecenterCursorFromUIThread(int32_t x, int32_t y) {
   rex::ui::Window* window = attached_window_;
-  if (!window) {
+  if (!window || mouse_warp_unavailable_) {
     return;
   }
   int32_t width = int32_t(window->GetActualPhysicalWidth());
@@ -471,6 +645,13 @@ void MnkInputDriver::RecenterCursorFromUIThread(int32_t x, int32_t y) {
   if (window->WarpMouseToCenter(center_x, center_y)) {
     prev_mouse_x_ = center_x;
     prev_mouse_y_ = center_y;
+  } else if (!mouse_warp_warned_) {
+    // Android cannot move the system cursor, so the camera stops when the pointer
+    // reaches the edge of the screen. Only worth saying once.
+    mouse_warp_warned_ = true;
+    mouse_warp_unavailable_ = true;
+    REXLOG_WARN("The cursor cannot be moved to the center: the mouse look stops at the edge "
+               "of the screen");
   }
 }
 
@@ -499,6 +680,10 @@ void MnkInputDriver::OnKeyUp(rex::ui::KeyEvent& e) {
 void MnkInputDriver::OnMouseDown(rex::ui::MouseEvent& e) {
   if (!IsEnabled() || !has_focus_)
     return;
+  if (!mouse_seen_.exchange(true)) {
+    prev_mouse_x_ = e.x();
+    prev_mouse_y_ = e.y();
+  }
   std::lock_guard lock(state_mutex_);
   switch (e.button()) {
     case rex::ui::MouseEvent::Button::kLeft:
@@ -539,6 +724,13 @@ void MnkInputDriver::OnMouseMove(rex::ui::MouseEvent& e) {
     return;
   int32_t x = e.x();
   int32_t y = e.y();
+  if (!mouse_seen_.exchange(true)) {
+    // The first event of the mouse: there is no earlier position to measure from yet, and
+    // the next read of the state asks for the pointer.
+    prev_mouse_x_ = x;
+    prev_mouse_y_ = y;
+    return;
+  }
   {
     std::lock_guard lock(state_mutex_);
     if (relative_mouse_mode_) {

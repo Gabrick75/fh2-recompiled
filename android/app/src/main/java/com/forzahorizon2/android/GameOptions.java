@@ -425,6 +425,13 @@ final class GameOptions {
         String vibrationMode = get(context, VIBRATION_MODE);
         if (!"phone".equals(vibrationMode) && !"gamepad".equals(vibrationMode)) vibrationMode = "both";
         args.add("--fh2_android_vibracao_modo=" + vibrationMode);  // never empty: the cvar parser aborts on it
+        // The keyboard and the mouse as a controller (the SDK's MnK driver, sdk/src/input/mnk), always on, the way a
+        // gamepad is: the driver is one more device on player 1, at rest until a key is pressed or the mouse moves,
+        // and it takes the mouse only once a real one is used. The racing layout fills the keys the player did not
+        // change in game (F4).
+        args.add("--mnk_mode=true");
+        args.add("--mnk_preset=race");
+        args.add("--mnk_mouse=true");
         GpuDrivers.arguments(context, args);  // the chosen Vulkan driver, or the system's
         // The FPS limit is the guest vblank rate (fpsLimit).
         args.add("--video_mode_refresh_rate=" + vblankRate(context));
