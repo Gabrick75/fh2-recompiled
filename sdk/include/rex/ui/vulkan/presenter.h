@@ -168,6 +168,18 @@ class VulkanPresenter final : public Presenter {
   void RecrearSemaforosDePresentacion();
   uint32_t semaforos_recreados_ = 0;
 
+  /*
+   * The queue of paint_context_.present_queue_family that vkQueuePresentKHR goes to: the second one when
+   * the family has it and present_segunda_cola is on, queue 0 (the paint's) otherwise or once a
+   * reconnection loop moved presentation there (cola_unica_por_bucle_).
+   */
+  uint32_t ColaDePresentacion() const;
+  // Set once by the UI thread (RecrearSemaforosDePresentacion, with the second queue idle) when an episode
+  // reaches kCiclosParaColaUnica outdated results there; read by whichever thread paints.
+  std::atomic<bool> cola_unica_por_bucle_{false};
+  // A resize or rotation takes 1-2; the loop that never ends takes ~24 a second.
+  static constexpr uint32_t kCiclosParaColaUnica = 8;
+
   // Usable for both the guest output image itself and for intermediate images.
   class GuestOutputImage {
    public:
