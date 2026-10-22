@@ -20,6 +20,23 @@
 setjmp_address = 0x82C055F0
 longjmp_address = 0x82C050C0
 
+# Registers as C++ local variables instead of fields of ctx, as nfsmw-android does (its docs/toolchain.md): the
+# compiler keeps them in the host's registers. These keys must stay above [functions]: below it TOML would put them
+# in that table and the codegen would ignore them without a word.
+#   cr_as_local            the condition register (every compare and branch)
+#   xer_as_local           carry/overflow (every compare reads it)
+#   ctr_as_local           the count register
+#   non_volatile_as_local  r14-r31, f14-f31 and v14-v31/v64-v127: no more __savegprlr_N / __restgprlr_N calls, which
+#                          were ~5 % of every game thread on the Moto G9 Play (app/out/perfil_20261022_114345)
+# Our hooks read none of their caller's registers but lr (skip_lr stays off). Pieces of a function that read a
+# register their parent set (tools/lee_antes.py) are marked with share_registers in [functions].
+# non_argument_as_local stays off: it would make r12 local, and __savevmx_N takes r12 as its base.
+# setjmp/longjmp (the image decoders' error paths) restore ctx but not the locals.
+cr_as_local = true
+xer_as_local = true
+ctr_as_local = true
+non_volatile_as_local = true
+
 [functions]
 
 # --- Validate: "target not in any function" (first codegen, 10 errors) -------
@@ -288,6 +305,50 @@ longjmp_address = 0x82C050C0
 "0x82F48A20" = {}  # lwz r11, 0(r3) ; lfs f1, 8(r4)
 "0x82F48BA0" = {}  # lwz r11, 0(r3) ; lfs f1, 8(r4)
 "0x8322EF78" = {}  # b 0x8322ec40 ; ???
+
+# Pieces that read a register before writing it (tools/lee_antes.py on the generated code, after
+# non_volatile_as_local and the other *_as_local keys above): r14-r31, f14-f31 or a CR field their caller or the
+# parent function set, so their callers hand them over through ctx. Only functions that call no
+# __savegprlr/__restgprlr/__savefpr/__savevmx helper (0x82C01000-0x82C02800) may be marked: in one that does, the
+# helper calls are dropped, it overwrites ctx.r14-r31 without restoring them and its caller reloads them from ctx
+# (the game crashed at start reading 0x10 in sub_8248CED0's callee). lee_antes.py also flags those functions, but
+# for them it is a loop that reads a register at the top that the bottom wrote: a false alarm. v-registers read
+# before written are prologue saves and the xer ones are copies around indirect calls: not marked. Run
+# tools/lee_antes.py again after every codegen.
+"0x824153F8" = { share_registers = true }
+"0x82633D48" = { share_registers = true }
+"0x82A73520" = { share_registers = true }
+"0x82BC8530" = { share_registers = true }
+"0x82BFEAB0" = { share_registers = true }
+"0x82BFEE40" = { share_registers = true }
+"0x82C055F0" = { share_registers = true }
+"0x82C60030" = { share_registers = true }
+"0x82C71CF8" = { share_registers = true }
+"0x82C975D0" = { share_registers = true }
+"0x82C97C10" = { share_registers = true }
+"0x82CB7B08" = { share_registers = true }
+"0x82D038A8" = { share_registers = true }
+"0x82E9A798" = { share_registers = true }
+"0x82E9A898" = { share_registers = true }
+"0x82E9AD10" = { share_registers = true }
+"0x82EB0FB0" = { share_registers = true }
+"0x82EC7D00" = { share_registers = true }
+"0x82EC8640" = { share_registers = true }
+"0x82ECC7C0" = { share_registers = true }
+"0x82ECC8B8" = { share_registers = true }
+"0x82ECD9E8" = { share_registers = true }
+"0x82ED10A0" = { share_registers = true }
+"0x82ED3498" = { share_registers = true }
+"0x82ED3830" = { share_registers = true }
+"0x83191140" = { share_registers = true }
+"0x831D7590" = { share_registers = true }
+"0x831E56B4" = { share_registers = true }
+"0x82A2C210" = { share_registers = true }
+"0x82A2C278" = { share_registers = true }
+"0x82CB7BD8" = { share_registers = true }
+"0x82CB7CA8" = { share_registers = true }
+"0x82E971A0" = { share_registers = true }
+"0x82E9D8F0" = { share_registers = true }
 
 # ----------------------------------------------------------------------------
 #  NATIVE XAPI / CRT FUNCTIONS

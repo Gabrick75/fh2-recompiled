@@ -78,6 +78,12 @@ foreach(target fh2 rexruntime)
         "LINKER:--exclude-libs,liblibavcodec.a:liblibavutil.a")
 endforeach()
 
+# Every guest function sub_X is a weak, exported alias of __imp__sub_X (DEFINE_REX_FUNC), so that a hook can
+# replace it. In a shared library each of the ~316,000 calls between them then went through the PLT (46,423
+# slots in libmain.so; @plt was 5.4 % of the game's main thread on the Moto G9 Play). Bound inside libmain.so
+# they become direct branches; a hook still wins, it is chosen when libmain.so is linked.
+target_link_options(fh2 PRIVATE "-Wl,-Bsymbolic-functions")
+
 # ThinLTO (as nfsmw-android uses) is off for now: the guest code is about twice NFSMW's and the build machine
 # has 14 GB of RAM. Turn it on once the plain build works.
 option(FH2_ANDROID_LTO "ThinLTO on the game code and the app (Android, Release)" OFF)

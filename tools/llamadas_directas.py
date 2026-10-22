@@ -6,7 +6,7 @@
 # and not with LTO. This step changes `sub_X(ctx, base);` into `__imp__sub_X(ctx, base);` when sub_X has no
 # hook, which is exactly the same function, but can now be inlined.
 #
-# Any 82xxxxxx address that appears in the app or SDK sources or in the toml files counts as hooked (the
+# Any 82xxxxxx-89xxxxxx address that appears in the app or SDK sources or in the toml files counts as hooked (the
 # D3D trace builds its hooks with sub_##addr). That is slightly more than needed and safe; it is also
 # checked against the sub_ symbols the compiled objects really define (--comprobar-objetos).
 #
@@ -25,7 +25,8 @@ GEN = os.path.join(RAIZ, 'app', 'generated', 'default')
 FUENTES = [os.path.join(RAIZ, 'app', 'src'), os.path.join(RAIZ, 'sdk', 'src'),
            os.path.join(RAIZ, 'sdk', 'include'), os.path.join(RAIZ, 'app', 'overrides.toml'),
            os.path.join(RAIZ, 'app', 'huecos.toml'), os.path.join(RAIZ, 'app', 'nfsmw_manifest.toml'),
-           os.path.join(RAIZ, 'app', 'CMakeLists.txt')]
+           os.path.join(RAIZ, 'app', 'fh2_manifest.toml'), os.path.join(RAIZ, 'app', 'CMakeLists.txt'),
+           os.path.join(RAIZ, 'android', 'app', 'src', 'main', 'cpp')]
 
 
 def enganchadas():
@@ -41,7 +42,7 @@ def enganchadas():
                 texto = open(ruta, encoding='utf-8', errors='ignore').read()
             except OSError:
                 continue
-            for m in re.findall(r'(?<![0-9A-Fa-f])(82[0-9A-Fa-f]{6})(?![0-9A-Fa-f])', texto):
+            for m in re.findall(r'(?<![0-9A-Fa-f])(8[2-9][0-9A-Fa-f]{6})(?![0-9A-Fa-f])', texto):
                 nombres.add('sub_' + m.upper())
     return nombres
 
@@ -58,7 +59,7 @@ def main():
     cambiadas = 0
     ficheros = 0
     for f in sorted(os.listdir(gen)):
-        if not (f.startswith('nfsmw_recomp.') and f.endswith('.cpp')):
+        if not (f.startswith(('nfsmw_recomp.', 'fh2_recomp.')) and f.endswith('.cpp')):
             continue
         ruta = os.path.join(gen, f)
         texto = open(ruta, encoding='utf-8').read()
