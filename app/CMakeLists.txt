@@ -24,6 +24,8 @@ set(FH2_SOURCES
     src/fh2_censo.cpp
     # The game's Sleep and SwitchToThread per call site (cvar fh2_medir_esperas).
     src/fh2_esperas.cpp
+    # The game's two memcpy on the host's memcpy (cvar fh2_memcpy_nativo).
+    src/fh2_copias.cpp
     # Grass, objects, reflections, shadows and crowd from 0.25x to 4x (cvars fh2_mundo_*): TrackSettings.xml rewritten.
     src/fh2_mundo.cpp
     # Native renderer (cvar fh2_renderizador = nativo): NFSMW Android Evolved's, built for FH2 with FH2_RECOMP

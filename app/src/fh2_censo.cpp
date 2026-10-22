@@ -1637,13 +1637,7 @@ REX_HOOK_RAW(sub_824031F0) {
   }
   __imp__sub_824031F0(ctx, base);
 }
-REX_EXTERN(__imp__sub_824032E0);
-REX_HOOK_RAW(sub_824032E0) {
-  if (REXCVAR_GET(fh2_censo)) {
-    Count(120, ctx, base);
-  }
-  __imp__sub_824032E0(ctx, base);
-}
+// sub_824032E0 (memcpy) is hooked in fh2_copias.cpp; its entry stays in the table and counts nothing.
 REX_EXTERN(__imp__sub_82403648);
 REX_HOOK_RAW(sub_82403648) {
   if (REXCVAR_GET(fh2_censo)) {
