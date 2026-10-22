@@ -4,7 +4,7 @@ fn_re=re.compile(r'^DEFINE_REX_FUNC\((sub_[0-9A-F]+)\)')
 tok=re.compile(r'(?<![.\w])(r(?:1[4-9]|2[0-9]|3[01])|f(?:1[4-9]|2[0-9]|3[01])|v(?:1[4-9]|2[0-9]|3[01]|6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])|cr[0-7]|ctr|xer)\b')
 asg=re.compile(r'^([A-Za-z0-9_]+)(?:\.[A-Za-z0-9_\[\]]+)*\s*=[^=]')
 res={}
-for f in sorted(glob.glob(gen+'/nfsmw_recomp.*.cpp')):
+for f in sorted(glob.glob(gen+'/nfsmw_recomp.*.cpp')+glob.glob(gen+'/fh2_recomp.*.cpp')):
     cur=None
     for ln in open(f,encoding='utf-8',errors='ignore'):
         m=fn_re.match(ln)

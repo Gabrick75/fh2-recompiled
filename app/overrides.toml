@@ -20,6 +20,23 @@
 setjmp_address = 0x82C055F0
 longjmp_address = 0x82C050C0
 
+# Registers as C++ local variables instead of fields of ctx, as nfsmw-android does (its docs/toolchain.md): the
+# compiler keeps them in the host's registers. These keys must stay above [functions]: below it TOML would put them
+# in that table and the codegen would ignore them without a word.
+#   cr_as_local            the condition register (every compare and branch)
+#   xer_as_local           carry/overflow (every compare reads it)
+#   ctr_as_local           the count register
+#   non_volatile_as_local  r14-r31, f14-f31 and v14-v31/v64-v127: no more __savegprlr_N / __restgprlr_N calls, which
+#                          were ~5 % of every game thread on the Moto G9 Play (app/out/perfil_20261022_114345)
+# Our hooks read none of their caller's registers but lr (skip_lr stays off). Pieces of a function that read a
+# register their parent set (tools/lee_antes.py) are marked with share_registers in [functions].
+# non_argument_as_local stays off: it would make r12 local, and __savevmx_N takes r12 as its base.
+# setjmp/longjmp (the image decoders' error paths) restore ctx but not the locals.
+cr_as_local = true
+xer_as_local = true
+ctr_as_local = true
+non_volatile_as_local = true
+
 [functions]
 
 # --- Validate: "target not in any function" (first codegen, 10 errors) -------
@@ -288,6 +305,143 @@ longjmp_address = 0x82C050C0
 "0x82F48A20" = {}  # lwz r11, 0(r3) ; lfs f1, 8(r4)
 "0x82F48BA0" = {}  # lwz r11, 0(r3) ; lfs f1, 8(r4)
 "0x8322EF78" = {}  # b 0x8322ec40 ; ???
+
+# Functions that read a register before writing it (tools/lee_antes.py on the generated code, after
+# non_volatile_as_local and the other *_as_local keys above): r14-r31, f14-f31 or a CR field their caller or the
+# parent function set, so their callers hand them over through ctx. Some are false alarms (loops, and
+# cr6.setFromMask, which writes cr6); the mark only costs those a few stores. v-registers read before written
+# are prologue saves and the xer ones are copies around indirect calls: not marked. Run tools/lee_antes.py again
+# after every codegen.
+"0x823FA058" = { share_registers = true }
+"0x824031F0" = { share_registers = true }
+"0x824153F8" = { share_registers = true }
+"0x82466000" = { share_registers = true }
+"0x8248CED0" = { share_registers = true }
+"0x82499F10" = { share_registers = true }
+"0x8249C8A8" = { share_registers = true }
+"0x824B4300" = { share_registers = true }
+"0x824B4450" = { share_registers = true }
+"0x824D1A00" = { share_registers = true }
+"0x824D5CF0" = { share_registers = true }
+"0x824FDDA8" = { share_registers = true }
+"0x82502D20" = { share_registers = true }
+"0x8254ED18" = { share_registers = true }
+"0x82553150" = { share_registers = true }
+"0x8258C0A0" = { share_registers = true }
+"0x8258CFF0" = { share_registers = true }
+"0x826156F8" = { share_registers = true }
+"0x82618280" = { share_registers = true }
+"0x82633D48" = { share_registers = true }
+"0x8267F4D8" = { share_registers = true }
+"0x82745D90" = { share_registers = true }
+"0x82745E30" = { share_registers = true }
+"0x8274A500" = { share_registers = true }
+"0x8274A678" = { share_registers = true }
+"0x827E2CF8" = { share_registers = true }
+"0x828931D8" = { share_registers = true }
+"0x828940D8" = { share_registers = true }
+"0x82988638" = { share_registers = true }
+"0x8298AEB0" = { share_registers = true }
+"0x829C81D8" = { share_registers = true }
+"0x82A2B838" = { share_registers = true }
+"0x82A2C088" = { share_registers = true }
+"0x82A2E740" = { share_registers = true }
+"0x82A34128" = { share_registers = true }
+"0x82A38F50" = { share_registers = true }
+"0x82A73520" = { share_registers = true }
+"0x82B17780" = { share_registers = true }
+"0x82B1A7F8" = { share_registers = true }
+"0x82BC8530" = { share_registers = true }
+"0x82BEA728" = { share_registers = true }
+"0x82BF78C0" = { share_registers = true }
+"0x82BF8168" = { share_registers = true }
+"0x82BFEAB0" = { share_registers = true }
+"0x82BFEE40" = { share_registers = true }
+"0x82C055F0" = { share_registers = true }
+"0x82C60030" = { share_registers = true }
+"0x82C6BBD8" = { share_registers = true }
+"0x82C71CF8" = { share_registers = true }
+"0x82C975D0" = { share_registers = true }
+"0x82C97C10" = { share_registers = true }
+"0x82CA24D8" = { share_registers = true }
+"0x82CA4878" = { share_registers = true }
+"0x82CB7B08" = { share_registers = true }
+"0x82CB8B88" = { share_registers = true }
+"0x82D038A8" = { share_registers = true }
+"0x82D4F5E0" = { share_registers = true }
+"0x82D53158" = { share_registers = true }
+"0x82DEF400" = { share_registers = true }
+"0x82DF1068" = { share_registers = true }
+"0x82E06F78" = { share_registers = true }
+"0x82E26DE8" = { share_registers = true }
+"0x82E26EC8" = { share_registers = true }
+"0x82E46720" = { share_registers = true }
+"0x82E467B0" = { share_registers = true }
+"0x82E479A0" = { share_registers = true }
+"0x82E47A60" = { share_registers = true }
+"0x82E59678" = { share_registers = true }
+"0x82E8FEA0" = { share_registers = true }
+"0x82E92258" = { share_registers = true }
+"0x82E9A798" = { share_registers = true }
+"0x82E9A898" = { share_registers = true }
+"0x82E9A978" = { share_registers = true }
+"0x82E9AD10" = { share_registers = true }
+"0x82EA51C0" = { share_registers = true }
+"0x82EA5808" = { share_registers = true }
+"0x82EA5C00" = { share_registers = true }
+"0x82EA74B8" = { share_registers = true }
+"0x82EA7A58" = { share_registers = true }
+"0x82EA7BD0" = { share_registers = true }
+"0x82EB0FB0" = { share_registers = true }
+"0x82EB5260" = { share_registers = true }
+"0x82EB5A18" = { share_registers = true }
+"0x82EC7D00" = { share_registers = true }
+"0x82EC8640" = { share_registers = true }
+"0x82ECB4C8" = { share_registers = true }
+"0x82ECC180" = { share_registers = true }
+"0x82ECC648" = { share_registers = true }
+"0x82ECC7C0" = { share_registers = true }
+"0x82ECC8B8" = { share_registers = true }
+"0x82ECD9E8" = { share_registers = true }
+"0x82ECFDE0" = { share_registers = true }
+"0x82ED0488" = { share_registers = true }
+"0x82ED10A0" = { share_registers = true }
+"0x82ED1170" = { share_registers = true }
+"0x82ED30D0" = { share_registers = true }
+"0x82ED3498" = { share_registers = true }
+"0x82ED3830" = { share_registers = true }
+"0x82EE2138" = { share_registers = true }
+"0x82EE4160" = { share_registers = true }
+"0x82EE6E90" = { share_registers = true }
+"0x82F8DD80" = { share_registers = true }
+"0x82F8DE70" = { share_registers = true }
+"0x82F9B488" = { share_registers = true }
+"0x82F9B500" = { share_registers = true }
+"0x82FA1B18" = { share_registers = true }
+"0x82FA1C38" = { share_registers = true }
+"0x83139180" = { share_registers = true }
+"0x83191140" = { share_registers = true }
+"0x831A33E8" = { share_registers = true }
+"0x831A4FC8" = { share_registers = true }
+"0x831A56C8" = { share_registers = true }
+"0x831C0070" = { share_registers = true }
+"0x831D7590" = { share_registers = true }
+"0x831D8D28" = { share_registers = true }
+"0x831E56B4" = { share_registers = true }
+"0x832178E0" = { share_registers = true }
+"0x83229090" = { share_registers = true }
+"0x828B96C0" = { share_registers = true }
+"0x82A2C210" = { share_registers = true }
+"0x82A2C278" = { share_registers = true }
+"0x82A4A388" = { share_registers = true }
+"0x82C976C0" = { share_registers = true }
+"0x82CB7BD8" = { share_registers = true }
+"0x82CB7CA8" = { share_registers = true }
+"0x82DD2D70" = { share_registers = true }
+"0x82E971A0" = { share_registers = true }
+"0x82E9D8F0" = { share_registers = true }
+"0x82F5AC78" = { share_registers = true }
+"0x82F6C408" = { share_registers = true }
 
 # ----------------------------------------------------------------------------
 #  NATIVE XAPI / CRT FUNCTIONS
