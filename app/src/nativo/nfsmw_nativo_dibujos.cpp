@@ -1119,6 +1119,7 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_diag_luces, false, "FH2",
 #if defined(FH2_RECOMP)
 REXCVAR_DECLARE(double, fh2_mundo_grama);  // app/src/fh2_mundo.cpp
 REXCVAR_DECLARE(double, fh2_mundo_multidao);
+REXCVAR_DECLARE(bool, fh2_nativo_medir_gpu);  // nfsmw_nativo_destinos.cpp: also turns on "C6 pases por destino"
 #endif
 REXCVAR_DEFINE_BOOL(fh2_nativo_diag_elementos, false, "FH2",
                     "Native renderer (debug): log each declared vertex element's fetch as the D3D patched it (format, "
@@ -3954,6 +3955,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       } else if (!pase_activo_ && clave_pase == pase_clave_) {
         ++pases_reanudados_;
         pases_reanudados_motivo_[motivo_cierre_]++;
+#if defined(FH2_RECOMP)
+        pase_reanudado_motivo_ = motivo_cierre_;
+#endif
         motivo_cierre_ = kCierreOtro;
       } else {
         ++pases_por_destino_;
@@ -6209,6 +6213,63 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   // Diagnostic: the ring names what is about to close the pass (kCierre*), so the reopen that follows can
   // be attributed to it. Consumed (and reset) at the reopen counter below.
   void AnotarMotivoCierre(uint32_t motivo) override { motivo_cierre_ = motivo; }
+
+#if defined(FH2_RECOMP)
+  // "C6 pases por destino" (with fh2_nativo_medir_gpu): which render targets the passes open, and how often a pass
+  // is reopened on the same target after a copy or clear closed it. On a tiler each reopening writes the target's
+  // tiles back to memory and loads them again, so this says which targets the bandwidth goes to. Measurement only.
+  struct PasesDeDestino {
+    uint32_t base = 0, formato = 0, pitch = 0, ancho = 0, alto = 0;
+    bool profundidad = false;
+    uint64_t pases = 0, reanudados = 0, reanudados_copia_borrado = 0, texels = 0;
+  };
+
+  void AnotarPaseDestino(const uint64_t claves[5], const std::array<ImagenNativa*, 5>& imagenes, uint32_t pitch,
+                         uint64_t texels) {
+    const uint32_t i = claves[0] ? 0 : 4;  // the first color target, or the depth of a depth-only pass
+    if (!claves[i] || !imagenes[i]) {
+      return;
+    }
+    PasesDeDestino& d = pases_destino_[claves[i] ^ (uint64_t(pitch) << 48)];
+    d.base = uint32_t(claves[i] >> 24) & 0xFFF;
+    d.formato = uint32_t(claves[i] >> 16) & 0xF;
+    d.pitch = pitch;
+    d.ancho = imagenes[i]->ancho;
+    d.alto = imagenes[i]->alto;
+    d.profundidad = i == 4;
+    ++d.pases;
+    d.texels += texels;
+    if (pase_reanudado_motivo_ >= 0) {
+      ++d.reanudados;
+      d.reanudados_copia_borrado += pase_reanudado_motivo_ == int32_t(kCierreCopiaYBorrado);
+    }
+    if (++pases_destino_contados_ < kPasesDestinoInforme) {
+      return;
+    }
+    // The 8 targets with most texels opened, then start over.
+    std::vector<const PasesDeDestino*> orden;
+    orden.reserve(pases_destino_.size());
+    uint64_t total = 0;
+    for (const auto& [clave, destino] : pases_destino_) {
+      orden.push_back(&destino);
+      total += destino.texels;
+    }
+    std::sort(orden.begin(), orden.end(), [](auto* a, auto* b) { return a->texels > b->texels; });
+    std::string texto;
+    for (size_t k = 0; k < std::min<size_t>(8, orden.size()); ++k) {
+      const PasesDeDestino& d = *orden[k];
+      texto += fmt::format(" | {} {:03X} fmt {} pitch {} ({}x{}): {} pases, {} reabiertos ({} tras copia+borrado), "
+                           "{:.1f}% de los texels",
+                           d.profundidad ? "prof" : "color", d.base, d.formato, d.pitch, d.ancho, d.alto, d.pases,
+                           d.reanudados, d.reanudados_copia_borrado,
+                           total ? 100.0 * double(d.texels) / double(total) : 0.0);
+    }
+    REXLOG_INFO("[nativo] C6 pases por destino (ultimos {} pases, {} destinos, {:.1f} Mtexels){}", pases_destino_contados_,
+                pases_destino_.size(), double(total) / 1e6, texto);
+    pases_destino_.clear();
+    pases_destino_contados_ = 0;
+  }
+#endif
 
   void AntesDeEnviar() override {
     EsperarSubidas();  // deferred vertex copies, before flushing the mapping and submitting
@@ -12713,6 +12774,12 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     pase_activo_ = true;
     ++pases_empezados_;
     texels_pases_ += uint64_t(ancho) * alto_pase;  // how much tile is loaded by loadOp = LOAD
+#if defined(FH2_RECOMP)
+    if (pases_por_destino_activo_) {
+      AnotarPaseDestino(claves, imagenes, pitch, uint64_t(ancho) * alto_pase);
+    }
+    pase_reanudado_motivo_ = -1;
+#endif
     {
       // Same criterion as the per-category GPU time: the render target's pitch decides.
       const uint32_t categoria = CategoriaDeDestino(pitch, claves);
@@ -15691,6 +15758,13 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   int registro_diag_ = -1;  // diagnostic: the pixel shader sampler register PrepararTextura is filling
   // Diagnostic: what the ring said would close the pass (kCierre*), read at the next reopen.
   uint32_t motivo_cierre_ = kCierreOtro;
+#if defined(FH2_RECOMP)
+  int32_t pase_reanudado_motivo_ = -1;  // why the pass being opened was closed, if it is a reopening; -1 = not one
+  static constexpr uint64_t kPasesDestinoInforme = 60000;  // ~10 s in a race
+  const bool pases_por_destino_activo_ = REXCVAR_GET(fh2_nativo_medir_gpu);
+  std::unordered_map<uint64_t, PasesDeDestino> pases_destino_;
+  uint64_t pases_destino_contados_ = 0;
+#endif
   // The game's open occlusion query and the host query counting this pass's span.
   bool oclusion_abierta_ = false;
   // nfsmw_reflejo_visibilidad (see nfsmw_reflejo_demanda.h). The witness, every ~1 s at 30 FPS.
