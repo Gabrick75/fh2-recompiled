@@ -1295,6 +1295,12 @@ inline uint32_t CategoriaDeDestino(uint32_t pitch, const uint64_t* claves) {
   if (!color && claves[4] && pitch >= 1600) {
     return kGpuSombras;
   }
+#if defined(FH2_RECOMP)
+  // FH2's sun cascades: depth-only at pitch 1040 (docs/alteracoes_fh2.md), counted as scene before.
+  if (!color && claves[4] && pitch == 1040) {
+    return kGpuSombras;
+  }
+#endif
   if (pitch >= 1280) {
     return claves[4] ? kGpuEscena : kGpuEscenaSinProfundidad;
   }
