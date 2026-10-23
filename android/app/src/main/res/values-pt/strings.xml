@@ -351,4 +351,6 @@
     <string name="writes_to_the_log_how_long">Grava no log quanto tempo a GPU gasta em cada parte do quadro. Só para investigar: deixa o jogo mais lento, porque cada medição faz a GPU esperar.</string>
     <string name="reflection_mips_in_one_pass">Mips do reflexo num passe por nível</string>
     <string name="draws_the_reflection_mips_level_by_level">Desenha as versões menores dos reflexos todas juntas, em vez de uma por uma. A imagem não muda; alivia a GPU.</string>
+    <string name="extra_game_options">Opções extras do jogo</string>
+    <string name="extra_game_options_description">Para testes: opções do jogo como --nome=valor, separadas por espaço. Vão depois das do launcher, então valem mais. Deixe vazio para jogar normalmente.</string>
 </resources>

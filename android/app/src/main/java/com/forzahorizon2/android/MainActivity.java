@@ -633,6 +633,29 @@ public final class MainActivity extends AppCompatActivity {
         return button;
     }
 
+    /** Extra game options for tests (GameOptions.EXTRA_ARGS): kept as typed, filtered when the game starts. */
+    private void editExtraOptions() {
+        android.widget.EditText field = new android.widget.EditText(this);
+        field.setText(GameOptions.get(this, GameOptions.EXTRA_ARGS));
+        field.setHint("--name=value --other=value");
+        field.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        field.setTextColor(Menu.PRIMARY);
+        field.setBackgroundTintList(ColorStateList.valueOf(Menu.ACCENT));
+        field.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        LinearLayout box = ui.column();
+        box.setPadding(dp(24), dp(18), dp(24), dp(8));
+        box.addView(ui.text(tr(R.string.extra_game_options_description), 13.5f, 0xFFB4B4BC, false));
+        box.addView(field);
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(tr(R.string.extra_game_options))
+                .setView(box)
+                .setNegativeButton(tr(R.string.cancel), null)
+                .setPositiveButton(tr(R.string.save_name), (d, w) ->
+                        GameOptions.set(this, GameOptions.EXTRA_ARGS, field.getText().toString().trim()))
+                .show();
+    }
+
     /** The player's name: what the home page and the game show (GameOptions.cleanGamertag). */
     private void editPlayerName() {
         android.widget.EditText field = new android.widget.EditText(this);
@@ -1322,6 +1345,8 @@ public final class MainActivity extends AppCompatActivity {
                     GameOptions.flag(this, GameOptions.REFLECTION_MIPS),
                     v -> GameOptions.flag(this, GameOptions.REFLECTION_MIPS, v)));
         }
+        rows.add(ui.actionRow(tr(R.string.extra_game_options), tr(R.string.extra_game_options_description), false,
+                v -> editExtraOptions()));
         if (GameOptions.PERFORMANCE_HINTS_IN_MENU) {
             rows.add(ui.toggleRow(tr(R.string.performance_hints_adpf),
                     tr(R.string.tells_android_how_long_each_frame),
