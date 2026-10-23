@@ -23,7 +23,8 @@ import java.util.List;
 
 /**
  * The on-screen gamepad: a full Xbox 360 pad (both sticks, triggers, bumpers, D-pad, A/B/X/Y, Back and Start)
- * that the player can rearrange.
+ * that the player can rearrange. Steering is two pads, left and right, that put the left stick at full lock (as in
+ * SpeedBreaker); the left stick itself is hidden by default and can be shown in the editor.
  *
  * Positions are stored as fractions of the view (centre x of the width, centre y of the height) and sizes as a
  * fraction of the height, so a layout keeps its shape on any screen. The state goes to the SDK's touch pad
@@ -35,7 +36,7 @@ public final class TouchControlsView extends View {
     static final int START = 0x0010, BACK = 0x0020, LTHUMB = 0x0040, RTHUMB = 0x0080;
     static final int LB = 0x0100, RB = 0x0200, A = 0x1000, B = 0x2000, X = 0x4000, Y = 0x8000;
 
-    private static final int BUTTON = 0, STICK = 1, DPAD = 2, PEDAL = 3, MENU = 4;
+    private static final int BUTTON = 0, STICK = 1, DPAD = 2, PEDAL = 3, MENU = 4, STEER = 5;
     private static final int TRIGGER_NONE = 0, TRIGGER_LEFT = 1, TRIGGER_RIGHT = 2;
     private static final String PREFS = "fh2_controls";
 
@@ -49,7 +50,7 @@ public final class TouchControlsView extends View {
         final String label;
         final String hint;
         final int mask;
-        final int trigger;
+        final int trigger;         // pedals: which trigger; steering pads: TRIGGER_LEFT steers left, else right
         final int color;
         final float defX, defY, defSize;
         final boolean defVisible;
@@ -148,8 +149,10 @@ public final class TouchControlsView extends View {
 
     private void createControls() {
         final int grey = 0xFF2A3440;
-        // Left hand: steering stick, D-pad, LB.
-        add(new Control("ls", STICK, "", "", 0, TRIGGER_NONE, grey, .15f, .70f, .40f, true));
+        // Left hand: steering pads (the stick off by default), D-pad, LB.
+        add(new Control("steer_l", STEER, "", "", 0, TRIGGER_LEFT, grey, .09f, .72f, .34f, true));
+        add(new Control("steer_r", STEER, "", "", 0, TRIGGER_RIGHT, grey, .23f, .72f, .34f, true));
+        add(new Control("ls", STICK, "", "", 0, TRIGGER_NONE, grey, .15f, .70f, .40f, false));
         add(new Control("dpad", DPAD, "", "", 0, TRIGGER_NONE, grey, .10f, .30f, .27f, true));
         add(new Control("lb", BUTTON, "LB", "", LB, TRIGGER_NONE, grey, .07f, .09f, .13f, true));
         // Right hand: pedals, A/B/X/Y diamond, RB.
@@ -187,6 +190,8 @@ public final class TouchControlsView extends View {
         }
         try {
             JSONObject all = new JSONObject(json);
+            // A layout saved before the steering pads: they take the stick's place once (it stays in the editor).
+            final boolean beforeSteeringPads = !all.has("steer_l");
             for (Control c : controls) {
                 JSONObject o = all.optJSONObject(c.id);
                 if (o != null) {
@@ -194,6 +199,9 @@ public final class TouchControlsView extends View {
                     c.y = clamp((float) o.optDouble("y", c.defY), 0f, 1f);
                     c.size = clamp((float) o.optDouble("s", c.defSize), .06f, .8f);
                     c.visible = o.optBoolean("v", c.defVisible);
+                }
+                if (beforeSteeringPads && c.id.equals("ls")) {
+                    c.visible = false;
                 }
             }
         } catch (JSONException ignored) {
@@ -372,6 +380,7 @@ public final class TouchControlsView extends View {
         final int liftedIndex = (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_POINTER_UP)
                 ? event.getActionIndex() : -1;
         final int buttonsBefore = buttonState();
+        final int steeringBefore = steeringPads();
 
         final int width = getWidth();
         final int height = getHeight();
@@ -437,7 +446,7 @@ public final class TouchControlsView extends View {
             return true;
         }
         final int buttonsAfter = buttonState();
-        if (haptics && (buttonsAfter & ~buttonsBefore) != 0) {
+        if (haptics && ((buttonsAfter & ~buttonsBefore) != 0 || (steeringPads() & ~steeringBefore) != 0)) {
             performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
         }
         send();
@@ -546,7 +555,7 @@ public final class TouchControlsView extends View {
 
     private boolean contains(Control c, float px, float py, float slack, float w, float h) {
         float cx = c.x * w, cy = c.y * h;
-        if (c.type == PEDAL) {
+        if (c.type == PEDAL || c.type == STEER) {
             float halfW = pedalWidth(c, h) * .5f * slack, halfH = c.size * h * .5f * slack;
             return Math.abs(px - cx) <= halfW && Math.abs(py - cy) <= halfH;
         }
@@ -572,6 +581,17 @@ public final class TouchControlsView extends View {
         }
         send();
         invalidate();
+    }
+
+    /** The steering pads held: bit 0 left, bit 1 right. */
+    private int steeringPads() {
+        int pads = 0;
+        for (Control c : controls) {
+            if (c.type == STEER && c.pressed) {
+                pads |= c.trigger == TRIGGER_LEFT ? 1 : 2;
+            }
+        }
+        return pads;
     }
 
     private int buttonState() {
@@ -606,6 +626,12 @@ public final class TouchControlsView extends View {
                     else rt = 255;
                 }
             }
+            // The steering pads put the stick at full lock; both held cancel out (a thumb across both).
+            final int pads = steeringPads();
+            if (pads == 1 || pads == 2) {
+                lx = axis(pads == 1 ? -1f : 1f);
+            }
+            steeringHeld |= pads != 0;
             // Touch steering wins while held; releasing it resumes tilt steering.
             if (tiltSteering && !steeringHeld) {
                 lx = axis(clamp(tilt * tiltSensitivity, -1f, 1f));
@@ -657,7 +683,7 @@ public final class TouchControlsView extends View {
                 float cx = c.x * w, cy = c.y * h;
                 dashed.setStrokeWidth(3f);
                 dashed.setColor(c == selected ? 0xFFFFC107 : 0x88FFFFFF);
-                if (c.type == PEDAL) {
+                if (c.type == PEDAL || c.type == STEER) {
                     float hw = pedalWidth(c, h) * .5f + 8f, hh = c.size * h * .5f + 8f;
                     canvas.drawRect(cx - hw, cy - hh, cx + hw, cy + hh, dashed);
                 } else {
@@ -724,6 +750,18 @@ public final class TouchControlsView extends View {
                 }
                 label(canvas, c.label, cx, cy - hh * .45f, hw * .36f, a);
                 label(canvas, c.hint, cx, cy - hh * .45f + hw * .42f, hw * .22f, a);
+                break;
+            }
+            case STEER: {
+                float hw = pedalWidth(c, h) * .5f, hh = c.size * h * .5f;
+                rect.set(cx - hw, cy - hh, cx + hw, cy + hh);
+                float corner = hw * .35f;
+                fill.setColor(withAlpha(c.pressed ? 0xFFFF9A32 : 0xFF18232E, a * 190 / 255));
+                canvas.drawRoundRect(rect, corner, corner, fill);
+                stroke.setStrokeWidth(Math.max(2f, hw * .05f));
+                stroke.setColor(withAlpha(c.pressed ? 0xFFFFD18A : 0xFFEAF2FA, a * 190 / 255));
+                canvas.drawRoundRect(rect, corner, corner, stroke);
+                drawArrow(canvas, cx, cy, hw * 1.1f, c.trigger == TRIGGER_LEFT ? 270 : 90, c.pressed, a);
                 break;
             }
             default: {
