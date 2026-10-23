@@ -100,6 +100,8 @@ final class GameOptions {
     // Game files
     static final String GAME_ISO = "game_iso";            // path of the disc image read in place; "" = the folder
     // Home screen
+    // Extra game options for tests: "--name=value" words, appended after the launcher's own (so they win).
+    static final String EXTRA_ARGS = "extra_args";
     static final String GAMERTAG = "gamertag";  // user_gamertag: the name the game shows (cleanGamertag)
     static final String HOME_VIDEO_SOUND = "home_video_sound";  // the home screen video with sound, off by default
 
@@ -148,6 +150,7 @@ final class GameOptions {
             case GAME_ISO: return "";
             case GAMERTAG: return "Player";
             case APP_LANGUAGE: return "";  // the system's: Android picks from the phone's languages
+            case EXTRA_ARGS: return "";
             default: throw new IllegalArgumentException(key);
         }
     }
@@ -380,6 +383,21 @@ final class GameOptions {
      * Unlimited is 240 Hz, the same as 120 fps: at 480 Hz the game stopped drawing its 3D world (black race on the
      * Moto G9 Play, ~200 draws per frame against ~1,700 at 60 Hz), and no phone reaches 120 fps in a race anyway.
      */
+    /**
+     * The words of the "Extra game options" field that look like "--name=value" with a value: anything else is
+     * dropped, because the cvar parser aborts on an empty value.
+     */
+    static List<String> extraArguments(String text) {
+        List<String> words = new ArrayList<>();
+        for (String word : text.trim().split("\\s+")) {
+            int equals = word.indexOf('=');
+            if (word.startsWith("--") && equals > 2 && equals < word.length() - 1) {
+                words.add(word);
+            }
+        }
+        return words;
+    }
+
     static int vblankRate(Context context) {
         int fps;
         try {
@@ -537,6 +555,7 @@ final class GameOptions {
         args.add("--present_letterbox=false");
         args.add("--present_safe_area_x=100");
         args.add("--present_safe_area_y=100");
+        args.addAll(extraArguments(get(context, EXTRA_ARGS)));
         return args;
     }
 }
