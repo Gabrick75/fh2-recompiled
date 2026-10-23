@@ -35,6 +35,7 @@
 #include "nfsmw_nativo_vertices_dedupe.h"
 #include "nfsmw_nativo_texturas_pool.h"
 #include "nfsmw_texturas_bc.h"
+#include "nfsmw_texturas_etc.h"
 #include "nfsmw_nativo_sincronizacion.h"
 #include "nfsmw_spirv_vulkan11.h"
 #include "nfsmw_spirv_descriptores.h"
@@ -68,6 +69,9 @@ static const uint32_t kSpirvResplandorSuave[1] = {0};
 #if defined(__aarch64__)
 #include <arm_neon.h>
 #endif
+#if defined(__ANDROID__) || defined(__linux__)
+#include <sys/resource.h>  // setpriority: the ETC2/EAC thread
+#endif
 
 #include <algorithm>
 #include <array>
@@ -77,6 +81,7 @@ static const uint32_t kSpirvResplandorSuave[1] = {0};
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <mutex>
 #include <new>
@@ -476,6 +481,15 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_cuatro_conjuntos, false, "NFSMW",
 
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_texturas_bc_cpu, false, "NFSMW",
                     "Forzar conversion BC1-5 en CPU para probar la ruta de GPU sin texturas BC")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+
+// Without BC in the driver (most Mali), BC1-5 were decoded to RGBA8, R8 or RG8: 8 times the memory and bandwidth
+// of DXT1 and 4 times that of DXT5, on GPUs short of both. They are transcoded to ETC2/EAC instead, which every
+// Vulkan driver without BC has, with the same block size as the BC they replace (nfsmw_texturas_etc.h): a draft
+// is uploaded at once and a thread replaces it with the full encode. Volume textures still go to RGBA8.
+REXCVAR_DEFINE_BOOL(nfsmw_nativo_texturas_etc2, true, "NFSMW",
+                    "Sin BC en el driver (Mali): transcodificar BC1-5 a ETC2/EAC (comprimidas) en vez de "
+                    "descomprimirlas a RGBA8. false: RGBA8 como antes")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 REXCVAR_DEFINE_BOOL(nfsmw_nativo_mipmaps, true, "NFSMW",
@@ -2011,6 +2025,27 @@ uint32_t IndiceBc(VkFormat formato) {
   }
 }
 
+// The ETC2/EAC format each BC is transcoded to (nfsmw_texturas_etc.h), by IndiceBc.
+VkFormat FormatoEtc(uint32_t indice_bc) {
+  switch (indice_bc) {
+    case 1: return VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK;
+    case 2:
+    case 3: return VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK;
+    case 4: return VK_FORMAT_EAC_R11_UNORM_BLOCK;
+    case 5: return VK_FORMAT_EAC_R11G11_UNORM_BLOCK;
+    default: return VK_FORMAT_UNDEFINED;
+  }
+}
+
+// Its sRGB variant (EAC has none: the same format).
+VkFormat FormatoSrgbEtc(VkFormat formato) {
+  switch (formato) {
+    case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK: return VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK;
+    case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK: return VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK;
+    default: return formato;
+  }
+}
+
 struct FormatoTextura {
   VkFormat formato = VK_FORMAT_UNDEFINED;
   uint8_t bloque = 1;       // texels per block side
@@ -2115,7 +2150,7 @@ VkFormat FormatoSrgb(VkFormat formato) {
     case VK_FORMAT_BC2_UNORM_BLOCK: return VK_FORMAT_BC2_SRGB_BLOCK;
     case VK_FORMAT_BC3_UNORM_BLOCK: return VK_FORMAT_BC3_SRGB_BLOCK;
     case VK_FORMAT_BC7_UNORM_BLOCK: return VK_FORMAT_BC7_SRGB_BLOCK;
-    default: return formato;
+    default: return FormatoSrgbEtc(formato);
   }
 }
 #endif
@@ -2390,6 +2425,9 @@ struct Textura {
   uint32_t niveles = 1;        // mip levels of the host image
   std::array<uint32_t, 16> desplazamiento_nivel{};  // data bytes up to each level
   uint64_t bytes = 0;          // what it counts in bytes_texturas_ (for eviction)
+  // Its job on the ETC2/EAC thread (EncolarEtc) for the content last uploaded as a draft; 0 = none. A refine
+  // whose number is not this one is for older content and is dropped.
+  uint64_t etc_trabajo = 0;
   // 1 + its index in en_vuelo_ while the bind thread runs its vkBindImageMemory; 0 = no. While set, the
   // image exists but has no memory: no command may reference it until RecogerEnlaces.
   uint32_t en_vuelo = 0;
@@ -2435,6 +2473,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       memoria_->UnregisterPhysicalMemoryInvalidationCallback(fh2_vigilancia_);
     }
 #endif
+    PararEtc();  // its jobs only touch their own bytes
     PararPrecalentado();  // uses the pipeline cache and the layout: first
     PararCopias();
     DestruirCacheVertices();  // after the copy thread, which may still write to it
@@ -2561,6 +2600,23 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         }
         REXLOG_INFO("[compatibilidad] BC{}: conversion CPU a {} (mips y cubos incluidos)",
                     i + 1, i < 3 ? "RGBA8" : i == 3 ? "R8" : "RG8");
+        // ETC2/EAC in its place when the driver samples and filters it (and its sRGB variant, for FH2's gamma
+        // textures); RGBA8 stays for volumes and as the fallback.
+        if (REXCVAR_GET(nfsmw_nativo_texturas_etc2)) {
+          const VkFormat etc = FormatoEtc(i + 1);
+          bool soportado = true;
+          for (const VkFormat f : {etc, FormatoSrgbEtc(etc)}) {
+            ifn.vkGetPhysicalDeviceFormatProperties(dispositivo_->physical_device(), f, &fp);
+            soportado = soportado && (fp.optimalTilingFeatures & requerido) == requerido;
+          }
+          bc_etc_[i] = soportado;
+          REXLOG_INFO("[compatibilidad] BC{}: {}", i + 1,
+                      soportado ? (i == 0   ? "transcodificada a ETC2 RGB8A1 (texturas 2D y cubos)"
+                                   : i < 3  ? "transcodificada a ETC2 RGBA8 (texturas 2D y cubos)"
+                                   : i == 3 ? "transcodificada a EAC R11 (texturas 2D y cubos)"
+                                            : "transcodificada a EAC RG11 (texturas 2D y cubos)")
+                                : "el driver no muestrea ETC2/EAC: se queda en la conversion CPU");
+        }
       }
     }
     // 64-bit pointers (shaderInt64 and buffer device address) are optional: the shaders read every constant
@@ -3551,6 +3607,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     VkDeviceSize bytes_texturas = 0;
     DescartarHuellasPlaneadas();  // those of the previous draw that never reached SubirTextura
     texturas_a_subir_.clear();
+    AplicarEtcRefinadas(bytes_texturas);
     const auto t_samplers =
         cronometrar_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     /*
@@ -8339,6 +8396,132 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                               sin_recoger));
   }
 
+  // --- ETC2/EAC refine (nfsmw_nativo_texturas_etc2) ---------------------------------------------------------------
+  // A BC texture on a GPU without BC is uploaded as a quick ETC2/EAC draft; this thread does the full encode, many
+  // times slower, and AplicarEtcRefinadas uploads it over the draft, into the same image (same format and size).
+  // Each job carries a copy of the BC bytes; its result is applied only while its texture still has that job's
+  // number (Textura::etc_trabajo), so content that changed or an image released in the meantime drop it.
+
+  // Returns the job's number, or 0 if the texture keeps its draft (the queue is full, or there is no thread).
+  uint64_t EncolarEtc(uint64_t clave, nfsmw::bc::Formato formato, std::span<const uint8_t> bc) {
+    if (etc_sin_hilo_) {
+      return 0;
+    }
+    if (!etc_hilo_.joinable()) {
+      try {
+        etc_hilo_ = std::thread([this] { BucleEtc(); });
+        REXLOG_INFO("[compatibilidad] hilo ETC2/EAC creado: los borradores se refinan en segundo plano");
+      } catch (const std::system_error& error) {
+        etc_sin_hilo_ = true;
+        REXLOG_WARN("[compatibilidad] no se pudo crear el hilo ETC2/EAC ({}): se quedan los borradores", error.what());
+        return 0;
+      }
+    }
+    uint64_t numero = 0;
+    {
+      std::lock_guard<std::mutex> cerrojo(etc_mutex_);
+      if (etc_bytes_ + bc.size() > kEtcBytesMax) {
+        ++etc_sin_sitio_;
+        return 0;
+      }
+      TrabajoEtc trabajo;
+      trabajo.numero = numero = ++etc_numero_;
+      trabajo.clave = clave;
+      trabajo.formato = formato;
+      trabajo.datos.assign(bc.begin(), bc.end());
+      etc_bytes_ += bc.size();
+      etc_cola_.push_back(std::move(trabajo));
+    }
+    etc_cv_.notify_one();
+    return numero;
+  }
+
+  void BucleEtc() {
+    rex::thread::set_current_thread_name("NFSMW ETC2 de texturas");
+#if defined(__ANDROID__) || defined(__linux__)
+    setpriority(PRIO_PROCESS, 0, 10);  // this thread only (Linux): behind the game, the draft is already on screen
+#endif
+    std::vector<uint8_t> salida;  // owned by this thread only
+    std::unique_lock<std::mutex> cerrojo(etc_mutex_);
+    for (;;) {
+      etc_cv_.wait(cerrojo, [this] { return etc_parar_ || !etc_cola_.empty(); });
+      if (etc_parar_) {
+        return;
+      }
+      TrabajoEtc trabajo = std::move(etc_cola_.front());
+      etc_cola_.pop_front();
+      cerrojo.unlock();
+      const bool ok = nfsmw::etc::Transcodificar(trabajo.formato, trabajo.datos, salida);
+      if (ok) {
+        trabajo.datos.swap(salida);  // the same size; salida keeps the BC buffer for the next job
+      }
+      cerrojo.lock();
+      if (!ok) {
+        etc_bytes_ -= trabajo.datos.size();
+        continue;
+      }
+      etc_listos_.push_back(std::move(trabajo));
+      etc_hay_listos_.store(true, std::memory_order_release);
+    }
+  }
+
+  // At the start of a draw's textures: the finished refines join this draw's uploads, up to kEtcSubidaPorDibujo
+  // (bytes_texturas counts them toward the upload buffer, like any texture). A texture whose draft or bind is still
+  // pending keeps its refine for a later draw.
+  void AplicarEtcRefinadas(VkDeviceSize& bytes_texturas) {
+    if (!etc_hay_listos_.load(std::memory_order_acquire)) {
+      return;
+    }
+    std::lock_guard<std::mutex> cerrojo(etc_mutex_);
+    size_t quedan = 0;
+    for (size_t i = 0; i < etc_listos_.size(); ++i) {
+      TrabajoEtc& trabajo = etc_listos_[i];
+      const auto it = texturas_.find(trabajo.clave);
+      if (it == texturas_.end() || it->second.etc_trabajo != trabajo.numero ||
+          it->second.imagen.imagen == VK_NULL_HANDLE) {
+        etc_bytes_ -= trabajo.datos.size();
+        ++etc_descartadas_;
+        continue;
+      }
+      Textura& textura = it->second;
+      const VkDeviceSize bytes = (trabajo.datos.size() + 3) & ~size_t(3);
+      if (textura.subir || textura.en_vuelo || textura.huella_trabajo || !textura.imagen.preparada ||
+          (bytes_texturas && bytes_texturas + bytes > kEtcSubidaPorDibujo)) {
+        if (quedan != i) {
+          etc_listos_[quedan] = std::move(trabajo);
+        }
+        ++quedan;
+        continue;
+      }
+      etc_bytes_ -= trabajo.datos.size();
+      textura.datos.swap(trabajo.datos);
+      textura.etc_trabajo = 0;
+      textura.subir = true;
+      texturas_a_subir_.push_back(&textura);
+      bytes_texturas += bytes;
+      ++etc_refinadas_;
+      nfsmw::esperas::g_texturas_subidas.fetch_add(1, std::memory_order_relaxed);
+      nfsmw::esperas::g_bytes_subidos.fetch_add(textura.datos.size(), std::memory_order_relaxed);
+    }
+    etc_listos_.resize(quedan);
+    etc_hay_listos_.store(quedan != 0, std::memory_order_relaxed);
+  }
+
+  void PararEtc() {
+    if (!etc_hilo_.joinable()) {
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> cerrojo(etc_mutex_);
+      etc_parar_ = true;
+    }
+    etc_cv_.notify_one();
+    etc_hilo_.join();  // after the job in hand; the queued ones are dropped
+    REXLOG_INFO("[compatibilidad] hilo ETC2/EAC parado: {} texturas refinadas, {} descartadas (su contenido cambio o "
+                "se soltaron), {} sin sitio en la cola (se quedan en borrador)",
+                etc_refinadas_, etc_descartadas_, etc_sin_sitio_);
+  }
+
   void PararHuellas() {
     if (!huellas_hilo_.joinable()) {
       return;
@@ -10417,6 +10600,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     }
     const uint32_t indice_bc = IndiceBc(tf.formato);
     const bool bc_cpu = indice_bc && bc_cpu_[indice_bc - 1];
+    // Transcoded to ETC2/EAC rather than decoded: same block size, so tf's layout holds for the host too.
+    const bool bc_etc = bc_cpu && bc_etc_[indice_bc - 1] && !volumen;
     const auto formato_bc = static_cast<nfsmw::bc::Formato>(indice_bc);
     // Keep tf in the guest format for untiling, mip addresses and byte order.
 #if defined(FH2_RECOMP)
@@ -10424,12 +10609,12 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     // created in the sRGB variant of their format, so sampling returns linear values as on the console (its curve is
     // a piecewise linear 2.2; sRGB is close). Read raw they were too bright, and the exposure darkened the picture.
     const bool gamma = ((f[0] >> 2) & 0x3F) == 0x3F;
-    const VkFormat formato_lineal = !bc_cpu ? tf.formato : indice_bc == 4 ? VK_FORMAT_R8_UNORM
-        : indice_bc == 5 ? VK_FORMAT_R8G8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
+    const VkFormat formato_lineal = !bc_cpu ? tf.formato : bc_etc ? FormatoEtc(indice_bc)
+        : indice_bc == 4 ? VK_FORMAT_R8_UNORM : indice_bc == 5 ? VK_FORMAT_R8G8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
     const VkFormat formato_host = gamma ? FormatoSrgb(formato_lineal) : formato_lineal;
 #else
-    const VkFormat formato_host = !bc_cpu ? tf.formato : indice_bc == 4 ? VK_FORMAT_R8_UNORM
-        : indice_bc == 5 ? VK_FORMAT_R8G8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
+    const VkFormat formato_host = !bc_cpu ? tf.formato : bc_etc ? FormatoEtc(indice_bc)
+        : indice_bc == 4 ? VK_FORMAT_R8_UNORM : indice_bc == 5 ? VK_FORMAT_R8G8_UNORM : VK_FORMAT_R8G8B8A8_UNORM;
 #endif
     // size_2d: 13 + 13 bits; size_3d: 11 + 11 + 10 bits (xenos.h:1222-1233).
 #if defined(FH2_RECOMP)
@@ -10683,8 +10868,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         textura.contenido_por_medir = true;
       }
       for (uint32_t n = 0; n < niveles; ++n) {
-        const uint32_t bloque_host = bc_cpu ? 1 : tf.bloque;
-        const uint32_t bytes_host = bc_cpu ? nfsmw::bc::Canales(formato_bc) : tf.bytes;
+        const uint32_t bloque_host = bc_cpu && !bc_etc ? 1 : tf.bloque;
+        const uint32_t bytes_host = bc_cpu && !bc_etc ? nfsmw::bc::Canales(formato_bc) : tf.bytes;
         textura.bytes += uint64_t((std::max(ancho_host >> n, 1u) + bloque_host - 1) / bloque_host) *
                          ((std::max(alto_host >> n, 1u) + bloque_host - 1) / bloque_host) * bytes_host * capas *
                          (fondo ? fondo : 1);
@@ -11168,7 +11353,17 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       datos.swap(temporal_bc_);
       for (uint32_t n = 0; n < textura.niveles; ++n) textura.desplazamiento_nivel[n] *= 2;
     }
-    if (bc_cpu) {
+    textura.etc_trabajo = 0;  // any refine still on the way is for older content
+    if (bc_etc) {
+      // The draft now; the full encode from the thread replaces it (AplicarEtcRefinadas).
+      if (!nfsmw::etc::Transcodificar(formato_bc, datos, temporal_bc_, true)) {
+        REXLOG_ERROR("[compatibilidad] datos BC{} invalidos para ETC2/EAC: {} bytes", indice_bc, datos.size());
+        ranura = 0;
+        return;
+      }
+      textura.etc_trabajo = EncolarEtc(clave, formato_bc, datos);
+      datos.swap(temporal_bc_);
+    } else if (bc_cpu) {
       if (!nfsmw::bc::Convertir(formato_bc, datos, textura.imagen.ancho, textura.imagen.alto,
                                 capas, textura.niveles, temporal_bc_, textura.desplazamiento_nivel)) {
         REXLOG_ERROR("[compatibilidad] datos BC{} invalidos: {}x{}, {} capas, {} niveles, {} bytes",
@@ -14792,6 +14987,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 
   const VulkanDevice* dispositivo_;
   std::array<bool, 5> bc_cpu_{};
+  std::array<bool, 5> bc_etc_{};  // of those, the ones transcoded to ETC2/EAC (nfsmw_nativo_texturas_etc2)
   const VulkanDevice::Functions& dfn_;
   VkDevice device_;
   rex::memory::Memory* memoria_;
@@ -15842,6 +16038,26 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   bool huellas_nucleo_ok_ = true;     // con huellas_mutex_
   int huellas_nucleo_real_ = -1;      // under huellas_mutex_: where the thread ran when starting
   std::thread huellas_hilo_;
+  // ETC2/EAC refine thread (EncolarEtc, BucleEtc, AplicarEtcRefinadas).
+  struct TrabajoEtc {
+    uint64_t numero = 0;
+    uint64_t clave = 0;
+    nfsmw::bc::Formato formato = nfsmw::bc::Formato::BC1;
+    std::vector<uint8_t> datos;  // BC in, ETC2/EAC out
+  };
+  static constexpr size_t kEtcBytesMax = size_t(96) << 20;  // queued and finished jobs together
+  static constexpr VkDeviceSize kEtcSubidaPorDibujo = VkDeviceSize(4) << 20;
+  std::thread etc_hilo_;
+  std::mutex etc_mutex_;
+  std::condition_variable etc_cv_;
+  std::deque<TrabajoEtc> etc_cola_;     // under etc_mutex_
+  std::vector<TrabajoEtc> etc_listos_;  // under etc_mutex_
+  size_t etc_bytes_ = 0;                // under etc_mutex_
+  bool etc_parar_ = false;              // under etc_mutex_
+  uint64_t etc_numero_ = 0;             // under etc_mutex_
+  std::atomic<bool> etc_hay_listos_{false};
+  bool etc_sin_hilo_ = false;
+  uint64_t etc_refinadas_ = 0, etc_descartadas_ = 0, etc_sin_sitio_ = 0;
   int32_t huellas_prioridad_ = 0x2E;  // written by the ring before creating the thread
   int32_t huellas_nucleo_pedido_ = -2;
   int32_t huellas_nucleo_ = -1;       // written by the ring before creating the thread
