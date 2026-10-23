@@ -1,8 +1,11 @@
 <div align="center">
 
-# FH2 Recompiled
+# FH2 Recompiled · Mali edition
 
-**An unofficial static recompilation of Forza Horizon 2 (Xbox 360) for Android and Linux**
+**An unofficial static recompilation of Forza Horizon 2 (Xbox 360) for Android, tuned for phones with Arm Mali GPUs**
+
+A fork of [Gabrick75](https://github.com/Gabrick75)'s FH2 Recompiled. Everything below the
+[Mali edition](#mali-edition) section is the upstream project's documentation and applies here too.
 
 [Português](README.pt-BR.md) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [License: GPL-3.0](LICENSE)
 
@@ -19,6 +22,13 @@
 
 ## Table of contents
 
+- [Mali edition](#mali-edition)
+  - [Why Mali needs its own work](#why-mali-needs-its-own-work)
+  - [What this fork changes](#what-this-fork-changes)
+  - [Tested device](#tested-device)
+  - [Recommended settings on Mali](#recommended-settings-on-mali)
+  - [Known issues on Mali](#known-issues-on-mali)
+  - [Reporting a problem](#reporting-a-problem)
 - [Overview](#overview)
 - [How it works](#how-it-works)
 - [Project status](#project-status)
@@ -30,6 +40,74 @@
 - [Credits](#credits)
 - [Legal](#legal)
 - [License](#license)
+
+## Mali edition
+
+The upstream project was developed and tuned on Adreno phones (S23 Ultra, Moto G9 Play), and its native renderer
+comes from a Nintendo Switch port of NFSMW. Mali GPUs
+(MediaTek Dimensity, Google Tensor G1 to G4, Exynos before Xclipse) work differently enough that the same build runs slower
+and looks worse on them. This fork works on those differences, one measured problem at a time.
+
+### Why Mali needs its own work
+
+- **No BC texture compression.** Many Mali drivers, the tested one included, do not sample the DXT/BC formats
+  every Xbox 360 game uses. Upstream decodes them on the CPU into uncompressed RGBA8: 8 times the memory and bandwidth of DXT1, 4 times that of DXT5.
+- **The emulated renderer cannot start.** It needs the Vulkan feature `vertexPipelineStoresAndAtomics`, which the
+  tested Mali driver does not expose. There, only the native renderer runs, and it is the one with image errors left.
+- **Mali is a tiled GPU.** Every time a render pass is closed and reopened on the same target, the whole target goes
+  out to memory and comes back. FH2 resolves and clears render targets dozens of times per frame, which a tiler pays
+  for far more than the console's EDRAM did.
+- **Occlusion queries are switched off on Arm GPUs** by upstream's compatibility table, after crashes reported on
+  older Mali drivers. The game gets a substitute answer instead.
+
+### What this fork changes
+
+| Change | Effect |
+|---|---|
+| **BC1-5 → ETC2/EAC transcoding** (`app/src/nativo/nfsmw_texturas_etc.h`) | Textures stay compressed on Mali: BC1 → ETC2 RGB8A1, BC2/BC3 → ETC2 RGBA8, BC4 → EAC R11, BC5 → EAC RG11, each the same block size as the original, so 4 to 8 times less GPU memory and bandwidth than RGBA8. A fast draft is uploaded at once and a background thread replaces it with a full quality encode. Checked against an independent decoder by `tools/probar_etc.py`. Switch: `--nfsmw_nativo_texturas_etc2=false` brings back RGBA8. |
+| **Per-target pass report** | With *GPU measurements* on, the log gets a `C6 pases por destino` line every ~10 s naming the render targets that cost the most bandwidth and how often each is reopened. |
+| **Shadow cascades in the GPU report** | FH2's sun shadow cascades (depth-only, pitch 1040) are now reported as shadows instead of showing `sombras 0.00 ms`. |
+| **Steering pads** | Two ◀ ▶ pads replace the left stick on the touch controls, as in SpeedBreaker: full lock while held, slide between them without lifting. The stick stays available in the control editor. |
+| **Extra game options** | A field in the launcher's advanced settings to pass game options (`--name=value`) for testing, without a new build. |
+
+### Tested device
+
+| | |
+|---|---|
+| Phone | vivo V2514 |
+| SoC | MediaTek Dimensity 9500 |
+| GPU | Arm Mali-G1 Ultra MC12, Vulkan 1.3 |
+| Android | 17 |
+
+The driver reports no BC formats, so every game texture goes through the ETC2/EAC path. Reports from other Mali
+phones are welcome.
+
+### Recommended settings on Mali
+
+- **Renderer: native** (the emulated one cannot start on Mali).
+- **FPS limit: 30**, the Xbox 360's rate. Phones in this class thermal-throttle after a few minutes (on the tested
+  phone the big core drops from 3.5 to 2.6 GHz) and the frame rate halves; a steady 30 holds.
+- **Anti-aliasing: FXAA** and **anisotropic filtering 4x or higher**. Without them edges shimmer and the road goes
+  blurry at an angle. Reinstalling a build signed with a different key resets these.
+
+### Known issues on Mali
+
+- **Flat, grey lighting beyond a wedge near the car.** The sun's shadow cascades are drawn about once per frame
+  instead of four times, so outside the nearest cascade everything reads as in shadow. Being investigated.
+- **Physics glitches**: cars pop, jump or teleport. This comes from FH2's recompiled collision code (upstream patches
+  some crashes in `app/src/fh2_correcoes.cpp` and notes the same crash on PC), not from the GPU. Open.
+- **Frame drops in busy scenes**, mostly from render pass splits on the main scene target, which the per-target
+  report measures. Open.
+
+### Reporting a problem
+
+1. In the launcher, turn on **GPU measurements**, and play until the problem shows.
+2. Send the two logs from `Internal storage/jogos/fh2-logs/` (`fh2_<date>.log` and `fh2_<date>_uso.log`), your
+   phone model and, for image problems, a screenshot.
+
+Builds from this fork are signed with a debug key, so they do not install over builds signed with another key.
+Before switching, use **Export save** in the launcher, then uninstall, install and **Import**. Automatic backups
+also stay in `Internal storage/jogos/ForzaHorizon2-saves/`.
 
 ## Overview
 
