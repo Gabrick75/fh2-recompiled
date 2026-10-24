@@ -201,6 +201,20 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_im_inmediato_cache, true, "NFSMW",
                     "como antes")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
+#if defined(FH2_RECOMP)
+/*
+ * Depth-only draws (RB_MODECONTROL 5) come with no pixel shader: D3D leaves the PS object at 0 and Xenos does not run
+ * one. When such a draw had no usable Draw* record, UsarIdentidadDelAnillo gave up for lack of a PS even though the
+ * ring's VS was identified, and the draw was dropped ("dibujo sin shaders ... modo 5"): on a Mali-G1 Ultra about
+ * 6 million in a session (sun shadow casters, and the depth-only rectangle whose EDRAM alias fills the headlights'
+ * mask, Fh2RellenoEdramMascara: the night was lit as by day). Now they are drawn with the ring's VS.
+ */
+REXCVAR_DEFINE_BOOL(fh2_nativo_profundidad_sin_ps, true, "FH2",
+                    "Native renderer: depth-only draws without a Draw* record use the ring's vertex shader instead of "
+                    "being dropped for lack of a pixel shader. false = dropped, as before")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+#endif
+
 // Game frames, one per Swap (nfsmw_d3d_trace.cpp). Only for the AnotarJuegoPorDelante measurement.
 extern std::atomic<uint64_t> g_nfsmw_fotogramas_juego;
 
@@ -4010,7 +4024,15 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   // already seen matched with this same patched microcode.
   void UsarIdentidadDelAnillo() {
     if (!ps_actual_) {
+#if defined(FH2_RECOMP)
+      // Depth only: the VS is enough (fh2_nativo_profundidad_sin_ps). A VS the record already gave is kept.
+      if (vs_dibujo_ || !Fh2ProfundidadSinPs() ||
+          (Registro(rex::graphics::XE_GPU_REG_RB_MODECONTROL) & 0x7) != 5) {
+        return;
+      }
+#else
       return;
+#endif
     }
     const EntradaShader* vs = vs_actual_;
     if (!vs) {
@@ -4024,6 +4046,16 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     ps_dibujo_ = ps_actual_;
     ++dibujos_por_im_load_;
   }
+
+#if defined(FH2_RECOMP)
+  bool Fh2ProfundidadSinPs() {
+    if (fh2_profundidad_sin_ps_ < 0) {
+      fh2_profundidad_sin_ps_ = REXCVAR_GET(fh2_nativo_profundidad_sin_ps) ? 1 : 0;
+    }
+    return fh2_profundidad_sin_ps_ == 1;
+  }
+  int fh2_profundidad_sin_ps_ = -1;
+#endif
 
   uint64_t HuellaVs() {
     if (huella_vs_generacion_ != generacion_vs_) {
