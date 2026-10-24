@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdint>
 #include <span>
+#include <thread>
 #include <vector>
 
 #include "nfsmw_texturas_bc.h"
@@ -603,12 +604,43 @@ inline void BorradorAlfa(const uint8_t* p, bool r11, uint8_t* salida) {
 
 // Block by block, in place of the RGBA8/R8/RG8 of bc::Convertir; the output has the input's size and layout.
 // rapido: a draft to upload at once, while the full encode is done in the background (it is many times slower).
+constexpr size_t kBytesBorradorEnHilos = 256 * 1024;  // below this, starting threads costs more than it saves
+constexpr size_t kHilosBorrador = 4;                    // this thread and three more
+
 inline bool Transcodificar(bc::Formato formato, std::span<const uint8_t> entrada, std::vector<uint8_t>& salida,
-                           bool rapido = false) {
+                           bool rapido = false, bool en_hilos = true) {
   if (uint8_t(formato) < 1 || uint8_t(formato) > 5) return false;
   const uint32_t bloque = bc::BytesBloque(formato), canales = bc::Canales(formato);
   if (entrada.size() % bloque) return false;
   salida.resize(entrada.size());
+  // The draft runs on the ring thread when a texture streams in: on a Mali-G1 Ultra 3.5-10 MB in one frame took
+  // 35-100 ms (the hitches when new scenery loads). Blocks are independent, so a large one is split over threads.
+  if (rapido && en_hilos && entrada.size() >= kBytesBorradorEnHilos) {
+    const size_t bloques = entrada.size() / bloque;
+    const size_t partes = kHilosBorrador;
+    std::thread hilos[kHilosBorrador - 1];
+    bool ok[kHilosBorrador] = {};
+    std::vector<uint8_t> salidas[kHilosBorrador];
+    for (size_t k = 0; k < partes; ++k) {
+      const size_t ini = bloques * k / partes * bloque, fin = bloques * (k + 1) / partes * bloque;
+      const auto trozo = [&, k, ini, fin] {
+        ok[k] = Transcodificar(formato, entrada.subspan(ini, fin - ini), salidas[k], true, false);
+      };
+      if (k + 1 < partes) {
+        hilos[k] = std::thread(trozo);
+      } else {
+        trozo();
+      }
+    }
+    bool todo = true;
+    for (size_t k = 0; k < partes; ++k) {
+      if (k + 1 < partes) hilos[k].join();
+      const size_t ini = bloques * k / partes * bloque;
+      todo = todo && ok[k];
+      if (ok[k]) std::copy(salidas[k].begin(), salidas[k].end(), salida.begin() + ptrdiff_t(ini));
+    }
+    return todo;
+  }
   for (size_t b = 0; b < entrada.size(); b += bloque) {
     const uint8_t* origen = entrada.data() + b;
     uint8_t* destino = salida.data() + b;
@@ -616,12 +648,16 @@ inline bool Transcodificar(bc::Formato formato, std::span<const uint8_t> entrada
       switch (formato) {
         case bc::Formato::BC1: BorradorColor(origen, true, true, destino); break;
         case bc::Formato::BC2: {
-          uint8_t alfa[16];
-          for (int i = 0; i < 16; ++i) {
-            const int j = (i & 3) * 4 + (i >> 2);  // row order
-            alfa[i] = uint8_t(((origen[j / 2] >> (4 * (j % 2))) & 15) * 17);
+          // The 4-bit alpha as a BC4 block (255 to 0 in 8 steps) for the palette draft: Eac took twice as long as
+          // the whole BC3 draft. Coarser, until the full encode replaces it.
+          static constexpr uint8_t kNivel[16] = {1, 1, 7, 7, 6, 6, 5, 5, 4, 4, 3, 3, 2, 2, 0, 0};
+          uint8_t bc4[8] = {255, 0};
+          uint64_t indices = 0;
+          for (int j = 0; j < 16; ++j) {
+            indices |= uint64_t(kNivel[(origen[j / 2] >> (4 * (j % 2))) & 15]) << (3 * j);
           }
-          Eac(alfa, false, destino, true);
+          for (int i = 0; i < 6; ++i) bc4[i + 2] = uint8_t(indices >> (8 * i));
+          BorradorAlfa(bc4, false, destino);
           BorradorColor(origen + 8, false, false, destino + 8);
           break;
         }
