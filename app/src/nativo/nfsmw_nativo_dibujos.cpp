@@ -291,6 +291,17 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_msaa_persistente, true, "FH2",
                     "passes that continue the scene are antialiased too (more memory). false = transient images, "
                     "only the passes that clear are multisampled")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// The scene's first pass of each frame does the held clears (fh2_nativo_borrados_diferidos) of both its color and its
+// depth with loadOp = CLEAR into persistent multisample images (storeOp STORE). On the S23 (Adreno 740, also with the
+// system driver) some bins of that pass kept stale samples instead of the clear, and the passes that load them
+// resolved bands of block noise across the internal cameras (cockpit, hood, bumper), different every frame. Clearing
+// only the color or only the depth that way, or the multisample image outside the pass first, all render clean (A/B on
+// the phone, 2026-10-23); the PC (RADV) never showed it. So the attachments an MSAA pass clears get their multisample
+// image cleared first with vkCmdClear*Image, as Fh2BorrarMs does for clears outside a pass; the loadOp still clears.
+REXCVAR_DEFINE_BOOL(fh2_nativo_msaa_borrar_entera, true, "FH2",
+                    "Native renderer: with persistent MSAA, the attachments a pass clears get their multisample "
+                    "image cleared outside the pass first (false = only by the pass's loadOp, stripes on the Adreno)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_BOOL(fh2_nativo_msaa_a2c, false, "FH2",
                     "Native renderer: with MSAA, foliage, fences and crowd use real alpha to coverage instead of the "
                     "alpha test (softer edges, but grainy bushes on phones)")
@@ -9183,8 +9194,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     // fh2_nativo_msaa: totals since the start.
     if (msaa_pases_ || msaa_fallos_) {
       NFSMW_INFORME_ANILLO("[fh2 nativo] MSAA: {} pases multimuestra ({} de ellos cargan lo anterior), {} a 1x por "
-                           "cargar lo anterior sin muestras guardadas, {} fallos (1x para la sesion)",
-                           msaa_pases_, msaa_continuados_, msaa_sin_borrado_, msaa_fallos_);
+                           "cargar lo anterior sin muestras guardadas, {} fallos (1x para la sesion); {} imagenes "
+                           "multimuestra borradas fuera del pase antes de su loadOp = CLEAR",
+                           msaa_pases_, msaa_continuados_, msaa_sin_borrado_, msaa_fallos_, msaa_borrados_enteros_);
     }
 #endif
 
@@ -12579,6 +12591,59 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     return true;
   }
 
+  // fh2_nativo_msaa_borrar_entera: the attachments this pass clears (mascara_borrar, values by attachment order) get
+  // their whole multisample image cleared now, outside the pass. Its loadOp = CLEAR still clears them too.
+  void BorrarMsEnteras(const std::array<ImagenNativa*, 5>& imagenes, uint32_t mascara_borrar,
+                       const std::array<VkClearValue, 5>& valores) {
+    const VkCommandBuffer cmd = contexto_->ComandosTrabajo();
+    if (!cmd) {
+      return;
+    }
+    VkPipelineStageFlags etapas = 0;
+    VkAccessFlags accesos = 0;
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < 5; ++i) {
+      ImagenNativa* img = imagenes[i];
+      if (!img) {
+        continue;
+      }
+      const VkClearValue& valor = valores[n++];
+      if (!(mascara_borrar & (1u << i)) || img->ms_imagen == VK_NULL_HANDLE) {
+        continue;
+      }
+      if (i == 4) {
+        if (!borrar_profundidad_ms_) {
+          borrar_profundidad_ms_ = reinterpret_cast<PFN_vkCmdClearDepthStencilImage>(
+              dispositivo_->vulkan_instance()->functions().vkGetDeviceProcAddr(device_,
+                                                                               "vkCmdClearDepthStencilImage"));
+          if (!borrar_profundidad_ms_) {
+            continue;
+          }
+        }
+        VkImageSubresourceRange rango{VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+        if (img->formato == VK_FORMAT_D24_UNORM_S8_UINT || img->formato == VK_FORMAT_D32_SFLOAT_S8_UINT) {
+          rango.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+        }
+        borrar_profundidad_ms_(cmd, img->ms_imagen, VK_IMAGE_LAYOUT_GENERAL, &valor.depthStencil, 1, &rango);
+        etapas |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        accesos |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+      } else {
+        const VkImageSubresourceRange rango{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        dfn_.vkCmdClearColorImage(cmd, img->ms_imagen, VK_IMAGE_LAYOUT_GENERAL, &valor.color, 1, &rango);
+        etapas |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        accesos |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+      }
+      ++msaa_borrados_enteros_;
+    }
+    if (etapas) {
+      VkMemoryBarrier barrera{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+      barrera.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      barrera.dstAccessMask = accesos;
+      dfn_.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, etapas, 0, 1, &barrera, 0, nullptr, 0,
+                                nullptr);
+    }
+  }
+
   void DestruirMs(ImagenNativa& img) {
     if (img.ms_vista != VK_NULL_HANDLE) {
       OlvidarVista(img.ms_vista);
@@ -12736,6 +12801,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                         ? "las muestras se guardan entre pases y los que cargan lo anterior siguen en MSAA"
                         : "solo los que el juego borra (los que cargan lo anterior van a 1x)");
       }
+    }
+    if (muestras >= 2 && mascara_borrar && REXCVAR_GET(fh2_nativo_msaa_persistente) &&
+        REXCVAR_GET(fh2_nativo_msaa_borrar_entera)) {
+      BorrarMsEnteras(imagenes, mascara_borrar, valores_borrar);
     }
     muestras_pase_ = muestras;
     VkRenderPass pase = PaseDe(formatos, modo_base | (mascara_borrar << 4), muestras);
@@ -15150,6 +15219,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   FnCopiarImagen copiar_imagen_ = nullptr;  // resolved faces of the dynamic cubemaps
 #if defined(FH2_RECOMP)
   PFN_vkCreateRenderPass2 crear_pase2_ = nullptr;  // fh2_nativo_msaa: depth resolve needs render pass 2
+  PFN_vkCmdClearDepthStencilImage borrar_profundidad_ms_ = nullptr;  // fh2_nativo_msaa_borrar_entera
 #endif
 
   VkBuffer subida_ = VK_NULL_HANDLE;
@@ -16047,6 +16117,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   uint64_t msaa_pases_ = 0;
   uint64_t msaa_sin_borrado_ = 0;  // passes that wanted MSAA but load the previous content: opened 1x
   uint64_t msaa_continuados_ = 0;  // fh2_nativo_msaa_persistente: MSAA passes that load the stored samples
+  uint64_t msaa_borrados_enteros_ = 0;  // fh2_nativo_msaa_borrar_entera: multisample images cleared before their pass
   uint64_t msaa_fallos_ = 0;
 #endif
   uint64_t pase_generacion_ = UINT64_MAX;
