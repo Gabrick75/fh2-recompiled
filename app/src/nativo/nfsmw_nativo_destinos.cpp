@@ -112,6 +112,16 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_hdr_32bits, false, "FH2",
                     "Native renderer: the HDR scene's render targets (2_10_10_10_FLOAT) in 32 bits "
                     "(B10G11R11_UFLOAT) instead of half floats: half the memory traffic, no alpha")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+/*
+ * Workaround while the headlights' projector draws no cone on a Mali-G1 Ultra (its textures, blend and the mask are
+ * all right; the night is dark except for the lamps baked into the world). The world shaders add
+ * -log2(mask) x N.L x 0.2 of headlight light: a mask that starts at 2^-N instead of 1 gives every surface N of it, an
+ * even fill light. 0 = as the console.
+ */
+REXCVAR_DEFINE_DOUBLE(fh2_nativo_luz_noche, 0.0, "FH2",
+                      "Native renderer: even night fill light from the headlights' term (0 = off, as the console; "
+                      "0.5-1.5 = dim to bright), while the headlight cone does not draw")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_STRING(fh2_nativo_mascara_faros_dir, "1CE2D000", "FH2",
                       "Native renderer: guest address (hex) the headlights' screen mask is resolved to. Its render "
                       "target is filled with 1 before the first draw after each copy to it, as the console's EDRAM "
@@ -3686,14 +3696,24 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if (!Grabar()) return false;
     Preparar(*mascara);
     mascara->contenido_invalido = false;
-    if (BorradoRedundante(*mascara, 0xFFFFFFFFull)) {
+    // fh2_nativo_luz_noche: G, B and A (the headlights' terms; R is the sun's shadow) start below 1, so every surface
+    // the headlights would light gets a little: -log2(mask) in the world shaders.
+    if (fh2_luz_noche_ < 0.0f) {
+      fh2_luz_noche_ = std::clamp(float(REXCVAR_GET(fh2_nativo_luz_noche)), 0.0f, 4.0f);
+    }
+    const float faros = std::exp2(-fh2_luz_noche_);
+    const uint32_t byte_faros = uint32_t(std::lround(faros * 255.0f));
+    const uint64_t crudo = 0xFFu | (uint64_t(byte_faros) << 8) | (uint64_t(byte_faros) << 16) |
+                           (uint64_t(byte_faros) << 24);
+    if (BorradoRedundante(*mascara, crudo)) {
       ++borrados_saltados_;
       return true;
     }
     RotarFrontalAntesDeBorrar(*mascara);
     MarcarGpu(kGpuBorrados);
     VkClearValue valor{};
-    valor.color.float32[0] = valor.color.float32[1] = valor.color.float32[2] = valor.color.float32[3] = 1.0f;
+    valor.color.float32[0] = 1.0f;
+    valor.color.float32[1] = valor.color.float32[2] = valor.color.float32[3] = faros;
     if (fh2_diferir_borrados_ < 0) {
       fh2_diferir_borrados_ = REXCVAR_GET(fh2_nativo_borrados_diferidos) ? 1 : 0;
     }
@@ -3710,6 +3730,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     return true;
   }
   uint64_t fh2_rellenos_mascara_ = 0;
+  float fh2_luz_noche_ = -1.0f;  // fh2_nativo_luz_noche, read once
 #endif
 
   EstadisticasDibujos EstadisticasDeDibujos() const override {
