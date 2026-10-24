@@ -194,10 +194,20 @@ final class GameOptions {
 
     static boolean flag(Context context, String key) {
         boolean byDefault = PIN_THREADS.equals(key) || PERFORMANCE_HINTS.equals(key) || ONE_PASS.equals(key) ||
-                ADAPTIVE_VBLANK.equals(key) || RESOLVE_SHORTCUT.equals(key) || VERTEX_CACHE.equals(key) ||
-                INDEX_CACHE.equals(key) || VERTEX_NO_WAIT.equals(key) || EXACT_TARGETS.equals(key) ||
-                VIBRATION_PHONE.equals(key);
+                ADAPTIVE_VBLANK.equals(key) || RESOLVE_SHORTCUT.equals(key) || VERTEX_NO_WAIT.equals(key) ||
+                EXACT_TARGETS.equals(key) || VIBRATION_PHONE.equals(key) ||
+                ((VERTEX_CACHE.equals(key) || INDEX_CACHE.equals(key)) && !crossFrameCachesOffByDefault(context));
         return prefs(context).getBoolean(key, byDefault);
+    }
+
+    /**
+     * The native renderer's caches across frames (vertices, indices and FH2's bone and instance pools) trust its
+     * tracking of guest writes. On a Mali-G1 Ultra each one served stale data now and then: the car jumped for a
+     * frame, and the renderer's own checks reported differences. With the three off it held 30 fps with one skipped
+     * frame in a race, so on Mali they start off (the vertex and index ones stay as toggles).
+     */
+    static boolean crossFrameCachesOffByDefault(Context context) {
+        return GpuDrivers.isMali(context);
     }
 
     // What "Restore defaults" (the Graphics and Performance pages) takes back: every option of those two pages, the
@@ -490,6 +500,8 @@ final class GameOptions {
             args.add("--fh2_nativo_medir_gpu_uso=" + (flag(context, SHOW_USAGE) && !UsageMonitor.kernelGpuReadable()));
             args.add("--fh2_nativo_cache_vertices=" + flag(context, VERTEX_CACHE));
             args.add("--fh2_nativo_cache_indices=" + flag(context, INDEX_CACHE));
+            // FH2's bone and instance pools across frames: no toggle, off where the other two start off.
+            args.add("--fh2_nativo_cache_buscas=" + !crossFrameCachesOffByDefault(context));
             args.add("--fh2_nativo_vertices_sin_espera=" + flag(context, VERTEX_NO_WAIT));
             args.add("--fh2_nativo_destinos_exactos=" + flag(context, EXACT_TARGETS));
             args.add("--fh2_nativo_mips_reflejo_juntos=" + flag(context, REFLECTION_MIPS));
