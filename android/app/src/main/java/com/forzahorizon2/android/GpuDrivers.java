@@ -93,6 +93,10 @@ final class GpuDrivers {
         return gpuName(context).toLowerCase(Locale.ROOT).contains("adreno");
     }
 
+    static boolean isMali(Context context) {
+        return gpuName(context).toLowerCase(Locale.ROOT).contains("mali");
+    }
+
     private static String askEgl() {
         EGLDisplay display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
         if (display == EGL14.EGL_NO_DISPLAY) {
