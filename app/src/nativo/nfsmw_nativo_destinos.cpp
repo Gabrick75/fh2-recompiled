@@ -96,6 +96,17 @@ REXCVAR_DEFINE_INT32(nfsmw_nativo_resolver_sin_copia_alternar_s, 0, "NFSMW",
 REXCVAR_DEFINE_DOUBLE(fh2_nativo_log_fps_s, 0.0, "FH2",
                       "Renderizador nativo: con N > 0 escribe cada N segundos en el log los FPS, el tiempo medio y "
                       "el peor fotograma ([nativo] fps:), para medir en el PC. 0 = no se escribe");
+/*
+ * The headlights' screen mask (resolved to 1CE2D000) has to start every frame at 1 (Fh2RellenoEdramMascara). On a
+ * Mali-G1 Ultra the EDRAM alias draw that does it never matched (it fired once, on another target), so the night was
+ * lit as by day. This does it by the result instead: the render target copied to that address is filled with 1
+ * right before its first draw after the copy.
+ */
+REXCVAR_DEFINE_STRING(fh2_nativo_mascara_faros_dir, "1CE2D000", "FH2",
+                      "Native renderer: guest address (hex) the headlights' screen mask is resolved to. Its render "
+                      "target is filled with 1 before the first draw after each copy to it, as the console's EDRAM "
+                      "alias leaves it. Empty = off")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 #endif
 REXCVAR_DEFINE_INT32(nfsmw_nativo_sombras_escala, 100, "NFSMW",
                      "Renderizador nativo (19/09, build 201): dibuja los dos mapas de sombras de 1600x1600 "
@@ -1689,6 +1700,18 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       return false;
     }
 #if defined(FH2_RECOMP)
+    if (copiar && Fh2DirMascaraFaros() != 0 && (reg.rb_copy_dest_base & 0x1FFFFFFF) == Fh2DirMascaraFaros()) {
+      fh2_mascara_base_ = info_color & 0xFFF;
+      fh2_mascara_formato_ = formato_color;
+      fh2_mascara_pitch_ = pitch;
+      fh2_mascara_pendiente_ = true;
+      if (fh2_mascara_avisos_ < 2) {
+        ++fh2_mascara_avisos_;
+        REXLOG_INFO("[fh2 nativo] mascara de los faros: se copia a {:08X} desde la base {:03X} formato {} pitch {}; "
+                    "se rellena a 1 antes de su siguiente dibujo",
+                    Fh2DirMascaraFaros(), fh2_mascara_base_, fh2_mascara_formato_, fh2_mascara_pitch_);
+      }
+    }
     // fh2_nativo_escala: the render target is smaller than the guest thinks. The rectangle stays in guest pixels for
     // the address and the strip clears (gx0..gy1); the copy itself is done in image pixels, 1 to 1, into a resolved
     // texture that is just as much smaller.
@@ -3510,6 +3533,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 #if defined(FH2_RECOMP)
     if (peticion.registros) {
       Fh2RellenoEdramMascara(peticion.registros);
+      if (fh2_mascara_pendiente_) {
+        Fh2RellenoMascaraAntesDeDibujo(peticion.registros);
+      }
     }
 #endif
     // nfsmw_nativo_sombras_escala = 0: the shadow map's draws are dropped. The map keeps the depth its clears give
@@ -3580,14 +3606,65 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     }
     const uint32_t base = r[kDepthInfo] & 0xFFF;
     const uint32_t pitch = (superficie & 0x3FFF) * 2;  // 4x MSAA: twice as wide in 1x pixels
+    // The mask is 1280 wide: on the Mali-G1 Ultra a 200-pitch 4x depth-only draw at the same base filled a 400-wide
+    // target once (a one-frame flash of light).
+    if (pitch != 1280) return fallo("pitch distinto de 640");
     Imagen* mascara = ObtenerDestino(base, 0, pitch);
     if (!mascara) return fallo("sin destino de color en esa base");
-    if (!Grabar()) return;
+    fh2_mascara_pendiente_ = false;
+    if (Fh2LlenarMascaraDeUnos(*mascara)) {
+      ++fh2_rellenos_mascara_;
+      if (fh2_rellenos_mascara_ == 1 || fh2_rellenos_mascara_ % 3600 == 0) {
+        REXLOG_INFO("[fh2 nativo] mascara de los faros (EDRAM base {:03X}, pitch {}): rellenada a 1, {} veces", base,
+                    pitch, fh2_rellenos_mascara_);
+      }
+    }
+  }
+
+  // fh2_nativo_mascara_faros_dir: the first draw into the mask's render target after its copy, whatever the EDRAM
+  // alias draw looked like.
+  void Fh2RellenoMascaraAntesDeDibujo(const uint32_t* r) {
+    constexpr uint32_t kSurfaceInfo = 0x2000, kColorInfo = 0x2001, kModeControl = 0x2208;
+    const uint32_t modo = r[kModeControl] & 0x7;
+    if (modo != 4) return;  // color draws only (5 = depth only, 6 = copy)
+    const uint32_t info = r[kColorInfo];
+    if ((info & 0xFFF) != fh2_mascara_base_ || ((info >> 16) & 0xF) != fh2_mascara_formato_ ||
+        (r[kSurfaceInfo] & 0x3FFF) != fh2_mascara_pitch_) {
+      return;
+    }
+    fh2_mascara_pendiente_ = false;
+    Imagen* mascara = ObtenerDestino(fh2_mascara_base_, fh2_mascara_formato_, fh2_mascara_pitch_);
+    if (!mascara || !Fh2LlenarMascaraDeUnos(*mascara)) return;
+    ++fh2_rellenos_mascara_dir_;
+    if (fh2_rellenos_mascara_dir_ == 1 || fh2_rellenos_mascara_dir_ % 3600 == 0) {
+      REXLOG_INFO("[fh2 nativo] mascara de los faros (base {:03X} formato {} pitch {}): rellenada a 1 antes de su "
+                  "dibujo, {} veces",
+                  fh2_mascara_base_, fh2_mascara_formato_, fh2_mascara_pitch_, fh2_rellenos_mascara_dir_);
+    }
+  }
+
+  uint32_t Fh2DirMascaraFaros() {
+    if (fh2_dir_mascara_ == UINT32_MAX) {
+      fh2_dir_mascara_ =
+          uint32_t(std::strtoul(REXCVAR_GET(fh2_nativo_mascara_faros_dir).c_str(), nullptr, 16)) & 0x1FFFFFFF;
+    }
+    return fh2_dir_mascara_;
+  }
+  uint32_t fh2_dir_mascara_ = UINT32_MAX;
+  uint32_t fh2_mascara_base_ = 0, fh2_mascara_formato_ = 0, fh2_mascara_pitch_ = 0;
+  bool fh2_mascara_pendiente_ = false;
+  int fh2_mascara_avisos_ = 0;
+  uint64_t fh2_rellenos_mascara_dir_ = 0;
+
+  // The color image cleared to 1, as the EDRAM words end up. false if nothing was recorded.
+  bool Fh2LlenarMascaraDeUnos(Imagen& mascara_ref) {
+    Imagen* mascara = &mascara_ref;
+    if (!Grabar()) return false;
     Preparar(*mascara);
     mascara->contenido_invalido = false;
     if (BorradoRedundante(*mascara, 0xFFFFFFFFull)) {
       ++borrados_saltados_;
-      return;
+      return true;
     }
     RotarFrontalAntesDeBorrar(*mascara);
     MarcarGpu(kGpuBorrados);
@@ -3606,11 +3683,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     }
     QuitarBanda(*mascara);
     ++borrados_;
-    ++fh2_rellenos_mascara_;
-    if (fh2_rellenos_mascara_ == 1 || fh2_rellenos_mascara_ % 3600 == 0) {
-      REXLOG_INFO("[fh2 nativo] mascara de los faros (EDRAM base {:03X}, pitch {}): rellenada a 1, {} veces", base,
-                  pitch, fh2_rellenos_mascara_);
-    }
+    return true;
   }
   uint64_t fh2_rellenos_mascara_ = 0;
 #endif
