@@ -28,6 +28,7 @@
     <string name="close">Fechar</string>
     <string name="compatible">Compatível</string>
     <string name="compile_shaders_in_the_background">Compilar shaders em segundo plano</string>
+    <string name="night_light">Luz da noite (preenchimento dos faróis)</string>
     <string name="controls_opacity">Opacidade dos controles</string>
     <string name="controls_settings">Ajustes dos controles</string>
     <string name="copied">"Copiados "</string>

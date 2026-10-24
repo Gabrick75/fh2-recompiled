@@ -30,6 +30,7 @@
     <string name="close">Close</string>
     <string name="compatible">Compatible</string>
     <string name="compile_shaders_in_the_background">Compile shaders in the background</string>
+    <string name="night_light">Night light (headlights fill)</string>
     <string name="controls_opacity">Controls opacity</string>
     <string name="controls_settings">Controls settings</string>
     <string name="copied">"Copied "</string>

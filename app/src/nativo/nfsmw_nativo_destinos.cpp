@@ -73,6 +73,9 @@ extern "C" void RexSwitchPerfTiron(uint64_t inicio, uint64_t fin);
 // Frames per second and milliseconds per frame of the native renderer (the Swaps it presents), for the Android
 // overlay; -1 until the first half second.
 std::atomic<float> g_fh2_nativo_fps{-1.0f};
+// The night fill light the in-game slider sets (android GameActivity, nativeSetNightLight): N of fh2_nativo_luz_noche;
+// -1 = the slider has not been used and the cvar decides.
+std::atomic<float> g_fh2_luz_noche{-1.0f};
 // Android's performance hints (android/app/src/main/cpp/android_rendimiento.cpp); absent on the PC.
 extern "C" void fh2_android_fotograma(int64_t periodo_ns) __attribute__((weak));
 std::atomic<float> g_fh2_nativo_ms{-1.0f};
@@ -3698,10 +3701,10 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     mascara->contenido_invalido = false;
     // fh2_nativo_luz_noche: G, B and A (the headlights' terms; R is the sun's shadow) start below 1, so every surface
     // the headlights would light gets a little: -log2(mask) in the world shaders.
-    if (fh2_luz_noche_ < 0.0f) {
-      fh2_luz_noche_ = std::clamp(float(REXCVAR_GET(fh2_nativo_luz_noche)), 0.0f, 4.0f);
-    }
-    const float faros = std::exp2(-fh2_luz_noche_);
+    const float del_deslizador = g_fh2_luz_noche.load(std::memory_order_relaxed);
+    const float luz_noche = std::clamp(del_deslizador >= 0.0f ? del_deslizador : float(REXCVAR_GET(fh2_nativo_luz_noche)),
+                                       0.0f, 4.0f);
+    const float faros = std::exp2(-luz_noche);
     const uint32_t byte_faros = uint32_t(std::lround(faros * 255.0f));
     const uint64_t crudo = 0xFFu | (uint64_t(byte_faros) << 8) | (uint64_t(byte_faros) << 16) |
                            (uint64_t(byte_faros) << 24);
@@ -3730,7 +3733,6 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     return true;
   }
   uint64_t fh2_rellenos_mascara_ = 0;
-  float fh2_luz_noche_ = -1.0f;  // fh2_nativo_luz_noche, read once
 #endif
 
   EstadisticasDibujos EstadisticasDeDibujos() const override {

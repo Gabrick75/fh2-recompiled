@@ -117,6 +117,14 @@ std::atomic<float>* PluginCounter(const char* name, std::atomic<float>*& cache) 
 // (app/src/nativo/nfsmw_nativo_destinos.cpp).
 extern std::atomic<float> g_fh2_nativo_fps;
 extern std::atomic<float> g_fh2_nativo_ms;
+extern std::atomic<float> g_fh2_luz_noche;
+
+// The in-game "night light" slider (GameActivity.showSettings): the renderer reads it each time it fills the headlights'
+// mask, so it takes effect at once.
+extern "C" JNIEXPORT void JNICALL Java_com_forzahorizon2_android_GameActivity_nativeSetNightLight(JNIEnv*, jclass,
+                                                                                               jfloat value) {
+  g_fh2_luz_noche.store(value, std::memory_order_relaxed);
+}
 
 extern "C" JNIEXPORT jfloat JNICALL Java_com_forzahorizon2_android_GameActivity_nativeFps(JNIEnv*, jclass) {
   if (const float nativo = g_fh2_nativo_fps.load(std::memory_order_relaxed); nativo >= 0.0f) {

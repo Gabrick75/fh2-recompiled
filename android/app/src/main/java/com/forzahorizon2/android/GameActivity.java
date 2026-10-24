@@ -68,6 +68,9 @@ public final class GameActivity extends SDLActivity
 
     private static native float nativeFps();
     private static native float nativeFrameMs();
+    // The night fill light (0 = off): N of fh2_nativo_luz_noche, set live by the slider in the settings.
+    private static native void nativeSetNightLight(float value);
+    private static final String NIGHT_LIGHT = "night_light_percent";
 
     private final Handler clock = new Handler(Looper.getMainLooper());
     private boolean stretched = true;
@@ -116,6 +119,7 @@ public final class GameActivity extends SDLActivity
         super.onCreate(state);
         useWholeScreen();
         hideSystemBars();
+        applyNightLight();
 
         ViewGroup root = findViewById(android.R.id.content);
         controls = new TouchControlsView(this);
@@ -903,6 +907,19 @@ public final class GameActivity extends SDLActivity
                 .show();
     }
 
+    // The saved night light to the renderer (percent / 100 = N of fh2_nativo_luz_noche). Without a saved value the
+    // renderer keeps what the launcher's extra options say.
+    private void applyNightLight() {
+        SharedPreferences prefs = getSharedPreferences("fh2", MODE_PRIVATE);
+        if (prefs.contains(NIGHT_LIGHT)) {
+            try {
+                nativeSetNightLight(prefs.getInt(NIGHT_LIGHT, 0) / 100f);
+            } catch (UnsatisfiedLinkError e) {
+                Log.w(TAG, "nativeSetNightLight", e);
+            }
+        }
+    }
+
     private void showSettings() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -921,6 +938,11 @@ public final class GameActivity extends SDLActivity
         }));
         panel.addView(slider(tr(R.string.tilt_sensitivity), 50, 250,
                 Math.round(controls.tiltSensitivity * 100), v -> controls.tiltSensitivity = v / 100f));
+        panel.addView(slider(tr(R.string.night_light), 0, 200,
+                getSharedPreferences("fh2", MODE_PRIVATE).getInt(NIGHT_LIGHT, 0), v -> {
+                    getSharedPreferences("fh2", MODE_PRIVATE).edit().putInt(NIGHT_LIGHT, v).apply();
+                    applyNightLight();
+                }));
         panel.addView(slider(tr(R.string.controls_opacity), 15, 100,
                 Math.round(controls.opacity * 100), v -> {
                     controls.opacity = v / 100f;
