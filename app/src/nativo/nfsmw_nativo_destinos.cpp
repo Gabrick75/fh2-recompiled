@@ -123,8 +123,7 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_hdr_32bits, false, "FH2",
  */
 REXCVAR_DEFINE_DOUBLE(fh2_nativo_luz_noche, 0.0, "FH2",
                       "Native renderer: even night fill light from the headlights' term (0 = off, as the console; "
-                      "0.5-1.5 = dim to bright), while the headlight cone does not draw")
-    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+                      "0.5-1.5 = dim to bright), while the headlight cone does not draw. Read every frame");
 REXCVAR_DEFINE_STRING(fh2_nativo_mascara_faros_dir, "1CE2D000", "FH2",
                       "Native renderer: guest address (hex) the headlights' screen mask is resolved to. Its render "
                       "target is filled with 1 before the first draw after each copy to it, as the console's EDRAM "

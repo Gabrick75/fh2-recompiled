@@ -211,8 +211,8 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_im_inmediato_cache, true, "NFSMW",
  */
 REXCVAR_DEFINE_BOOL(fh2_nativo_profundidad_sin_ps, true, "FH2",
                     "Native renderer: depth-only draws without a Draw* record use the ring's vertex shader instead of "
-                    "being dropped for lack of a pixel shader. false = dropped, as before")
-    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+                    "being dropped for lack of a pixel shader. false = dropped, as before. Read each time: it can be "
+                    "changed while the game runs");
 #endif
 
 // Game frames, one per Swap (nfsmw_d3d_trace.cpp). Only for the AnotarJuegoPorDelante measurement.
@@ -4067,13 +4067,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   }
 
 #if defined(FH2_RECOMP)
-  bool Fh2ProfundidadSinPs() {
-    if (fh2_profundidad_sin_ps_ < 0) {
-      fh2_profundidad_sin_ps_ = REXCVAR_GET(fh2_nativo_profundidad_sin_ps) ? 1 : 0;
-    }
-    return fh2_profundidad_sin_ps_ == 1;
-  }
-  int fh2_profundidad_sin_ps_ = -1;
+  bool Fh2ProfundidadSinPs() { return REXCVAR_GET(fh2_nativo_profundidad_sin_ps); }
 #endif
 
   uint64_t HuellaVs() {

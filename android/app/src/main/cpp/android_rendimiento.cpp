@@ -119,6 +119,46 @@ extern std::atomic<float> g_fh2_nativo_fps;
 extern std::atomic<float> g_fh2_nativo_ms;
 extern std::atomic<float> g_fh2_luz_noche;
 
+// The in-game "Test flags" panel (GameActivity.showFlagsDialog): sets one cvar while the game runs and says what happened.
+// Returns "STATE|old value|new value" with STATE one of: LIVE (applied now), RESTART (init-only or restart-only flag: the
+// panel saves it and it counts at the next start), TEXT (a text flag: not changed live, a renderer thread may be reading
+// the string), UNKNOWN (no such flag), INVALID (the value was not accepted). LIVE means the game accepted the value; the
+// few parts of the game that read a flag once at start keep using the old one.
+extern "C" JNIEXPORT jstring JNICALL Java_com_forzahorizon2_android_GameActivity_nativeSetFlag(JNIEnv* env, jclass,
+                                                                                            jstring jname,
+                                                                                            jstring jvalue) {
+  const auto to_string = [&](jstring text) {
+    std::string out;
+    if (const char* chars = text ? env->GetStringUTFChars(text, nullptr) : nullptr) {
+      out = chars;
+      env->ReleaseStringUTFChars(text, chars);
+    }
+    return out;
+  };
+  const std::string name = to_string(jname), value = to_string(jvalue);
+  std::string state = "UNKNOWN", old_value, new_value;
+  if (const rex::cvar::FlagEntry* info = name.empty() ? nullptr : rex::cvar::GetFlagInfo(name);
+      info && info->type != rex::cvar::FlagType::Command) {
+    const rex::cvar::Lifecycle lifecycle = info->lifecycle;
+    const bool is_text = info->type == rex::cvar::FlagType::String;
+    old_value = rex::cvar::GetFlagByName(name);
+    if (lifecycle != rex::cvar::Lifecycle::kHotReload) {
+      state = "RESTART";
+    } else if (is_text) {
+      state = "TEXT";
+    } else if (rex::cvar::SetFlagByName(name, value)) {
+      state = "LIVE";
+      new_value = rex::cvar::GetFlagByName(name);
+      if (name == "fh2_nativo_luz_noche") {  // the slider's value wins over the flag: keep them the same
+        g_fh2_luz_noche.store(std::strtof(new_value.c_str(), nullptr), std::memory_order_relaxed);
+      }
+    } else {
+      state = "INVALID";
+    }
+  }
+  return env->NewStringUTF((state + "|" + old_value + "|" + new_value).c_str());
+}
+
 // The in-game "night light" slider (GameActivity.showSettings): the renderer reads it each time it fills the headlights'
 // mask, so it takes effect at once.
 extern "C" JNIEXPORT void JNICALL Java_com_forzahorizon2_android_GameActivity_nativeSetNightLight(JNIEnv*, jclass,

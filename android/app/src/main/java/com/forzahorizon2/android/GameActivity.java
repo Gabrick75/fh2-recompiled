@@ -70,6 +70,9 @@ public final class GameActivity extends SDLActivity
     private static native float nativeFrameMs();
     // The night fill light (0 = off): N of fh2_nativo_luz_noche, set live by the slider in the settings.
     private static native void nativeSetNightLight(float value);
+    // One cvar on the running game: "STATE|old value|new value", STATE LIVE, RESTART, TEXT, UNKNOWN or INVALID
+    // (android_rendimiento.cpp).
+    private static native String nativeSetFlag(String name, String value);
     private static final String NIGHT_LIGHT = "night_light_percent";
 
     private final Handler clock = new Handler(Looper.getMainLooper());
@@ -920,6 +923,99 @@ public final class GameActivity extends SDLActivity
         }
     }
 
+    /**
+     * The launcher's "Extra game options" from inside the game. "Apply now" saves the text there (so what needs a restart
+     * counts at the next start) and tries every --name=value word on the running game: the result says, per word, whether
+     * it applied now, is saved for the next start, does not exist or was not accepted.
+     */
+    private void showFlagsDialog() {
+        android.widget.EditText field = new android.widget.EditText(this);
+        field.setText(GameOptions.get(this, GameOptions.EXTRA_ARGS));
+        field.setHint("--name=value --other=value");
+        field.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        field.setTypeface(android.graphics.Typeface.MONOSPACE);
+        field.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        TextView hint = new TextView(this);
+        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        hint.setText(tr(R.string.test_flags_description));
+        hint.setPadding(0, 0, 0, dp(8));
+        TextView result = new TextView(this);
+        result.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        result.setTypeface(android.graphics.Typeface.MONOSPACE);
+        result.setPadding(0, dp(10), 0, 0);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(8), dp(20), dp(8));
+        box.addView(hint);
+        box.addView(field);
+        box.addView(result);
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        scroll.addView(box);
+        AlertDialog dialog = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(tr(R.string.test_flags))
+                .setView(scroll)
+                .setPositiveButton(tr(R.string.apply_now), null)  // set below: it must not close the dialog
+                .setNegativeButton(tr(R.string.close), null)
+                .show();
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String text = field.getText().toString().trim();
+            GameOptions.set(this, GameOptions.EXTRA_ARGS, text);
+            result.setText(applyFlags(text));
+        });
+    }
+
+    private String applyFlags(String text) {
+        StringBuilder out = new StringBuilder();
+        for (String word : text.split("\\s+")) {
+            if (word.isEmpty()) {
+                continue;
+            }
+            int equals = word.indexOf('=');
+            if (!word.startsWith("--") || equals <= 2 || equals >= word.length() - 1) {
+                out.append("? ").append(word).append(": ").append(tr(R.string.flag_form)).append('\n');
+                continue;
+            }
+            String name = word.substring(2, equals);
+            String value = word.substring(equals + 1);
+            String[] parts;
+            try {
+                parts = nativeSetFlag(name, value).split("\\|", -1);
+            } catch (UnsatisfiedLinkError e) {
+                parts = new String[] {"UNKNOWN", "", ""};
+            }
+            switch (parts[0]) {
+                case "LIVE":
+                    out.append("OK  ").append(name).append(" = ").append(parts[2]).append(" (").append(parts[1])
+                            .append("): ").append(tr(R.string.flag_applied)).append('\n');
+                    if ("fh2_nativo_luz_noche".equals(name)) {  // the night light slider shows the same value
+                        try {
+                            getSharedPreferences("fh2", MODE_PRIVATE).edit().putInt(NIGHT_LIGHT,
+                                    Math.round(Float.parseFloat(parts[2]) * 100f)).apply();
+                        } catch (NumberFormatException ignored) {
+                        }
+                    }
+                    break;
+                case "RESTART":
+                case "TEXT":
+                    out.append("..  ").append(name).append(" = ").append(value).append(": ")
+                            .append(tr(R.string.flag_saved)).append('\n');
+                    break;
+                case "INVALID":
+                    out.append("X   ").append(name).append(" = ").append(value).append(": ")
+                            .append(tr(R.string.flag_invalid)).append('\n');
+                    break;
+                default:
+                    out.append("?   ").append(name).append(": ").append(tr(R.string.flag_unknown)).append('\n');
+                    break;
+            }
+        }
+        if (out.length() == 0) {
+            return tr(R.string.test_flags_note);
+        }
+        return out.append('\n').append(tr(R.string.test_flags_note)).toString();
+    }
+
     private void showSettings() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -943,6 +1039,7 @@ public final class GameActivity extends SDLActivity
                     getSharedPreferences("fh2", MODE_PRIVATE).edit().putInt(NIGHT_LIGHT, v).apply();
                     applyNightLight();
                 }));
+        panel.addView(toolButton(tr(R.string.test_flags), v -> showFlagsDialog()));
         panel.addView(slider(tr(R.string.controls_opacity), 15, 100,
                 Math.round(controls.opacity * 100), v -> {
                     controls.opacity = v / 100f;

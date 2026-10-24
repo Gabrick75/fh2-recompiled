@@ -28,6 +28,15 @@
     <string name="close">Fechar</string>
     <string name="compatible">Compatível</string>
     <string name="compile_shaders_in_the_background">Compilar shaders em segundo plano</string>
+    <string name="test_flags">Flags de teste</string>
+    <string name="test_flags_description">Uma flag por palavra, como --nfsmw_nativo_sin_desenfoque=true. As que o jogo lê durante a execução valem na hora; as outras ficam salvas e valem na próxima abertura. É a mesma lista das Opções extras do jogo no launcher.</string>
+    <string name="apply_now">Aplicar agora</string>
+    <string name="flag_applied">aplicada agora</string>
+    <string name="flag_saved">salva, vale ao reiniciar</string>
+    <string name="flag_unknown">essa flag não existe</string>
+    <string name="flag_invalid">valor não aceito</string>
+    <string name="flag_form">use --nome=valor</string>
+    <string name="test_flags_note">Aceita agora nem sempre quer dizer visível: algumas partes do jogo só leem a flag ao iniciar.</string>
     <string name="night_light">Luz da noite (preenchimento dos faróis)</string>
     <string name="controls_opacity">Opacidade dos controles</string>
     <string name="controls_settings">Ajustes dos controles</string>
