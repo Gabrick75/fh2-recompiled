@@ -42,6 +42,8 @@
 #include <rex/graphics/xenos.h>
 #include <rex/kernel/xboxkrnl/video.h>
 #include <rex/logging.h>
+
+#include "nfsmw_nativo_perfil_anillo.h"
 #include <rex/memory/utils.h>
 #include <rex/system/function_dispatcher.h>
 #include <rex/system/kernel_state.h>
@@ -214,6 +216,12 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_profundidad_sin_ps, true, "FH2",
                     "being dropped for lack of a pixel shader. false = dropped, as before. Read each time: it can be "
                     "changed while the game runs");
 #endif
+
+// A statistical profile of the ring thread (nfsmw_nativo_perfil_anillo.h): every 10 s, the share of its time in each
+// section. Also on whenever fh2_nativo_medir_gpu is.
+REXCVAR_DEFINE_BOOL(fh2_nativo_perfil_anillo, false, "FH2",
+                    "Native renderer (measurement): profile of the ring thread by section, one line every 10 s")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 // Game frames, one per Swap (nfsmw_d3d_trace.cpp). Only for the AnotarJuegoPorDelante measurement.
 extern std::atomic<uint64_t> g_nfsmw_fotogramas_juego;
@@ -1806,6 +1814,10 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
 #if defined(FH2_RECOMP)
     hilo_anillo_id_ = std::this_thread::get_id();
     fh2_lecturas_diferidas_ = REXCVAR_GET(fh2_nativo_lecturas_diferidas);
+    nfsmw::perfil::t_es_anillo = true;
+    if (REXCVAR_GET(fh2_nativo_perfil_anillo) || rex::cvar::GetFlagByName("fh2_nativo_medir_gpu") == "true") {
+      nfsmw::perfil::Muestreador::Instancia().Iniciar();
+    }
 #endif
     /*
      * The ring thread drops to 0x2D, because of the presenter.
@@ -1939,6 +1951,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
         SumarSoloAnillo(nfsmw::esperas::g_ns_anillo_trabajando, ns_anillo);  // without fetch_add
       }
       leido = lector.pos;
+      nfsmw::perfil::Fijar(nfsmw::perfil::kFuera);
       // Deferred vertex copies must be done before telling the game that the GPU has read up to here:
       // after that it may reuse those buffers (nfsmw_nativo_subidas_hilo).
       if (destinos_) {
@@ -1958,8 +1971,10 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
 
   // Consumes a whole packet, or leaves the position untouched if it is not complete yet.
   bool Paquete(Lector& lector, int profundidad) {
+    nfsmw::perfil::Fijar(nfsmw::perfil::kPaquetes);
 #if defined(FH2_RECOMP)
     if (!fh2_diferidas_.empty() && profundidad == 0) {
+      nfsmw::perfil::Alcance perfil(nfsmw::perfil::kDiferidas);
       Fh2ProcesarDiferidas(false);
     }
 #endif
@@ -1996,6 +2011,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     const auto inicio = cronometrar ? Reloj::now() : Reloj::time_point{};
     switch (paquete >> 30) {
       case 0: {
+        nfsmw::perfil::Fijar(nfsmw::perfil::kRegistros);
         const uint32_t indice = paquete & 0x7FFF;
         const bool un_registro = (paquete >> 15) & 0x1;
         if (un_registro || !EscribirRegistrosEnBloque(indice, carga, datos)) {
@@ -2013,6 +2029,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
         break;
       }
       case 1: {
+        nfsmw::perfil::Fijar(nfsmw::perfil::kRegistros);
         const uint32_t valor1 = datos.Leer();
         const uint32_t valor2 = datos.Leer();
         EscribirRegistro(paquete & 0x7FF, valor1);
@@ -2131,6 +2148,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
         break;
       }
       case xenos::PM4_XE_SWAP: {
+        nfsmw::perfil::Alcance perfil(nfsmw::perfil::kSwap);
         // VdSwap writes "SWAP", the physical address of the frontbuffer and its size.
         if (palabras >= 4) {
           datos.Leer();
@@ -2154,6 +2172,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
         break;
       }
       case xenos::PM4_WAIT_REG_MEM: {
+        nfsmw::perfil::Fijar(nfsmw::perfil::kEsperaJuego);
         if (palabras < 5) break;
         const uint32_t info = datos.Leer();
         const uint32_t sondeo = datos.Leer();
@@ -2463,9 +2482,11 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
           HacerCopia();
 #endif
         } else {
+          nfsmw::perfil::Fijar(nfsmw::perfil::kEmparejar);
           ContarDibujoShaders();
           EmparejarDibujo();
           TrazarDibujo();
+          nfsmw::perfil::Fijar(nfsmw::perfil::kPrepDibujo);
           // Viz query proxy (PA_SC_VIZ_QUERY with viz_query_ena and kill_pix_post_hi_z): Xenos only tests
           // it and discards the pixels, so nothing reaches the targets. The emulated path drops these
           // draws (graphics/command_processor.cpp:1755); drawn here they showed up as the magenta wheel
@@ -2509,6 +2530,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
         break;
       }
       case xenos::PM4_IM_LOAD: {
+        nfsmw::perfil::Fijar(nfsmw::perfil::kCargaShader);
         // Microcode in GPU memory; the type is in the two low bits.
         if (palabras < 2) break;
         const uint32_t direccion_tipo = datos.Leer();
@@ -2526,6 +2548,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
         break;
       }
       case xenos::PM4_IM_LOAD_IMMEDIATE: {
+        nfsmw::perfil::Fijar(nfsmw::perfil::kCargaShader);
         // Microcode inside the packet itself.
         if (palabras < 2) break;
         const uint32_t tipo = datos.Leer();
@@ -2709,6 +2732,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   }
 
   void HacerCopia() {
+    nfsmw::perfil::Alcance perfil(nfsmw::perfil::kHacerCopia);
     if (!AsegurarDestinos()) {
       return;
     }

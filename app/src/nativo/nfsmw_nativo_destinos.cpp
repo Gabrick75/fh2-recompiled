@@ -69,6 +69,8 @@ extern "C" void RexSwitchPerfTiron(uint64_t inicio, uint64_t fin);
 #include <unordered_set>
 #include <vector>
 
+#include "nfsmw_nativo_perfil_anillo.h"
+
 #if defined(FH2_RECOMP)
 // Frames per second and milliseconds per frame of the native renderer (the Swaps it presents), for the Android
 // overlay; -1 until the first half second.
@@ -1648,6 +1650,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 #endif
 
   bool Copiar(const RegistrosCopia& reg) override {
+    nfsmw::perfil::Alcance perfil(nfsmw::perfil::kCopiar);
     // Draws since the previous copy: those of the render target being resolved now (rear-view mirror
     // diagnostic).
     const uint64_t dibujados = dibujos_ ? dibujos_->Dibujados() : 0;
@@ -3558,6 +3561,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   }
 
   bool Dibujar(const PeticionDibujo& peticion) override {
+    nfsmw::perfil::Alcance perfil(nfsmw::perfil::kDibujar);
     if (compuesta_hay_ || compuesta_caducada_ != 0) {
       CompuestaAntesDeDibujar(peticion);  // nfsmw_nativo_compuesta_perezosa
     }
@@ -3792,6 +3796,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 #endif
 
   void EsperarSubidas() override {
+    nfsmw::perfil::Alcance perfil(nfsmw::perfil::kEsperaSubidas);
     if (dibujos_) {
       dibujos_->EsperarSubidas();
     }
@@ -6893,6 +6898,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   }
 
   bool EnviarTrabajo(bool esperar, std::source_location sitio = std::source_location::current()) {
+    nfsmw::perfil::Alcance perfil(nfsmw::perfil::kEnvio);
     if (grabando_) {
       // Who submits (the [tiron] report lists the sites of the stutter frame's submissions).
       ++envios_por_linea_[sitio.line()];
@@ -6967,6 +6973,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if (!grabando_) {
       return false;
     }
+    nfsmw::perfil::Alcance perfil(nfsmw::perfil::kEnvio);
     const auto antes_parcial = std::chrono::steady_clock::now();
     if (dibujos_) {
       dibujos_->AntesDeEnviar();  // closes the pass, gathers the texture work, flushes the upload buffer

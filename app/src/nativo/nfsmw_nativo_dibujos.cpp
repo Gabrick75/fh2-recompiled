@@ -30,6 +30,7 @@
 //   equivalent.
 
 #include "nfsmw_nativo_dibujos.h"
+#include "nfsmw_nativo_perfil_anillo.h"
 #include "nfsmw_esperas_tiron.h"
 
 #include "nfsmw_nativo_vertices_dedupe.h"
@@ -2144,6 +2145,14 @@ bool FormatoTexturaDe(uint32_t formato, FormatoTextura& f) {
       f = {VK_FORMAT_R32_SFLOAT, 1, 4, 4, kSwizzleRRRR};
       return true;
 #endif
+    // k_4_4_4_4: 4 bits per channel, first channel in the high nibble, 16-bit swapped like every 16-bit format here.
+    // Vulkan guarantees R4G4B4A4_UNORM_PACK16 (sampled, linear filter, transfer) on every device, and its texel is
+    // the same two bytes, so no conversion and no change to level sizes or offsets. FH2's race HUD reads a 1024x1024
+    // one (PS n416); without it the renderer used the empty texture and the white circles drew black until the race
+    // ended.
+    case 15:
+      f = {VK_FORMAT_R4G4B4A4_UNORM_PACK16, 1, 2, 2, kSwizzleRGBA};
+      return true;
     case 24:  // k_16
       f = {VK_FORMAT_R16_UNORM, 1, 2, 2, kSwizzleRRRR};
       return true;
@@ -6245,6 +6254,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   }
 
   void TerminarPase() override {
+    nfsmw::perfil::Alcance perfil(nfsmw::perfil::kPaseCerrar);
     if (pase_activo_) {
       /*
        * Fallback path of the deferred sky. If nothing has emitted it yet (no transparent draw arrived, or the
@@ -10575,6 +10585,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   void PrepararTextura(const uint32_t* f, uint32_t& ranura, uint32_t& monton,
                        VkDeviceSize& bytes_subida, bool& muestreo_puntual, uint64_t& valido_hasta,
                        uint32_t& ancho_host_out, uint32_t& alto_host_out) {
+    nfsmw::perfil::Alcance perfil(nfsmw::perfil::kTexturas);
     ranura = 0;
     monton = 0;
     ancho_host_out = 0;  // 0 = unknown (1/size is not written)
@@ -12664,6 +12675,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 
   bool EmpezarPase(const uint32_t* r, const uint64_t claves[5], uint32_t pitch,
                    uint64_t clave_pase, uint32_t muestras_max = 0) {
+    nfsmw::perfil::Alcance perfil(nfsmw::perfil::kPaseAbrir);
     inicio_pase_ = cronometrar_ ? std::chrono::steady_clock::now()
                                 : std::chrono::steady_clock::time_point{};
     if (!PrepararVacias()) {
@@ -14759,6 +14771,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     info.basePipelineIndex = -1;
     n_colores_salida = n_colores;
     pipeline = VK_NULL_HANDLE;
+    nfsmw::perfil::Alcance perfil(nfsmw::perfil::kPipelineNuevo);
     return dfn_.vkCreateGraphicsPipelines(device_, cache_pipelines_, 1, &info, nullptr, &pipeline);
   }
 
