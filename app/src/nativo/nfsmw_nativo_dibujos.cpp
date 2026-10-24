@@ -1113,6 +1113,13 @@ REXCVAR_DEFINE_STRING(fh2_nativo_diag_vaciar, "", "FH2",
 REXCVAR_DEFINE_BOOL(fh2_nativo_diag_vacias_blancas, false, "FH2",
                     "Native renderer (debug): the empty texture is white (1 in every channel), with "
                     "fh2_nativo_diag_vaciar to make a texture read as 1");
+// A slow fade to grey a while into a race points at the exposure the game adapts over time. The final composite reads
+// the adapted luminance from a vertex shader texture; this pins those textures to the empty one (1 with
+// fh2_nativo_diag_vacias_blancas) so the exposure stays put, and logs each address a vertex shader samples once.
+REXCVAR_DEFINE_BOOL(fh2_nativo_diag_vs_fija, false, "FH2",
+                    "Native renderer (debug): vertex shader textures (the composite's adapted luminance) read as the "
+                    "empty texture, to test whether the exposure drifts; their addresses are logged once")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_BOOL(fh2_nativo_diag_luces, false, "FH2",
                     "Native renderer (debug): log the boolean constants the game sets (every 10 s) and the headlights' "
                     "parameters (pixel shader c168, c169) of a draw with the deferred light contribution on");
@@ -3784,6 +3791,16 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         uint64_t valido_hasta = fotograma_;
         PrepararTextura(fetch, ranura_textura, monton, bytes_texturas, muestreo_puntual, valido_hasta, ancho_host,
                         alto_host);
+        if (diag_vs_fija_) {
+          static std::set<uint64_t> vistas_vs;
+          const uint32_t base_vs = ((fetch[1] >> 12) << 12) & 0x1FFFFFFF;
+          if (vistas_vs.size() < 32 && vistas_vs.insert((uint64_t(base_vs) << 32) | p.vs->numero).second) {
+            REXLOG_INFO("[fh2 nativo] textura de vertex shader {:08X} {}x{} formato {} (VS n{}, registro {}): fijada",
+                        base_vs, (fetch[2] & 0x1FFF) + 1, ((fetch[2] >> 13) & 0x1FFF) + 1, fetch[1] & 0x3F,
+                        p.vs->numero, sampler.registro);
+          }
+          ranura_textura = 0;  // the empty texture
+        }
         compartidas[kPalabraFh2TexturasVs + monton * 4 + sampler.registro] = ranura_textura;
         compartidas[kPalabraFh2SamplersVs + sampler.registro] = RanuraSampler(fetch, muestreo_puntual);
         const float inv[2] = {ancho_host ? 1.0f / float(ancho_host) : 0.0f, alto_host ? 1.0f / float(alto_host) : 0.0f};
@@ -15461,6 +15478,7 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 #if defined(FH2_RECOMP)
   int32_t ps_encuadre_diag_ = -1;
   uint32_t fh2_diag_textura_ = 0;  // fh2_nativo_diag_textura, read once per frame
+  const bool diag_vs_fija_ = REXCVAR_GET(fh2_nativo_diag_vs_fija);
   // FH2's large direct-fetch buffers (bone and instance pools, ~2.4 MB, about 1000 draws per frame read them), copied
   // once per upload buffer and copied again only if the guest wrote to their pages since (the SDK's physical memory
   // write watches). Copying them per draw moved ~9 GB/s; hashing them per draw cost almost as much.

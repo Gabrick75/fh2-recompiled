@@ -1315,6 +1315,9 @@ public final class MainActivity extends AppCompatActivity {
     private View[] processorRows() {
         boolean nativeRenderer = GameOptions.nativeRenderer(this);
         List<View> rows = new ArrayList<>();
+        // First on the page, where a tester finds it.
+        rows.add(ui.actionRow(tr(R.string.extra_game_options), tr(R.string.extra_game_options_description), false,
+                v -> editExtraOptions()));
         rows.add(ui.toggleRow(tr(R.string.pin_threads_to_cores),
                 tr(R.string.keeps_the_game_on_the_processor),
                 GameOptions.flag(this, GameOptions.PIN_THREADS),
@@ -1345,8 +1348,6 @@ public final class MainActivity extends AppCompatActivity {
                     GameOptions.flag(this, GameOptions.REFLECTION_MIPS),
                     v -> GameOptions.flag(this, GameOptions.REFLECTION_MIPS, v)));
         }
-        rows.add(ui.actionRow(tr(R.string.extra_game_options), tr(R.string.extra_game_options_description), false,
-                v -> editExtraOptions()));
         if (GameOptions.PERFORMANCE_HINTS_IN_MENU) {
             rows.add(ui.toggleRow(tr(R.string.performance_hints_adpf),
                     tr(R.string.tells_android_how_long_each_frame),
