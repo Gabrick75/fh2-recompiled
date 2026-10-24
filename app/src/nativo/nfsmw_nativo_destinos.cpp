@@ -3556,19 +3556,33 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                        kModeControl = 0x2208;
     if ((r[kModeControl] & 0x7) != 5) return;  // depth only
     const uint32_t superficie = r[kSurfaceInfo];
-    if (((superficie >> 16) & 0x3) != 2) return;  // 4x MSAA
     const uint32_t control = r[kDepthControl];
+    const uint32_t stencil = r[kStencilRefMask];
+    // On a Mali-G1 Ultra the fill never ran (no "mascara de los faros" line in any log) and the night was lit as by
+    // day: the first depth-only draws that miss it are logged with the condition they fail, to see which one.
+    const auto fallo = [&](const char* condicion) {
+      static std::set<uint64_t> vistos;
+      const uint64_t clave = (uint64_t(superficie & 0x30000) << 32) ^ (uint64_t(control) << 16) ^ stencil;
+      if (vistos.size() < 12 && vistos.insert(clave).second) {
+        REXLOG_INFO("[fh2 nativo] mascara de los faros: dibujo de solo profundidad sin relleno ({}): superficie "
+                    "{:08X} profundidad {:08X} control {:08X} stencil {:08X}",
+                    condicion, superficie, r[kDepthInfo], control, stencil);
+      }
+    };
+    if (((superficie >> 16) & 0x3) != 2) return fallo("no es MSAA 4x");
     // Stencil on, depth test and write on, depth function always, stencil function always, depth pass: replace.
     if ((control & 0x7) != 0x7 || ((control >> 4) & 0x7) != 7 || ((control >> 8) & 0x7) != 7 ||
         ((control >> 14) & 0x7) != 2) {
-      return;
+      return fallo("control de profundidad");
     }
-    const uint32_t stencil = r[kStencilRefMask];
-    if ((stencil & 0xFF) != 0xFF || ((stencil >> 16) & 0xFF) != 0xFF) return;  // reference and write mask 0xFF
+    if ((stencil & 0xFF) != 0xFF || ((stencil >> 16) & 0xFF) != 0xFF) {
+      return fallo("referencia o mascara de stencil");  // reference and write mask 0xFF
+    }
     const uint32_t base = r[kDepthInfo] & 0xFFF;
     const uint32_t pitch = (superficie & 0x3FFF) * 2;  // 4x MSAA: twice as wide in 1x pixels
     Imagen* mascara = ObtenerDestino(base, 0, pitch);
-    if (!mascara || !Grabar()) return;
+    if (!mascara) return fallo("sin destino de color en esa base");
+    if (!Grabar()) return;
     Preparar(*mascara);
     mascara->contenido_invalido = false;
     if (BorradoRedundante(*mascara, 0xFFFFFFFFull)) {
