@@ -231,7 +231,10 @@ const EntradaShader* Fh2VsPorDireccion(uint32_t fisico);
 // The same for a copy of a patched variant somewhere else (FH2's D3D copies a variant into the ring as an
 // IM_LOAD_IMMEDIATE): the reported destination whose memory holds this microcode (guest byte order). memoria is the
 // host pointer of guest physical address 0.
-const EntradaShader* Fh2VsPorContenido(const uint8_t* memoria, const uint8_t* microcodigo, std::size_t bytes);
+// pista (optional): the destination that matched last time for this microcode, tried first (one memcmp instead of
+// one per destination); updated with the one that matches.
+const EntradaShader* Fh2VsPorContenido(const uint8_t* memoria, const uint8_t* microcodigo, std::size_t bytes,
+                                       uint32_t* pista = nullptr);
 // Lookups since the start: found, and not found.
 void Fh2EstadisticasParches(uint64_t& aciertos, uint64_t& fallos);
 #endif

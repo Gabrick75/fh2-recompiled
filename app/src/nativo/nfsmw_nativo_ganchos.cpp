@@ -285,11 +285,21 @@ const EntradaShader* Fh2VsPorDireccion(uint32_t fisico) {
   return entrada;
 }
 
-const EntradaShader* Fh2VsPorContenido(const uint8_t* memoria, const uint8_t* microcodigo, size_t bytes) {
+const EntradaShader* Fh2VsPorContenido(const uint8_t* memoria, const uint8_t* microcodigo, size_t bytes,
+                                       uint32_t* pista) {
   uint32_t objeto = 0;
   {
     std::lock_guard<std::mutex> cerrojo(g_fh2_parches_mutex);
-    {
+    // The destination that matched last time: a hit is one lookup and one memcmp, not a scan of every destination
+    // (on a Mali-G1 Ultra ~100,000 immediate VS loads per second, all of them through here).
+    if (pista && *pista) {
+      const auto it = g_fh2_parches.find(*pista);
+      if (it != g_fh2_parches.end() && *pista < 0x20000000u - bytes &&
+          std::memcmp(memoria + *pista, microcodigo, bytes) == 0) {
+        objeto = it->second;
+      }
+    }
+    if (!objeto) {
       // Diagnostics: the nearest reported destination to this copy.
       static int avisos = 0;
       const uint32_t fisico = uint32_t(microcodigo - memoria);
@@ -309,8 +319,10 @@ const EntradaShader* Fh2VsPorContenido(const uint8_t* memoria, const uint8_t* mi
       }
     }
     for (const auto& [fisico, candidato] : g_fh2_parches) {
+      if (objeto) break;
       if (fisico < 0x20000000u - bytes && std::memcmp(memoria + fisico, microcodigo, bytes) == 0) {
         objeto = candidato;
+        if (pista) *pista = fisico;
         break;
       }
     }

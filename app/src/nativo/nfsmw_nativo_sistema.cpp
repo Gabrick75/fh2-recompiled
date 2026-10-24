@@ -3523,6 +3523,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     uint64_t huella = 0;      // host XXH3, the same one HuellaVs would compute
     uint64_t generacion = 0;  // from generaciones_microcodigo_, when this content was stored
     uint64_t uso = 0;         // the least recently used way is the one replaced
+    mutable uint32_t fh2_pista = 0;  // FH2: the patched copy its content matched last time (Fh2VsPorContenido)
   };
 
   void CargarInmediato(Lector datos, uint32_t tipo, uint32_t tamano) {
@@ -3621,6 +3622,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     nueva.huella = XXH3_64bits(nueva.host.data(), bytes);
     nueva.generacion = ++generaciones_microcodigo_;
     nueva.uso = ++inm_tic_;
+    nueva.fh2_pista = 0;
     ultima = uint8_t(sitio);
     // The raw copy comes from the packet's position in the ring: once swapped it must equal what the
     // regular path read word by word. Only on misses (a few dozen per run).
@@ -3680,7 +3682,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
         vs_actual_ = Fh2VsPorDireccion(fisico);
         if (!vs_actual_) {
           vs_actual_ = Fh2VsPorContenido(memory_->TranslatePhysical(0), memory_->TranslatePhysical(fisico),
-                                         via.host.size() * 4);
+                                         via.host.size() * 4, &via.fh2_pista);
         }
       }
 #endif

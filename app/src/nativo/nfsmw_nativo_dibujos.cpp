@@ -3786,6 +3786,23 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       compartidas[monton * 16 + sampler.registro] = ranura_textura;
       compartidas[48 + sampler.registro] = ranura_sampler;
       EscribirInvTamano(compartidas, sampler.registro, ancho_host, alto_host);
+#if defined(FH2_RECOMP)
+      // The headlights' projector (multiplicative blend DST_COLOR x ZERO into G, B and A of the screen mask): what
+      // each of its textures came out as. On a Mali-G1 Ultra the mask starts at 1 every frame and the projector is
+      // drawn, yet no cone shows.
+      if (r[0x2201] == 0x00080008u && (r[0x2104] & 0xF) == 0xE) {
+        static std::set<uint64_t> vistas_proyector;
+        const uint32_t base_p = ((fetch[1] >> 12) << 12) & 0x1FFFFFFF;
+        if (vistas_proyector.size() < 24 &&
+            vistas_proyector.insert((uint64_t(base_p) << 8) | sampler.registro).second) {
+          REXLOG_INFO("[fh2 nativo] proyector de los faros (PS n{}): registro {} textura {:08X} formato {} dimension {} "
+                      "{}x{} -> {} (ranura {}, monton {}, host {}x{})",
+                      ps ? int(ps->numero) : -1, sampler.registro, base_p, fetch[1] & 0x3F, (fetch[5] >> 9) & 0x3,
+                      (fetch[2] & 0x1FFF) + 1, ((fetch[2] >> 13) & 0x1FFF) + 1,
+                      ranura_textura ? "imagen" : "VACIA", ranura_textura, monton, ancho_host, alto_host);
+        }
+      }
+#endif
       cache.fotograma = fotograma_;
       cache.generacion = generacion_texturas_;
       std::memcpy(cache.fetch.data(), fetch, sizeof(cache.fetch));
