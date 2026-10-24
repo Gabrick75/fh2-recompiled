@@ -231,10 +231,20 @@ const EntradaShader* Fh2VsPorDireccion(uint32_t fisico);
 // The same for a copy of a patched variant somewhere else (FH2's D3D copies a variant into the ring as an
 // IM_LOAD_IMMEDIATE): the reported destination whose memory holds this microcode (guest byte order). memoria is the
 // host pointer of guest physical address 0.
-// pista (optional): the destination that matched last time for this microcode, tried first (one memcmp instead of
-// one per destination); updated with the one that matches.
+// What one microcode (a way of the IM_LOAD_IMMEDIATE cache) remembers between lookups: pista, the destination that
+// matched last time (tried first: one memcmp); and visto_hasta, how many destinations had been reported when it last
+// searched without a match. The patcher writes into the command ring, so the table ends up with one destination per
+// ring slot (thousands), and the shaders no copy matches (small UI vertex shaders outside the library) used to scan all
+// of them on every load: 3 us per load at the start of a race, 25 us after a few minutes. With the memo a repeat load
+// only looks at the destinations reported since.
+struct Fh2MemoContenido {
+  uint32_t pista = 0;
+  uint64_t visto_hasta = 0;
+};
 const EntradaShader* Fh2VsPorContenido(const uint8_t* memoria, const uint8_t* microcodigo, std::size_t bytes,
-                                       uint32_t* pista = nullptr);
+                                       Fh2MemoContenido* memo = nullptr);
+// Destinations in the table, for the report.
+uint64_t Fh2TamanoTablaParches();
 // Lookups since the start: found, and not found.
 void Fh2EstadisticasParches(uint64_t& aciertos, uint64_t& fallos);
 #endif

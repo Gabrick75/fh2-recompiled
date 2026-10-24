@@ -3547,7 +3547,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     uint64_t huella = 0;      // host XXH3, the same one HuellaVs would compute
     uint64_t generacion = 0;  // from generaciones_microcodigo_, when this content was stored
     uint64_t uso = 0;         // the least recently used way is the one replaced
-    mutable uint32_t fh2_pista = 0;  // FH2: the patched copy its content matched last time (Fh2VsPorContenido)
+    mutable Fh2MemoContenido fh2_memo;  // FH2: what its content search remembers (Fh2VsPorContenido)
   };
 
   void CargarInmediato(Lector datos, uint32_t tipo, uint32_t tamano) {
@@ -3646,7 +3646,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     nueva.huella = XXH3_64bits(nueva.host.data(), bytes);
     nueva.generacion = ++generaciones_microcodigo_;
     nueva.uso = ++inm_tic_;
-    nueva.fh2_pista = 0;
+    nueva.fh2_memo = {};
     ultima = uint8_t(sitio);
     // The raw copy comes from the packet's position in the ring: once swapped it must equal what the
     // regular path read word by word. Only on misses (a few dozen per run).
@@ -3706,7 +3706,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
         vs_actual_ = Fh2VsPorDireccion(fisico);
         if (!vs_actual_) {
           vs_actual_ = Fh2VsPorContenido(memory_->TranslatePhysical(0), memory_->TranslatePhysical(fisico),
-                                         via.host.size() * 4, &via.fh2_pista);
+                                         via.host.size() * 4, &via.fh2_memo);
         }
       }
 #endif
@@ -5209,7 +5209,8 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
       {
         uint64_t aciertos = 0, fallos = 0;
         Fh2EstadisticasParches(aciertos, fallos);
-        REXLOG_INFO("[fh2 nativo] VS por la direccion de su copia parcheada: {} identificados, {} no", aciertos, fallos);
+        REXLOG_INFO("[fh2 nativo] VS por la direccion de su copia parcheada: {} identificados, {} no; tabla de {} destinos",
+                    aciertos, fallos, Fh2TamanoTablaParches());
       }
 #endif
       NFSMW_INFORME_SEGUN(diferir_informe, "[nativo] C5a: cargas={} distintos={} identificados={} sin_identificar={} "

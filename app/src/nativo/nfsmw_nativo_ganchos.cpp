@@ -258,6 +258,11 @@ void RecordarCreacion(uint32_t objeto, const EntradaShader* entrada, bool vertic
 namespace {
 std::mutex g_fh2_parches_mutex;
 std::unordered_map<uint32_t, uint32_t> g_fh2_parches;  // physical address of a patched copy -> VS object
+// The destinations in the order they were reported (the last kRegistroParches of them), so a microcode that was
+// searched before only looks at the newer ones (Fh2MemoContenido).
+constexpr uint64_t kRegistroParches = 1u << 16;
+std::array<uint32_t, kRegistroParches> g_fh2_registro{};
+uint64_t g_fh2_reportados = 0;
 std::atomic<uint64_t> g_fh2_aciertos{0}, g_fh2_fallos{0};
 }  // namespace
 
@@ -266,6 +271,13 @@ void Fh2AnotarParcheVs(uint32_t objeto, uint32_t destino) {
   const uint32_t fisico = (destino & 0x1FFFFFFFu) + (destino >= 0xE0000000u ? 0x1000u : 0u);
   std::lock_guard<std::mutex> cerrojo(g_fh2_parches_mutex);
   g_fh2_parches.insert_or_assign(fisico, objeto);
+  g_fh2_registro[g_fh2_reportados % kRegistroParches] = fisico;
+  ++g_fh2_reportados;
+}
+
+uint64_t Fh2TamanoTablaParches() {
+  std::lock_guard<std::mutex> cerrojo(g_fh2_parches_mutex);
+  return g_fh2_parches.size();
 }
 
 const EntradaShader* Fh2VsPorDireccion(uint32_t fisico) {
@@ -286,20 +298,42 @@ const EntradaShader* Fh2VsPorDireccion(uint32_t fisico) {
 }
 
 const EntradaShader* Fh2VsPorContenido(const uint8_t* memoria, const uint8_t* microcodigo, size_t bytes,
-                                       uint32_t* pista) {
+                                       Fh2MemoContenido* memo) {
   uint32_t objeto = 0;
   {
     std::lock_guard<std::mutex> cerrojo(g_fh2_parches_mutex);
     // The destination that matched last time: a hit is one lookup and one memcmp, not a scan of every destination
     // (on a Mali-G1 Ultra ~100,000 immediate VS loads per second, all of them through here).
-    if (pista && *pista) {
-      const auto it = g_fh2_parches.find(*pista);
-      if (it != g_fh2_parches.end() && *pista < 0x20000000u - bytes &&
-          std::memcmp(memoria + *pista, microcodigo, bytes) == 0) {
+    if (memo && memo->pista) {
+      const auto it = g_fh2_parches.find(memo->pista);
+      if (it != g_fh2_parches.end() && memo->pista < 0x20000000u - bytes &&
+          std::memcmp(memoria + memo->pista, microcodigo, bytes) == 0) {
         objeto = it->second;
       }
     }
-    if (!objeto) {
+    // Not where it matched last time: only the destinations reported since this microcode was last searched (all of
+    // them the first time, or if more than the registry holds came in meanwhile).
+    uint64_t buscar_desde = 0;
+    bool solo_nuevos = false;
+    if (!objeto && memo && memo->visto_hasta != 0 && !memo->pista &&
+        g_fh2_reportados - memo->visto_hasta <= kRegistroParches) {
+      solo_nuevos = true;
+      buscar_desde = memo->visto_hasta;
+    }
+    if (!objeto && solo_nuevos) {
+      for (uint64_t k = buscar_desde; k < g_fh2_reportados; ++k) {
+        const uint32_t fisico = g_fh2_registro[k % kRegistroParches];
+        const auto it = g_fh2_parches.find(fisico);
+        if (it != g_fh2_parches.end() && fisico < 0x20000000u - bytes &&
+            std::memcmp(memoria + fisico, microcodigo, bytes) == 0) {
+          objeto = it->second;
+          memo->pista = fisico;
+          break;
+        }
+      }
+      memo->visto_hasta = g_fh2_reportados;
+    }
+    if (!objeto && !solo_nuevos) {
       // Diagnostics: the nearest reported destination to this copy.
       static int avisos = 0;
       const uint32_t fisico = uint32_t(microcodigo - memoria);
@@ -318,12 +352,17 @@ const EntradaShader* Fh2VsPorContenido(const uint8_t* memoria, const uint8_t* mi
                     "destinos", fisico, bytes, mejor_destino, mejor, g_fh2_parches.size());
       }
     }
-    for (const auto& [fisico, candidato] : g_fh2_parches) {
-      if (objeto) break;
-      if (fisico < 0x20000000u - bytes && std::memcmp(memoria + fisico, microcodigo, bytes) == 0) {
-        objeto = candidato;
-        if (pista) *pista = fisico;
-        break;
+    if (!objeto && !solo_nuevos) {
+      for (const auto& [fisico, candidato] : g_fh2_parches) {
+        if (fisico < 0x20000000u - bytes && std::memcmp(memoria + fisico, microcodigo, bytes) == 0) {
+          objeto = candidato;
+          if (memo) memo->pista = fisico;
+          break;
+        }
+      }
+      if (memo) {
+        memo->visto_hasta = g_fh2_reportados;  // searched them all: only newer ones next time
+        if (!objeto) memo->pista = 0;          // a stale hint must not force full scans again
       }
     }
   }
