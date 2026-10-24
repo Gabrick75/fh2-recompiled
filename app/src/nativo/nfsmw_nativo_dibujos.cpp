@@ -2039,6 +2039,19 @@ uint32_t IndiceBc(VkFormat formato) {
   }
 }
 
+// The render target formats, for the log.
+const char* NombreFormatoDestino(VkFormat formato) {
+  switch (formato) {
+    case VK_FORMAT_R8G8B8A8_UNORM: return "RGBA8";
+    case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return "RGB10A2";
+    case VK_FORMAT_R16G16B16A16_SFLOAT: return "RGBA16F";
+    case VK_FORMAT_R16G16_SFLOAT: return "RG16F";
+    case VK_FORMAT_R32_SFLOAT: return "R32F";
+    case VK_FORMAT_R32G32_SFLOAT: return "RG32F";
+    default: return "otro";
+  }
+}
+
 // The ETC2/EAC format each BC is transcoded to (nfsmw_texturas_etc.h), by IndiceBc.
 VkFormat FormatoEtc(uint32_t indice_bc) {
   switch (indice_bc) {
@@ -2632,6 +2645,25 @@ class DibujosVulkanImpl final : public DibujosVulkan {
                                 : "el driver no muestrea ETC2/EAC: se queda en la conversion CPU");
         }
       }
+    }
+    // Render target formats the driver cannot blend into. Blending into one is undefined in Vulkan; Adreno blends
+    // into all of them, a Mali may not (the 32-bit float ones are optional). Logged here, and once per format when a
+    // pipeline blends into it (RellenarEstadoFijo).
+    {
+      std::string sin_mezcla;
+      for (const VkFormat f : {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+                               VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16_SFLOAT, VK_FORMAT_R32_SFLOAT,
+                               VK_FORMAT_R32G32_SFLOAT}) {
+        VkFormatProperties propiedades_formato{};
+        ifn.vkGetPhysicalDeviceFormatProperties(dispositivo_->physical_device(), f, &propiedades_formato);
+        if (!(propiedades_formato.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT) &&
+            n_formatos_sin_mezcla_ < formatos_sin_mezcla_.size()) {
+          formatos_sin_mezcla_[n_formatos_sin_mezcla_++] = uint32_t(f);
+          sin_mezcla += fmt::format(" {}", NombreFormatoDestino(f));
+        }
+      }
+      REXLOG_INFO("[compatibilidad] destinos de color en los que el driver no mezcla:{}",
+                  sin_mezcla.empty() ? " ninguno" : sin_mezcla);
     }
     // 64-bit pointers (shaderInt64 and buffer device address) are optional: the shaders read every constant
     // from the set 4 UBOs, and with the current library they do not even contain the pointer path. Many Mali,
@@ -13696,6 +13728,15 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       const bool color_directo = fuente == 1 && destino == 0 && op == 0;
       const bool alfa_directo = fuente_a == 1 && destino_a == 0 && op_a == 0;
       s.blendEnable = (escribe_rgb && !color_directo) || (escribe_alfa && !alfa_directo);
+      for (uint32_t k = 0; s.blendEnable && avisar && k < n_formatos_sin_mezcla_; ++k) {
+        const uint32_t bit = 1u << k;
+        if (clave.formatos[i] == formatos_sin_mezcla_[k] &&
+            !(mezcla_sin_soporte_avisada_.fetch_or(bit, std::memory_order_relaxed) & bit)) {
+          REXLOG_WARN("[compatibilidad] el juego mezcla en un destino {} y el driver no mezcla en ese formato "
+                      "(resultado indefinido en Vulkan; mezcla {:08X})",
+                      NombreFormatoDestino(VkFormat(clave.formatos[i])), m);
+        }
+      }
       s.srcColorBlendFactor = kFactores[fuente];
       s.dstColorBlendFactor = kFactores[destino];
       s.colorBlendOp = operacion(op);
@@ -15077,7 +15118,12 @@ class DibujosVulkanImpl final : public DibujosVulkan {
 
   const VulkanDevice* dispositivo_;
   std::array<bool, 5> bc_cpu_{};
-  std::array<bool, 5> bc_etc_{};  // of those, the ones transcoded to ETC2/EAC (nfsmw_nativo_texturas_etc2)
+  std::array<bool, 5> bc_etc_{};
+  // Color target formats without VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT (set at start, read-only after), and
+  // which of them a pipeline has blended into (warned once; pipelines are also built on the prewarm thread).
+  std::array<uint32_t, 8> formatos_sin_mezcla_{};
+  uint32_t n_formatos_sin_mezcla_ = 0;
+  std::atomic<uint32_t> mezcla_sin_soporte_avisada_{0};  // of those, the ones transcoded to ETC2/EAC (nfsmw_nativo_texturas_etc2)
   const VulkanDevice::Functions& dfn_;
   VkDevice device_;
   rex::memory::Memory* memoria_;
