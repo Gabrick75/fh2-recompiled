@@ -3559,7 +3559,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     if (via && inm_fase_ == kInmAplicando && (++inm_turno_ & (kInmComprobarCada - 1)) != 0) {
       // Hit: no byte swap, no identification, no copy, no new generation.
       via->uso = ++inm_tic_;
-      UsarInmediato(tipo, *via);
+      UsarInmediato(tipo, *via, datos);
       ++inm_i_aciertos_;
       ++cargas_cacheadas_;
       if (trazando_ && trazas_ < 4000) {
@@ -3573,7 +3573,10 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
     // The regular path: swaps, identifies and leaves its result in use
     // (vs_actual_ or ps_actual_, vs_inmediato_...).
     CargarInmediatoSinCache(datos, tipo, tamano);
-    const EntradaShader* entrada = tipo == 0 ? vs_actual_ : ps_actual_;
+    // What the content identifies (IdentificarShader), without FH2's lookup by the address of the patched copy,
+    // which depends on where in the ring the packet is: that one is redone on every hit (UsarInmediato). Comparing
+    // the final identity turned the cache off for the session on the first VS identified only by its address.
+    const EntradaShader* entrada = inm_entrada_contenido_;
     if (via) {
       // Check: what the cache would have given against what the regular path just gave.
       uint32_t primera = 0;
@@ -3596,7 +3599,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
                              inm_comprobadas_, kInmComprobarCada);
       }
       if (inm_fase_ == kInmAplicando) {
-        UsarInmediato(tipo, *via);  // the same generation as the unchecked hits
+        UsarInmediato(tipo, *via, datos);  // the same generation as the unchecked hits
       }
       return;
     }
@@ -3632,7 +3635,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
       }
     }
     if (inm_fase_ == kInmAplicando) {
-      UsarInmediato(tipo, nueva);
+      UsarInmediato(tipo, nueva, datos);
     }
   }
 
@@ -3648,6 +3651,7 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
       microcodigo_[i] = datos.Leer();
     }
     IdentificarShader(tipo);
+    inm_entrada_contenido_ = tipo == 0 ? vs_actual_ : ps_actual_;
 #if defined(FH2_RECOMP)
     if (tipo == 0 && !vs_actual_ && shaders_.cargada()) {
       vs_actual_ = Fh2VsPorDireccion(fisico);
@@ -3661,15 +3665,28 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
 
   // The same state IdentificarShader leaves, taken from the way (without swapping, identifying or
   // hashing).
-  void UsarInmediato(uint32_t tipo, const CargaInmediata& via) {
+  void UsarInmediato(uint32_t tipo, const CargaInmediata& via, const Lector& datos) {
     (tipo == 0 ? vs_actual_ : ps_actual_) = via.entrada;
+    inm_entrada_contenido_ = via.entrada;
     if (tipo == 0) {
       vs_microcodigo_ = via.host;  // patched: the vertex input comes from here
       generacion_vs_ = via.generacion;
       huella_vs_generacion_ = via.generacion;
       huella_vs_ = via.huella;
+#if defined(FH2_RECOMP)
+      // As CargarInmediatoSinCache: a VS its content does not identify, by the address of its patched copy.
+      if (!vs_actual_ && shaders_.cargada()) {
+        const uint32_t fisico = uint32_t((datos.base + size_t(datos.pos) * 4) - memory_->TranslatePhysical(0));
+        vs_actual_ = Fh2VsPorDireccion(fisico);
+        if (!vs_actual_) {
+          vs_actual_ = Fh2VsPorContenido(memory_->TranslatePhysical(0), memory_->TranslatePhysical(fisico),
+                                         via.host.size() * 4);
+        }
+      }
+#endif
     }
   }
+  const EntradaShader* inm_entrada_contenido_ = nullptr;  // CargarInmediato: the identity the cache keeps
 
   // Cheap signature of an unswapped packet: picks the set and rejects other shaders' ways before the
   // memcmp.

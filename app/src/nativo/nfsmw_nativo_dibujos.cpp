@@ -2045,6 +2045,7 @@ const char* NombreFormatoDestino(VkFormat formato) {
     case VK_FORMAT_R8G8B8A8_UNORM: return "RGBA8";
     case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return "RGB10A2";
     case VK_FORMAT_R16G16B16A16_SFLOAT: return "RGBA16F";
+    case VK_FORMAT_B10G11R11_UFLOAT_PACK32: return "B10G11R11F";
     case VK_FORMAT_R16G16_SFLOAT: return "RG16F";
     case VK_FORMAT_R32_SFLOAT: return "R32F";
     case VK_FORMAT_R32G32_SFLOAT: return "RG32F";

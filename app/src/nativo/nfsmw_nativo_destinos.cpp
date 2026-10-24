@@ -102,6 +102,16 @@ REXCVAR_DEFINE_DOUBLE(fh2_nativo_log_fps_s, 0.0, "FH2",
  * lit as by day. This does it by the result instead: the render target copied to that address is filled with 1
  * right before its first draw after the copy.
  */
+/*
+ * FH2 draws its HDR scene into 2_10_10_10_FLOAT: three 7e3 channels (7-bit mantissa, nothing above 31.875) and a
+ * 2-bit alpha, 32 bits on the console. The host kept it in RGBA16F, 64 bits: on a Mali-G1 Ultra that target is 49 %
+ * of all the texels the passes load and store. B10G11R11_UFLOAT (6/6/5-bit mantissas, unsigned like 7e3) halves it;
+ * the alpha is dropped (reads as 1).
+ */
+REXCVAR_DEFINE_BOOL(fh2_nativo_hdr_32bits, false, "FH2",
+                    "Native renderer: the HDR scene's render targets (2_10_10_10_FLOAT) in 32 bits "
+                    "(B10G11R11_UFLOAT) instead of half floats: half the memory traffic, no alpha")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_STRING(fh2_nativo_mascara_faros_dir, "1CE2D000", "FH2",
                       "Native renderer: guest address (hex) the headlights' screen mask is resolved to. Its render "
                       "target is filled with 1 before the first draw after each copy to it, as the console's EDRAM "
@@ -1113,6 +1123,20 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     blit_ = reinterpret_cast<FnBlit>(
         dispositivo_->vulkan_instance()->functions().vkGetDeviceProcAddr(device_,
                                                                           "vkCmdBlitImage"));
+#if defined(FH2_RECOMP)
+    if (REXCVAR_GET(fh2_nativo_hdr_32bits)) {
+      VkFormatProperties p{};
+      dispositivo_->vulkan_instance()->functions().vkGetPhysicalDeviceFormatProperties(
+          dispositivo_->physical_device(), VK_FORMAT_B10G11R11_UFLOAT_PACK32, &p);
+      const VkFormatFeatureFlags necesarios =
+          VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT |
+          VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+          VK_FORMAT_FEATURE_BLIT_SRC_BIT;
+      g_hdr_32bits = (p.optimalTilingFeatures & necesarios) == necesarios;
+      REXLOG_INFO("[fh2 nativo] escena HDR en 32 bits (B10G11R11): {}",
+                  g_hdr_32bits ? "SI" : "no, el dispositivo no lo soporta (se queda en RGBA16F)");
+    }
+#endif
     // Attachment, copy and clear source and destination, and sampling of the resolved ones (shadows).
     const VkFormatFeatureFlags kUsosProfundidad =
         VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |

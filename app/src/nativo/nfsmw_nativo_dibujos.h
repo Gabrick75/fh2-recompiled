@@ -29,7 +29,14 @@ struct EntradaShader;
 // Host format of a Xenos color render target format (xenos::ColorRenderTargetFormat); VK_FORMAT_UNDEFINED if
 // not supported. Most Wanted only uses 8_8_8_8 (and its gamma variant); NFS Carbon draws its scene in
 // 2_10_10_10_FLOAT (7e3, also as 16_16_16_16), kept in half floats as Xenia does.
+// fh2_nativo_hdr_32bits: 2_10_10_10_FLOAT render targets (FH2's HDR scene) in B10G11R11_UFLOAT (32 bits) instead of
+// half floats (64): set once at startup by the render target code, if the device supports it.
+inline bool g_hdr_32bits = false;
+
 inline VkFormat FormatoHostDestinoColor(uint32_t formato) {
+  if ((formato == 3 || formato == 12) && g_hdr_32bits) {
+    return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+  }
   switch (formato) {
     case 0:   // k_8_8_8_8
     case 1:   // k_8_8_8_8_GAMMA
