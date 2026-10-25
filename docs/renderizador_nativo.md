@@ -330,6 +330,13 @@ renderizadores, tudo no padrão e tudo no máximo:
   `traco_despejo` do emulado).
 - **Mips do cubo do reflexo (corrigido, `fh2_nativo_mips_cubo`).** O jogo reduz cada face até 1x1 na região de mips
   do fetch, mas o cubo nativo era montado só com o nível base. Agora ele leva os 9 níveis.
+- **Pintura facetada no Adreno com os mips do cubo (corrigido, 2026-10-25).** Na 0.4.1 o S23 mostrava a malha do
+  carro: cada triângulo da carroceria com um tom constante. Com `fh2_nativo_mips_cubo=false` a pintura ficava lisa,
+  e no PC saía lisa com os mips. Ou seja, o nível implícito do `Sample` no cubo era escolhido errado por triângulo
+  no Adreno. Os mips em si estavam certos (faces, orientação e brilho comparados nível a nível nos dumps de
+  `fh2_nativo_diag_volcar_resueltas`). Agora `cube()` guarda as derivadas da direção, e `tfetchCube` calcula o nível
+  com a regra de cubo do Vulkan (derivadas das coordenadas da face principal) e amostra com `SampleLevel`. No PC a
+  imagem é a mesma. Os VS continuam no nível 0. Exige regerar a biblioteca.
 - **Viés de mip do fetch (corrigido, `fh2_nativo_sesgo_mip`).** O jogo pede −0,375 a −3 em texturas que quer
   nítidas, e o sampler nativo ignorava. Agora vai em `mipLodBias` (limitado a `maxSamplerLodBias`), como na
   emulação.
