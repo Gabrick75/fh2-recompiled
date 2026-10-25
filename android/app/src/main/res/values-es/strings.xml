@@ -299,6 +299,7 @@
     <string name="the_processor_and_the_gpu_driver">El procesador y el driver de la GPU.</string>
     <string name="the_report_is_no_longer_there">El informe ya no está disponible. Genera otro.</string>
     <string name="the_save_from_replaces_the_current">El save de %1$s reemplaza al actual. El actual sigue en el respaldo automático de la última vez que se abrió el juego.</string>
+    <string name="the_screen_s_hdr_mode_the_white">El modo HDR de la pantalla. El blanco sigue el brillo de Android, y los realces llegan hasta el pico que la pantalla permite en ese momento. Desactivado por defecto.</string>
     <string name="the_screen_s_hdr_mode_with">El modo HDR de la pantalla, con la imagen del juego en el blanco elegido abajo y los realces por encima. Desactivado por defecto.</string>
     <string name="the_zip_has_no_driver_so">el zip no tiene ninguna .so de driver</string>
     <string name="there_is_no_app_to_save">No hay una app para guardar archivos.</string>

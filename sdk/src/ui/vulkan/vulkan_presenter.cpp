@@ -113,6 +113,25 @@ REXCVAR_DEFINE_INT32(present_hdr_test_pattern, 0, "UI/Presenter",
     .range(0, 3)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+/*
+ * Android 14 and later: relative HDR, the platform's own way. The swapchain is extended sRGB (scRGB), where Android
+ * takes 1.0 as the display's SDR white at the brightness the user has chosen, and values above it as HDR up to the
+ * headroom the app requested (SurfaceView.setDesiredHdrHeadroom, the launcher) and the display grants at the moment
+ * (Display.getHdrSdrRatio, which follows brightness and ambient light). So the paper white follows the brightness
+ * slider and the highlights reach the display's current peak, with nothing to set. Without the extended color space
+ * on the surface, HDR10 as before.
+ */
+REXCVAR_DEFINE_BOOL(present_hdr_relative, false, "UI/Presenter",
+                    "Android 14+: prefer an extended sRGB HDR swapchain whose 1.0 is the display's SDR white "
+                    "(set by the launcher when Android reports an HDR/SDR ratio); highlights reach "
+                    "present_hdr_headroom")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(present_hdr_headroom, 1.0, "UI/Presenter",
+                      "The display's current HDR/SDR ratio (Display.getHdrSdrRatio), updated by the launcher "
+                      "while the game runs: the peak of the highlights on a relative HDR swapchain")
+    .range(1.0, 100.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 // The display's HDR capabilities as Android reports them (Display.getHdrCapabilities), passed by the launcher
 // (GameOptions.arguments) so that the SDK needs no JNI. Pinyon Shift reads them itself.
 REXCVAR_DEFINE_BOOL(present_hdr_display_hdr10, false, "UI/Presenter",
@@ -401,6 +420,8 @@ std::atomic<bool> hdr_output_offered = false;
 std::atomic<bool> hdr_output_active = false;
 // The active HDR swapchain is HDR10 (BT.2020 PQ), not scRGB.
 std::atomic<bool> hdr_output_pq = false;
+// The active HDR swapchain is Android's extended sRGB: 1.0 is the SDR white (present_hdr_relative).
+std::atomic<bool> hdr_output_relative = false;
 // HDR10 through a 10-bit swapchain whose window buffers are marked BT.2020 PQ by hand (Android before 14
 // offers no HDR10 color space to Vulkan).
 std::atomic<bool> hdr_output_pq_dataspace = false;
@@ -2016,9 +2037,26 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
   bool hdr_offered = false;
   bool hdr_pq = false;
   bool hdr_pq_dataspace = false;
+  bool hdr_relative = false;
   if (vulkan_device->vulkan_instance()->extensions().ext_EXT_swapchain_colorspace) {
     const VkSurfaceFormatKHR* hdr_format = nullptr;
+#if REX_PLATFORM_ANDROID
+    // Relative HDR first where the launcher asks for it (present_hdr_relative).
+    if (REXCVAR_GET(present_hdr_relative)) {
+      for (const VkSurfaceFormatKHR& surface_format : surface_formats) {
+        if (surface_format.format == kHdrFormat &&
+            surface_format.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT) {
+          hdr_format = &surface_format;
+          hdr_relative = true;
+          break;
+        }
+      }
+    }
+#endif
     for (const VkSurfaceFormatKHR& surface_format : surface_formats) {
+      if (hdr_relative) {
+        break;
+      }
 #if REX_PLATFORM_ANDROID
       // The float format first: it keeps the stand-in's precision.
       if (surface_format.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT &&
@@ -2062,11 +2100,13 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
   hdr_output_active.store(hdr_out, std::memory_order_relaxed);
   hdr_output_pq.store(hdr_out && hdr_pq, std::memory_order_relaxed);
   hdr_output_pq_dataspace.store(hdr_out && hdr_pq_dataspace, std::memory_order_relaxed);
+  hdr_output_relative.store(hdr_out && hdr_relative, std::memory_order_relaxed);
   {
-    // 0 not logged, 1 SDR, 2 not offered, 3 scRGB, 4 and 5 HDR10.
+    // 0 not logged, 1 SDR, 2 not offered, 3 scRGB, 4 and 5 HDR10, 6 relative.
     static std::atomic<int> logged_hdr_choice = 0;
     const int choice = !REXCVAR_GET(present_hdr) ? 1
                        : !hdr_out               ? 2
+                       : hdr_relative           ? 6
                        : !hdr_pq                ? 3
                        : image_format.format == kHdrFormat ? 4
                                                            : 5;
@@ -2074,7 +2114,9 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
     // Off from the start is not worth a line.
     if (previous != choice && (choice != 1 || previous != 0)) {
       REXLOG_INFO("VulkanPresenter: HDR presentation {}",
-                  choice == 5   ? (hdr_pq_dataspace ? "uses a 10-bit swapchain marked HDR10"
+                  choice == 6   ? "uses an extended sRGB swapchain (relative: 1.0 is the SDR white, highlights "
+                                  "up to the display's HDR/SDR ratio)"
+                  : choice == 5 ? (hdr_pq_dataspace ? "uses a 10-bit swapchain marked HDR10"
                                                     : "uses an HDR10 swapchain (10-bit)")
                   : choice == 4 ? "uses an HDR10 swapchain (16-bit float)"
                   : choice == 3 ? "uses an scRGB swapchain"
@@ -2169,8 +2211,9 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
 #if REX_PLATFORM_ANDROID
   // HDR10 only reaches the panel unrotated: take the display's transform and rotate in the last pass,
   // which alone writes the HDR swapchain. The rest of the presenter keeps the unrotated extent
-  // (image_extent_out).
-  if (hdr_out && hdr_pq &&
+  // (image_extent_out). The relative swapchain too: the compositor's rotation is the same path, and a
+  // pre-rotated buffer is the cheapest one for the display either way.
+  if (hdr_out && (hdr_pq || hdr_relative) &&
       (surface_capabilities.supportedTransforms & surface_capabilities.currentTransform)) {
     const VkExtent2D rotated = {image_extent.height, image_extent.width};
     const bool fits = rotated.width <= max_framebuffer_extent.width &&
@@ -3253,15 +3296,30 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
     dfn.vkCmdPushConstants(draw_command_buffer, hdr_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                            sizeof(hdr_rect_constants), &hdr_rect_constants);
     HdrOutputConstants hdr_constants = {};
+    // Relative (present_hdr_relative): 1.0 is the SDR white wherever the brightness slider is, and the peak is
+    // the display's current HDR/SDR ratio. Absolute (HDR10, scRGB elsewhere): scRGB 1.0 is 80 nits.
+    const bool relative = hdr_output_relative.load(std::memory_order_relaxed);
     const double paper_white_nits = REXCVAR_GET(present_hdr_paper_white_nits);
     const double peak_nits = REXCVAR_GET(present_hdr_display_max_nits) > 0.0
                                  ? REXCVAR_GET(present_hdr_display_max_nits)
                                  : REXCVAR_GET(present_hdr_peak_nits);
-    hdr_constants.paper_white_scale = float(paper_white_nits / 80.0);
+    const double headroom = std::max(REXCVAR_GET(present_hdr_headroom), 1.0);
+    hdr_constants.paper_white_scale = relative ? 1.0f : float(paper_white_nits / 80.0);
+    const double peak_over_white = relative ? headroom : peak_nits / paper_white_nits;
     // SDR white in the scene goes this far from the paper white to the peak.
-    hdr_constants.highlight_scale =
-        float(std::max(peak_nits / paper_white_nits - 1.0, 0.0) *
-              std::clamp(REXCVAR_GET(present_hdr_highlights), 0.0, 1.0));
+    hdr_constants.highlight_scale = float(std::max(peak_over_white - 1.0, 0.0) *
+                                          std::clamp(REXCVAR_GET(present_hdr_highlights), 0.0, 1.0));
+    if (relative) {
+      // The headroom changes with brightness and ambient light: logged when it moves (not every frame).
+      static double logged_headroom = 0.0;
+      static uint32_t headroom_lines = 0;
+      if (std::abs(headroom - logged_headroom) >= 0.25 && headroom_lines < 200) {
+        logged_headroom = headroom;
+        ++headroom_lines;
+        REXLOG_INFO("VulkanPresenter: HDR headroom {:.2f}x the SDR white (highlights up to {:.2f}x)", headroom,
+                    1.0 + hdr_constants.highlight_scale);
+      }
+    }
     // Linear SDR brightness where the expansion starts (0.5 is 73 % in sRGB).
     hdr_constants.knee = 0.5f;
     hdr_constants.knee_range_inv = 1.0f / (1.0f - hdr_constants.knee);
@@ -3272,7 +3330,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
     hdr_constants.compare_x =
         REXCVAR_GET(present_hdr_compare) ? float(paint_context_.swapchain_extent.width / 2) : -1.0f;
     hdr_constants.pattern = uint32_t(std::clamp(REXCVAR_GET(present_hdr_test_pattern), 0, 3));
-    hdr_constants.pattern_value = float(peak_nits / 80.0);
+    hdr_constants.pattern_value = relative ? float(headroom) : float(peak_nits / 80.0);
     hdr_constants.output_flags = (hdr_output_pq.load(std::memory_order_relaxed) ? 1 : 0) |
                                  (hdr_output_rotation.load(std::memory_order_relaxed) << 1);
     hdr_constants.size[0] = float(paint_context_.swapchain_extent.width);
