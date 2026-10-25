@@ -532,12 +532,54 @@ float4 tfetch3D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float
 struct CubeMapData
 {
     float3 cubeMapDirections[2];
+#ifndef FH2_SOMBREADOR_VERTICES
+    // FH2: each direction's screen derivatives, taken by cube() (see tfetchCube).
+    float3 cubeMapDdx[2];
+    float3 cubeMapDdy[2];
+#endif
     uint cubeMapIndex;
 };
 
 float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord, inout CubeMapData cubeMapData)
 {
-    return g_TextureCubeDescriptorHeap[resourceDescriptorIndex].Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], cubeMapData.cubeMapDirections[texCoord.z]);
+    TextureCube<float4> texture = g_TextureCubeDescriptorHeap[resourceDescriptorIndex];
+    uint index = uint(texCoord.z);
+    float3 direction = cubeMapData.cubeMapDirections[index];
+#ifdef FH2_SOMBREADOR_VERTICES
+    return texture.Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], direction);
+#else
+    /*
+     * FH2: the level computed here (Vulkan's cube rule: the derivatives of the major face's coordinates) and
+     * sampled with SampleLevel. With the implicit level of Sample, Adreno (S23) picked a different level of the car
+     * reflection's mips for each triangle of the body, and the paint looked faceted; the PC's drivers were fine.
+     */
+    float3 dx = cubeMapData.cubeMapDdx[index];
+    float3 dy = cubeMapData.cubeMapDdy[index];
+    float3 a = abs(direction);
+    float3 face; // (major axis, the two face coordinates), with their derivatives below
+    float3 faceDx;
+    float3 faceDy;
+    if (a.x >= a.y && a.x >= a.z)
+    {
+        face = direction.xzy; faceDx = dx.xzy; faceDy = dy.xzy;
+    }
+    else if (a.y >= a.z)
+    {
+        face = direction.yxz; faceDx = dx.yxz; faceDy = dy.yxz;
+    }
+    else
+    {
+        face = direction.zxy; faceDx = dx.zxy; faceDy = dy.zxy;
+    }
+    // s = 0.5 * (sc / ma + 1): ds = 0.5 * (dsc * ma - sc * dma) / ma^2.
+    float scale = 0.5 / max(face.x * face.x, 1e-20);
+    float2 stDx = (faceDx.yz * face.x - face.yz * faceDx.x) * scale;
+    float2 stDy = (faceDy.yz * face.x - face.yz * faceDy.x) * scale;
+    uint width, height, levels;
+    texture.GetDimensions(0, width, height, levels);
+    float rho = max(length(stDx), length(stDy)) * float(width);
+    return texture.SampleLevel(g_SamplerDescriptorHeap[samplerDescriptorIndex], direction, log2(max(rho, 1e-20)));
+#endif
 }
 
 float4 tfetchR11G11B10(uint4 value)
@@ -611,6 +653,10 @@ float4 cube(float4 value, inout CubeMapData cubeMapData)
 {
     uint index = cubeMapData.cubeMapIndex;
     cubeMapData.cubeMapDirections[index] = value.xyz;
+#ifndef FH2_SOMBREADOR_VERTICES
+    cubeMapData.cubeMapDdx[index] = ddx(value.xyz);
+    cubeMapData.cubeMapDdy[index] = ddy(value.xyz);
+#endif
     ++cubeMapData.cubeMapIndex;
     
     return float4(0.0, 0.0, 0.0, index);
