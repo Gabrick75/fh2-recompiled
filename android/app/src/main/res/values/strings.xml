@@ -129,6 +129,9 @@
     <string name="hdr">HDR</string>
     <string name="hdr_highlights">Highlights</string>
     <string name="hdr_output">HDR10 output</string>
+    <string name="hdr_peak">Brightness peak</string>
+    <string name="hdr_peak_auto">Auto</string>
+    <string name="hdr_peak_reported">Reported</string>
     <string name="hdr_white">White brightness</string>
     <string name="hidden">HIDDEN</string>
     <string name="hide_the_controls_when_a_gamepad">Hide the controls when a gamepad is used</string>
@@ -136,6 +139,7 @@
     <string name="high_2">High</string>
     <string name="high_smooths_more_edges_the_faint">High smooths more edges, the faint ones too, and softens the image a little.</string>
     <string name="home">Home</string>
+    <string name="how_bright_the_highlights_may_get">How bright the highlights may get, in nits. Many phones report less than their screen shows: Auto uses at least 1000.</string>
     <string name="how_bright_white_menus_and_the">How bright white menus and the HUD are, in nits. With HDR on, Android\'s brightness slider does not change the game: set it here.</string>
     <string name="how_far_objects_cast_shadows_nearly">How far objects cast shadows: nearly all of their cost is there. Far is the game\'s own.</string>
     <string name="how_far_the_scene_s_brightest">How far the scene\'s brightest lights (sun, headlights, reflections) go above the white, up to the screen\'s peak. The HUD stays at the white. Native renderer only.</string>

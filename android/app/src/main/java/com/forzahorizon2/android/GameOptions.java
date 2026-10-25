@@ -34,6 +34,14 @@ final class GameOptions {
     // present_hdr_highlights: how far the scene's white goes from the paper white to the display's peak (the HUD stays)
     static final String HDR_HIGHLIGHTS = "hdr_highlights";
     static final String[] HDR_HIGHLIGHT_LEVELS = {"0", "0.25", "0.5", "1"};  // Pinyon Shift's OFF, LOW, MEDIUM, HIGH
+    /*
+     * The peak the HDR10 output declares and expands to: "auto" (the display's reported peak, at least
+     * HDR_PEAK_AUTO_MIN), "reported" or a number of nits. The S23 Ultra reports 450 nits but its panel shows more: on
+     * 2026-10-25 a declared 1000 made the highlights visibly stronger.
+     */
+    static final String HDR_PEAK = "hdr_peak";
+    static final String[] HDR_PEAKS = {"auto", "reported", "1500"};
+    static final float HDR_PEAK_AUTO_MIN = 1000f;
     // Relative HDR: the headroom the game's surface asks for, as peak / SDR white. Android gives at most what the
     // display can at its current brightness (the presenter follows that, GameActivity.startRelativeHdr); 8 lets a
     // panel like the S23 Ultra's (about 1750 nits at its HDR peak) reach it from an ordinary indoor brightness.
@@ -134,6 +142,7 @@ final class GameOptions {
             case PRESENT_MODE: return "fifo";
             case HDR_PAPER_WHITE: return "200";  // Pinyon Shift's default
             case HDR_HIGHLIGHTS: return "0.5";
+            case HDR_PEAK: return "auto";
             case RENDER_SCALE: return "100";
             case FPS: return "30";  // the Xbox 360's
             // Off: the GPU cost of the game's MSAA 4x nearly halves the frame rate on a phone (event menu on the
@@ -374,6 +383,15 @@ final class GameOptions {
             if (nits.equals(value)) return nits;
         }
         return defaultOf(HDR_PAPER_WHITE);
+    }
+
+    /** The peak to declare in nits (HDR_PEAK) from the display's reported one. */
+    static float hdrPeakNits(Context context, float reported) {
+        switch (get(context, HDR_PEAK)) {
+            case "reported": return reported;
+            case "1500": return 1500f;
+            default: return Math.max(reported, HDR_PEAK_AUTO_MIN);  // auto
+        }
     }
 
     /** The highlight level, one of HDR_HIGHLIGHT_LEVELS (the default when the stored one is not). */
@@ -620,8 +638,10 @@ final class GameOptions {
             // Native renderer only: it marks the HUD (nfsmw_nativo_destinos.cpp); the emulated GPU's output stays opaque.
             args.add("--present_hdr_highlights=" + hdrHighlights(context));
             args.add("--present_hdr_display_hdr10=true");
-            args.add("--present_hdr_display_max_nits=" + hdr[0]);
-            args.add("--present_hdr_display_max_average_nits=" + hdr[1]);
+            // The declared peak (HDR_PEAK) and, when it is raised, a frame average in the same proportion.
+            float peak = hdrPeakNits(context, hdr[0]);
+            args.add("--present_hdr_display_max_nits=" + peak);
+            args.add("--present_hdr_display_max_average_nits=" + (hdr[0] > 0f ? hdr[1] * peak / hdr[0] : peak / 2f));
             args.add("--present_hdr_display_min_nits=" + hdr[2]);
             if (hdrRelative(context)) {
                 // The white follows the brightness slider and the peak the display's ratio (updated while running).

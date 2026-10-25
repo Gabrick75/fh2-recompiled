@@ -1243,7 +1243,15 @@ public final class MainActivity extends AppCompatActivity {
                                 tr(R.string.how_far_the_scene_s_brightest),
                                 new String[] {tr(R.string.off_masculine), tr(R.string.low), tr(R.string.medium),
                                         tr(R.string.high)},
-                                GameOptions.HDR_HIGHLIGHT_LEVELS)) : null,
+                                GameOptions.HDR_HIGHLIGHT_LEVELS),
+                        // HDR10's declared peak; the relative mode takes the display's own headroom instead.
+                        hdrRelative ? null : ui.choiceRow(GameOptions.HDR_PEAK, tr(R.string.hdr_peak),
+                                tr(R.string.how_bright_the_highlights_may_get),
+                                new String[] {tr(R.string.hdr_peak_auto),
+                                        tr(R.string.hdr_peak_reported) + " (" +
+                                                Math.round(GameOptions.hdrCapabilities(this)[0]) + ")",
+                                        "1500"},
+                                GameOptions.HDR_PEAKS)) : null,
                 ui.header(tr(R.string.overlay)),
                 ui.group(ui.toggleRow(tr(R.string.show_fps),
                                 tr(R.string.a_counter_in_the_corner_frames),

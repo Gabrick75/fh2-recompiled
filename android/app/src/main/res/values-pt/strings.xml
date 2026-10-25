@@ -127,6 +127,9 @@
     <string name="hdr">HDR</string>
     <string name="hdr_highlights">Realces</string>
     <string name="hdr_output">Saída HDR10</string>
+    <string name="hdr_peak">Pico de brilho</string>
+    <string name="hdr_peak_auto">Auto</string>
+    <string name="hdr_peak_reported">Informado</string>
     <string name="hdr_white">Brilho do branco</string>
     <string name="hidden">OCULTO</string>
     <string name="hide_the_controls_when_a_gamepad">Ocultar os controles ao usar um controle físico</string>
@@ -134,6 +137,7 @@
     <string name="high_2">Alta</string>
     <string name="high_smooths_more_edges_the_faint">Alta suaviza mais bordas, inclusive as fracas, e deixa a imagem um pouco mais suave.</string>
     <string name="home">Início</string>
+    <string name="how_bright_the_highlights_may_get">Até quantos nits os realces podem chegar. Muitos celulares informam menos do que a tela mostra: Auto usa pelo menos 1000.</string>
     <string name="how_bright_white_menus_and_the">Quão claros ficam os menus e o HUD brancos, em nits. Com HDR ligado, o brilho do Android não muda o jogo: ajuste aqui.</string>
     <string name="how_far_objects_cast_shadows_nearly">Até onde os objetos projetam sombra: é aí que está quase todo o custo delas. Longe é como o jogo.</string>
     <string name="how_far_the_scene_s_brightest">Quanto as luzes mais fortes da cena (sol, faróis, reflexos) passam do branco, até o pico da tela. O HUD fica no branco. Só no renderizador nativo.</string>
