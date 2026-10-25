@@ -34,6 +34,9 @@ layout(push_constant) uniform HdrOutputConstants {
   // to rotated stand-in pixels.
   uint output_flags;
   vec2 size;  // The stand-in's (unrotated) size, for the patterns.
+  // The expansion follows t^curve from the knee: below 2, light that is
+  // bright but not white (FH2's headlights, ~75 % linear) gets most of it.
+  float curve;
 } constants;
 
 const uint kOutputPq = 1u;
@@ -173,7 +176,7 @@ void main() {
   float t = clamp((brightness - constants.knee) * constants.knee_range_inv, 0.0, 1.0);
   // Smooth from the knee, reaching the peak at SDR white. Scaling all three
   // channels together keeps the hue.
-  float boost = 1.0 + constants.highlight_scale * t * t * (1.0 - ui);
+  float boost = 1.0 + constants.highlight_scale * pow(t, constants.curve) * (1.0 - ui);
   vec3 color = linear * (constants.paper_white_scale * boost);
   if (constants.pattern != kPatternNone) {
     // The pattern replaces the image; the menu stays on top of it.

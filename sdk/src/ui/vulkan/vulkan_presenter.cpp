@@ -96,6 +96,22 @@ REXCVAR_DEFINE_DOUBLE(present_hdr_highlights, 0.5, "UI/Presenter",
     .range(0.0, 1.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+/*
+ * Where the highlights start and how fast they grow. Pinyon Shift starts at linear 0.5 (73 % in sRGB) with t^2,
+ * tuned for FH1 on a 1000-nit TV; on the S23 Ultra (2026-10-24) FH2's headlights, bright but not white (~75 %
+ * linear), got only 26 % of the expansion and looked unchanged while pure white grew. From 0.18 (46 % in sRGB)
+ * with t^1.5 they get 59 %, and mid-tones such as the sky (~32 % linear) about 7 %.
+ */
+REXCVAR_DEFINE_DOUBLE(present_hdr_knee, 0.18, "UI/Presenter",
+                      "Linear SDR brightness where the HDR highlight expansion starts (0 to 0.95)")
+    .range(0.0, 0.95)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(present_hdr_curve, 1.5, "UI/Presenter",
+                      "Exponent of the HDR highlight expansion from the knee: lower reaches less-than-white "
+                      "lights sooner")
+    .range(0.5, 4.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_DOUBLE(present_hdr_gamma, 2.2, "UI/Presenter",
                       "Decode the SDR image for an HDR swapchain with this gamma, as an SDR display does; 0 "
                       "decodes piecewise sRGB, whose linear toe lifts the blacks")
@@ -412,8 +428,9 @@ struct HdrOutputConstants {
   float pattern_value;
   uint32_t output_flags;
   float size[2];
+  float curve;
 };
-static_assert(sizeof(HdrOutputConstants) == 48);
+static_assert(sizeof(HdrOutputConstants) == 52);
 
 // From the latest swapchain (GetHdrOutputState).
 std::atomic<bool> hdr_output_offered = false;
@@ -3320,9 +3337,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
                     1.0 + hdr_constants.highlight_scale);
       }
     }
-    // Linear SDR brightness where the expansion starts (0.5 is 73 % in sRGB).
-    hdr_constants.knee = 0.5f;
+    // Linear SDR brightness where the expansion starts, and its curve (present_hdr_knee, present_hdr_curve).
+    hdr_constants.knee = float(std::clamp(REXCVAR_GET(present_hdr_knee), 0.0, 0.95));
     hdr_constants.knee_range_inv = 1.0f / (1.0f - hdr_constants.knee);
+    hdr_constants.curve = float(std::clamp(REXCVAR_GET(present_hdr_curve), 0.5, 4.0));
     hdr_constants.gamma = float(REXCVAR_GET(present_hdr_gamma));
     // Mostly the largest channel: a red brake light (luminance 0.21) expands nearly as a white one;
     // deep colored surfaces stay below the knee.
