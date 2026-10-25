@@ -23,7 +23,8 @@ import java.util.List;
 
 /**
  * The on-screen gamepad: a full Xbox 360 pad (both sticks, triggers, bumpers, D-pad, A/B/X/Y, Back and Start)
- * that the player can rearrange.
+ * that the player can rearrange. Steering can also be two arrows instead of the left stick, as in other racing
+ * games on phones: holding one turns the wheel towards its lock over a moment, so a tap is a small correction.
  *
  * Positions are stored as fractions of the view (centre x of the width, centre y of the height) and sizes as a
  * fraction of the height, so a layout keeps its shape on any screen. The state goes to the SDK's touch pad
@@ -35,9 +36,12 @@ public final class TouchControlsView extends View {
     static final int START = 0x0010, BACK = 0x0020, LTHUMB = 0x0040, RTHUMB = 0x0080;
     static final int LB = 0x0100, RB = 0x0200, A = 0x1000, B = 0x2000, X = 0x4000, Y = 0x8000;
 
-    private static final int BUTTON = 0, STICK = 1, DPAD = 2, PEDAL = 3, MENU = 4;
+    private static final int BUTTON = 0, STICK = 1, DPAD = 2, PEDAL = 3, MENU = 4, ARROW = 5;
     private static final int TRIGGER_NONE = 0, TRIGGER_LEFT = 1, TRIGGER_RIGHT = 2;
     private static final String PREFS = "fh2_controls";
+    // Steering arrows: seconds from the centre to full lock while held, and from full lock back to the centre
+    // once let go (faster, like a wheel that straightens itself).
+    private static final float ARROW_RAMP_SECONDS = .25f, ARROW_RETURN_SECONDS = .1f;
 
     static native void nativeSetTouchState(int buttons, int leftX, int leftY, int rightX, int rightY,
                                            int leftTrigger, int rightTrigger);
@@ -113,6 +117,8 @@ public final class TouchControlsView extends View {
     boolean haptics = true;
     boolean tiltSteering = false;
     float tiltSensitivity = 1.0f;   // 1 = full lock at 30 degrees
+    boolean steeringArrows = false;
+    float arrowLock = 1.0f;         // how far the arrows turn the wheel, 1 = full lock
     boolean hideWithGamepad = true;
     boolean stretch = true;
 
@@ -124,6 +130,10 @@ public final class TouchControlsView extends View {
     private float dragDX, dragDY;
     private float pinchStart, sizeAtPinch;
     private float tilt;             // -1..1 from the gravity sensor
+    private float arrowSteer;       // -1..1 where the arrows have turned the wheel so far
+    private long arrowStepNanos;
+    private boolean arrowStepping;
+    private final Runnable arrowStep = this::stepArrows;
     private int lastButtons = -1, lastLX, lastLY, lastRX, lastRY, lastLT = -1, lastRT = -1;
 
     public TouchControlsView(Context context) {
@@ -150,6 +160,8 @@ public final class TouchControlsView extends View {
         final int grey = 0xFF2A3440;
         // Left hand: steering stick, D-pad, LB.
         add(new Control("ls", STICK, "", "", 0, TRIGGER_NONE, grey, .15f, .70f, .40f, true));
+        add(new Control("steer_left", ARROW, "", "", 0, TRIGGER_NONE, grey, .07f, .72f, .24f, true));
+        add(new Control("steer_right", ARROW, "", "", 0, TRIGGER_NONE, grey, .23f, .72f, .24f, true));
         add(new Control("dpad", DPAD, "", "", 0, TRIGGER_NONE, grey, .10f, .30f, .27f, true));
         add(new Control("lb", BUTTON, "LB", "", LB, TRIGGER_NONE, grey, .07f, .09f, .13f, true));
         // Right hand: pedals, A/B/X/Y diamond, RB.
@@ -179,6 +191,8 @@ public final class TouchControlsView extends View {
         haptics = prefs.getBoolean("haptics", haptics);
         tiltSteering = prefs.getBoolean("tilt", tiltSteering);
         tiltSensitivity = prefs.getFloat("tilt_sensitivity", tiltSensitivity);
+        steeringArrows = prefs.getBoolean("steering_arrows", steeringArrows);
+        arrowLock = prefs.getFloat("arrow_lock", arrowLock);
         hideWithGamepad = prefs.getBoolean("hide_with_gamepad", hideWithGamepad);
         stretch = prefs.getBoolean("stretch", stretch);
         String json = prefs.getString("layout", null);
@@ -218,6 +232,8 @@ public final class TouchControlsView extends View {
                 .putBoolean("haptics", haptics)
                 .putBoolean("tilt", tiltSteering)
                 .putFloat("tilt_sensitivity", tiltSensitivity)
+                .putBoolean("steering_arrows", steeringArrows)
+                .putFloat("arrow_lock", arrowLock)
                 .putBoolean("hide_with_gamepad", hideWithGamepad)
                 .putBoolean("stretch", stretch)
                 .apply();
@@ -263,6 +279,26 @@ public final class TouchControlsView extends View {
             selected.size = clamp(selected.size * factor, .06f, .8f);
             invalidate();
         }
+    }
+
+    /** Steering with the two arrows instead of the left stick: only the controls of one way are on screen. */
+    void setSteeringArrows(boolean on) {
+        if (steeringArrows == on) {
+            return;
+        }
+        steeringArrows = on;
+        if (selected != null && !inMode(selected)) {
+            selected = null;
+        }
+        releaseAll();
+    }
+
+    /** Whether the control belongs to the steering the player chose: the left stick or the arrows. */
+    private boolean inMode(Control c) {
+        if (c.type == ARROW) {
+            return steeringArrows;
+        }
+        return !(steeringArrows && c.id.equals("ls"));
     }
 
     void toggleSelectedVisible() {
@@ -371,7 +407,7 @@ public final class TouchControlsView extends View {
         }
         final int liftedIndex = (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_POINTER_UP)
                 ? event.getActionIndex() : -1;
-        final int buttonsBefore = buttonState();
+        final int buttonsBefore = buttonState() | arrowBits();
 
         final int width = getWidth();
         final int height = getHeight();
@@ -436,11 +472,14 @@ public final class TouchControlsView extends View {
             setEditing(true);
             return true;
         }
-        final int buttonsAfter = buttonState();
+        final int buttonsAfter = buttonState() | arrowBits();
         if (haptics && (buttonsAfter & ~buttonsBefore) != 0) {
             performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
         }
         send();
+        if (arrowSteer != arrowTarget()) {
+            scheduleArrows();
+        }
         return true;
     }
 
@@ -529,7 +568,8 @@ public final class TouchControlsView extends View {
         final float w = getWidth();
         final float h = getHeight();
         for (Control c : controls) {
-            if ((!c.visible && !includeHidden) || !contains(c, px, py, c.type == STICK ? 1.15f : 1.08f, w, h)) {
+            if (!inMode(c) || (!c.visible && !includeHidden) ||
+                    !contains(c, px, py, c.type == STICK ? 1.15f : 1.08f, w, h)) {
                 continue;
             }
             float cx = c.x * w, cy = c.y * h;
@@ -570,6 +610,9 @@ public final class TouchControlsView extends View {
             c.pointer = -1;
             c.knobX = c.knobY = 0f;
         }
+        arrowSteer = 0f;
+        removeCallbacks(arrowStep);
+        arrowStepping = false;
         send();
         invalidate();
     }
@@ -586,12 +629,65 @@ public final class TouchControlsView extends View {
         return buttons;
     }
 
+    /** The arrows held, as bits above the XInput buttons (for the haptic feedback of a new press). */
+    private int arrowBits() {
+        int bits = 0;
+        for (Control c : controls) {
+            if (c.type == ARROW && c.pressed) {
+                bits |= c.id.equals("steer_left") ? 0x10000 : 0x20000;
+            }
+        }
+        return bits;
+    }
+
+    /** Where the arrows held want the wheel: towards a lock, or the centre for none or both. */
+    private float arrowTarget() {
+        if (!steeringArrows || editing || hidden()) {
+            return 0f;
+        }
+        float target = 0f;
+        for (Control c : controls) {
+            if (c.type == ARROW && c.pressed) {
+                target += c.id.equals("steer_left") ? -arrowLock : arrowLock;
+            }
+        }
+        return target;
+    }
+
+    private void scheduleArrows() {
+        if (!arrowStepping) {
+            arrowStepping = true;
+            arrowStepNanos = System.nanoTime();
+            postOnAnimation(arrowStep);
+        }
+    }
+
+    /** One frame of the arrows turning the wheel towards where they want it. */
+    private void stepArrows() {
+        arrowStepping = false;
+        long now = System.nanoTime();
+        float dt = Math.min((now - arrowStepNanos) / 1e9f, .05f);
+        float target = arrowTarget();
+        // Out towards a lock at the ramp's pace; back towards the centre, or across it, at the faster one.
+        boolean outward = target != 0f && Math.signum(target) != -Math.signum(arrowSteer) &&
+                Math.abs(target) > Math.abs(arrowSteer);
+        float step = dt / (outward ? ARROW_RAMP_SECONDS : ARROW_RETURN_SECONDS);
+        arrowSteer = arrowSteer < target ? Math.min(arrowSteer + step, target) : Math.max(arrowSteer - step, target);
+        send();
+        if (arrowSteer != target) {
+            arrowStepping = true;
+            arrowStepNanos = now;
+            postOnAnimation(arrowStep);
+        }
+    }
+
     /** Sends the pad to the game if it changed, and redraws. */
     private void send() {
         boolean active = !editing && !hidden();
         int buttons = active ? buttonState() : 0;
         int lx = 0, ly = 0, rx = 0, ry = 0, lt = 0, rt = 0;
         boolean steeringHeld = false;
+        boolean arrowsSteering = false;
         if (active) {
             for (Control c : controls) {
                 if (c.type == STICK && c.id.equals("ls")) {
@@ -606,8 +702,13 @@ public final class TouchControlsView extends View {
                     else rt = 255;
                 }
             }
+            // The arrows steer while held and until the wheel is back in the centre.
+            if (steeringArrows && (arrowTarget() != 0f || arrowSteer != 0f)) {
+                lx = axis(arrowSteer);
+                arrowsSteering = true;
+            }
             // Touch steering wins while held; releasing it resumes tilt steering.
-            if (tiltSteering && !steeringHeld) {
+            if (tiltSteering && !steeringHeld && !arrowsSteering) {
                 lx = axis(clamp(tilt * tiltSensitivity, -1f, 1f));
             }
         }
@@ -648,7 +749,7 @@ public final class TouchControlsView extends View {
             canvas.drawColor(0x66000000);
         }
         for (Control c : controls) {
-            if (!c.visible && !editing) {
+            if (!inMode(c) || (!c.visible && !editing)) {
                 continue;
             }
             float alpha = c.visible ? (editing ? 1f : opacity) : .35f;
@@ -705,6 +806,27 @@ public final class TouchControlsView extends View {
                 drawArrow(canvas, cx, cy + r * .6f, arm, 180, (c.dpad & DPAD_DOWN) != 0, a);
                 drawArrow(canvas, cx - r * .6f, cy, arm, 270, (c.dpad & DPAD_LEFT) != 0, a);
                 drawArrow(canvas, cx + r * .6f, cy, arm, 90, (c.dpad & DPAD_RIGHT) != 0, a);
+                break;
+            }
+            case ARROW: {
+                boolean left = c.id.equals("steer_left");
+                fill.setColor(withAlpha(0xFF000000, a * 80 / 255));
+                canvas.drawCircle(cx, cy + r * .06f, r * 1.02f, fill);
+                fill.setColor(withAlpha(c.pressed ? 0xFFFF9A32 : 0xFF18232E, a * 190 / 255));
+                canvas.drawCircle(cx, cy, r, fill);
+                stroke.setStrokeWidth(Math.max(2.5f, r * .06f));
+                stroke.setColor(withAlpha(c.pressed ? 0xFFFFD18A : 0xFFEAF2FA, a * 230 / 255));
+                canvas.drawCircle(cx, cy, r - stroke.getStrokeWidth() * .5f, stroke);
+                // The triangle sits a little behind its tip once turned sideways: nudged towards the tip.
+                drawArrow(canvas, cx + (left ? -r * .07f : r * .07f), cy, r * .95f, left ? 270 : 90, c.pressed, a);
+                // How far the wheel is turned towards this side, as a ring around the arrow.
+                float turned = left ? -arrowSteer : arrowSteer;
+                if (!editing && turned > 0f) {
+                    float inset = stroke.getStrokeWidth() * 1.5f;
+                    rect.set(cx - r + inset, cy - r + inset, cx + r - inset, cy + r - inset);
+                    stroke.setColor(withAlpha(0xFFFFFFFF, a * 240 / 255));
+                    canvas.drawArc(rect, 270f, (left ? -360f : 360f) * Math.min(turned, 1f), false, stroke);
+                }
                 break;
             }
             case PEDAL: {

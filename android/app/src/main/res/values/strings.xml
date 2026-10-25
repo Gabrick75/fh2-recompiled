@@ -312,6 +312,8 @@
     <string name="this_menu_and_the_touch_controls">This menu and the touch controls panel.</string>
     <string name="this_phone_s_gpu_lacks_a">⚠ This device\'s GPU lacks a feature the emulated renderer needs: with it the game does not start. Use the native renderer.</string>
     <string name="tilt_sensitivity">Tilt sensitivity</string>
+    <string name="steer_with_arrows">Steer with two arrows instead of the stick</string>
+    <string name="arrow_steering_strength">Arrow steering strength</string>
     <string name="to_jogos">To jogos/</string>
     <string name="to_use_internal_storage_allow_the">To find the game, the app needs access to your files: tap Use the game ISO or Choose the game folder below, and Android will ask for it.</string>
     <string name="turned_off_it_breaks_the_game">Turned off, it breaks the game: only the bottom band of the screen shows, with black and grey bands above.</string>

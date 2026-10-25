@@ -310,6 +310,8 @@
     <string name="this_menu_and_the_touch_controls">Este menu e o painel dos controles de toque.</string>
     <string name="this_phone_s_gpu_lacks_a">⚠ A GPU deste aparelho não tem um recurso que o renderizador emulado exige: com ele o jogo não abre. Use o renderizador nativo.</string>
     <string name="tilt_sensitivity">Sensibilidade da inclinação</string>
+    <string name="steer_with_arrows">Direção com duas setas no lugar do analógico</string>
+    <string name="arrow_steering_strength">Força da direção nas setas</string>
     <string name="to_jogos">Para jogos/</string>
     <string name="to_use_internal_storage_allow_the">Para achar o jogo, o app precisa de acesso aos seus arquivos: toque em Usar a ISO do jogo ou em Escolher pasta do jogo, abaixo, e o Android vai pedir a permissão.</string>
     <string name="turned_off_it_breaks_the_game">Desligada, quebra o jogo: só a faixa de baixo da tela aparece, com faixas preta e cinza em cima.</string>

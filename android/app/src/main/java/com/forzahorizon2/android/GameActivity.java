@@ -960,6 +960,10 @@ public final class GameActivity extends SDLActivity
         }));
         panel.addView(slider(tr(R.string.tilt_sensitivity), 50, 250,
                 Math.round(controls.tiltSensitivity * 100), v -> controls.tiltSensitivity = v / 100f));
+        panel.addView(toggle(tr(R.string.steer_with_arrows), controls.steeringArrows,
+                on -> controls.setSteeringArrows(on)));
+        panel.addView(slider(tr(R.string.arrow_steering_strength), 40, 100,
+                Math.round(controls.arrowLock * 100), v -> controls.arrowLock = v / 100f));
         panel.addView(slider(tr(R.string.controls_opacity), 15, 100,
                 Math.round(controls.opacity * 100), v -> {
                     controls.opacity = v / 100f;
