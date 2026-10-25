@@ -239,6 +239,24 @@ final class GameOptions {
         context.getSharedPreferences("fh2_controls", Context.MODE_PRIVATE).edit().putBoolean("stretch", value).apply();
     }
 
+    // The steering arrows also live with the touch controls; the launcher sets them before the game reads them.
+    static boolean steeringArrows(Context context) {
+        return context.getSharedPreferences("fh2_controls", Context.MODE_PRIVATE).getBoolean("steering_arrows", false);
+    }
+
+    static void steeringArrows(Context context, boolean value) {
+        context.getSharedPreferences("fh2_controls", Context.MODE_PRIVATE).edit()
+                .putBoolean("steering_arrows", value).apply();
+    }
+
+    static float arrowLock(Context context) {
+        return context.getSharedPreferences("fh2_controls", Context.MODE_PRIVATE).getFloat("arrow_lock", 1f);
+    }
+
+    static void arrowLock(Context context, float value) {
+        context.getSharedPreferences("fh2_controls", Context.MODE_PRIVATE).edit().putFloat("arrow_lock", value).apply();
+    }
+
     /** Width x height of the presented buffer, or {0, 0} for the view's own size. */
     static int[] bufferSize(String resolution) {
         if (RES_480P.equals(resolution)) return new int[] {720, 480};

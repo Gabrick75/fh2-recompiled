@@ -312,6 +312,9 @@
     <string name="tilt_sensitivity">Sensibilidad de la inclinación</string>
     <string name="steer_with_arrows">Dirección con dos flechas en lugar del stick</string>
     <string name="arrow_steering_strength">Fuerza de la dirección con flechas</string>
+    <string name="two_arrows_on_the_left_instead">Dos flechas a la izquierda de la pantalla en lugar del stick, como en otros juegos de carreras. Mantener una gira el volante poco a poco.</string>
+    <string name="how_far_the_arrows_turn_the_wheel">Cuánto giran el volante las flechas, como máximo.</string>
+    <string name="touch_controls">Controles táctiles</string>
     <string name="to_jogos">A jogos/</string>
     <string name="to_use_internal_storage_allow_the">Para encontrar el juego, la app necesita acceso a tus archivos: toca Usar la ISO del juego o Elegir la carpeta del juego, abajo, y Android pedirá el permiso.</string>
     <string name="turned_off_it_breaks_the_game">Desactivada, rompe el juego: solo aparece la franja inferior de la pantalla, con franjas negras y grises encima.</string>
