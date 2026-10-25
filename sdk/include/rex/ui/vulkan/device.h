@@ -223,6 +223,8 @@ class VulkanDevice {
     bool ext_1_3_KHR_dynamic_rendering = false;  // #55
     // NFSMW native renderer (dynamic blending and color write masks).
     bool ext_EXT_extended_dynamic_state3 = false;  // #456
+    // The mastering levels of an HDR10 swapchain (present_hdr).
+    bool ext_EXT_hdr_metadata = false;  // #106
   };
 
   const Extensions& extensions() const { return extensions_; }
@@ -244,6 +246,8 @@ class VulkanDevice {
 #include <rex/ui/vulkan/functions/device_1_3_khr_maintenance4.inc>
     // VK_KHR_dynamic_rendering (#55, promoted to 1.3)
 #include <rex/ui/vulkan/functions/device_1_3_khr_dynamic_rendering.inc>
+    // VK_EXT_hdr_metadata (#106)
+#include <rex/ui/vulkan/functions/device_ext_hdr_metadata.inc>
 #undef XE_UI_VULKAN_FUNCTION_PROMOTED
 #undef XE_UI_VULKAN_FUNCTION
   };

@@ -15,6 +15,7 @@ Public License v3.0 (see [LICENSE](LICENSE)).
 | [NFS-CARBON-360-ANDROID-RECOMP](https://github.com/codepdbh/NFS-CARBON-360-ANDROID-RECOMP) | codepdbh | The way the native renderer is built for another game (`NFSC_RECOMP`, game hooks and links) followed by `FH2_RECOMP`, and its NFS Carbon translator changes | GPL-3.0 |
 | [XenosRecomp](https://github.com/hedge-dev/XenosRecomp) | hedge-dev and contributors | The shader translator in `tools/xenos/recomp` | MIT ([tools/xenos/recomp/LICENSE.md](tools/xenos/recomp/LICENSE.md)) |
 | [NFSMW-Recompiled-Mobile](https://github.com/victorgbd/NFSMW-Recompiled-Mobile) | victorgbd | Performance changes ported to this project: MSAA cap, futex wait for the command ring, FPS counter, launcher menu layout | GPL-3.0 |
+| [ShiftGlue SDK](https://github.com/arcanite24/shiftglue-sdk), the ReXGlue SDK fork of [Pinyon Shift](https://github.com/arcanite24/pinyon-shift) | arcanite24 and the Pinyon Shift contributors | The HDR output of the presenter (`present_hdr` in `sdk/src/ui/vulkan/vulkan_presenter.cpp`, `sdk/src/ui/shaders/hdr_output.ps.glsl`) | BSD-3-Clause |
 
 Changes made by this project to files under `sdk/` are distributed under the SDK's BSD-3-Clause license, so
 they can be reused by other projects built on the ReXGlue SDK.

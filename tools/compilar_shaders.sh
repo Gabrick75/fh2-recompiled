@@ -20,3 +20,17 @@ for src in "$SHADERS"/atalho_conversao.cs.glsl; do
   } > "$out"
   echo "$out"
 done
+# The presenter's own fragment shaders (sdk/src/ui/vulkan/vulkan_presenter.cpp).
+UI_SHADERS=$RAIZ/sdk/src/ui/shaders
+for src in "$UI_SHADERS"/hdr_output.ps.glsl; do
+  name=$(basename "$src" .ps.glsl)_ps
+  out=$UI_SHADERS/vulkan_spirv/$name.h
+  {
+    echo "// Generated with tools/compilar_shaders.sh from $(basename "$src")."
+    echo "const uint32_t $name[] = {"
+    "$GLSLC" -fshader-stage=fragment --target-env=vulkan1.0 -O -mfmt=num -o - "$src" | tr -d '\n ' |
+        tr ',' '\n' | grep . | paste -d, - - - - - - - - | sed 's/,*$//; s/^/    /; s/$/,/'
+    echo "};"
+  } > "$out"
+  echo "$out"
+done
