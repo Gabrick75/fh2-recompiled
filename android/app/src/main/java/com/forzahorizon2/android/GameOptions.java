@@ -31,6 +31,9 @@ final class GameOptions {
     static final String HDR = "hdr";
     static final String HDR_PAPER_WHITE = "hdr_paper_white";  // present_hdr_paper_white_nits: the HUD's and menus' white
     static final String[] HDR_PAPER_WHITES = {"100", "150", "200", "250", "300", "400"};
+    // present_hdr_highlights: how far the scene's white goes from the paper white to the display's peak (the HUD stays)
+    static final String HDR_HIGHLIGHTS = "hdr_highlights";
+    static final String[] HDR_HIGHLIGHT_LEVELS = {"0", "0.25", "0.5", "1"};  // Pinyon Shift's OFF, LOW, MEDIUM, HIGH
     // Graphics
     static final String RENDERER = "renderer";                // "emulated" (Xenos) or "native" (nfsmw_renderizador)
     static final String RENDER_SCALE = "render_scale";        // gpu_escala_render: percent of 1280x720
@@ -126,6 +129,7 @@ final class GameOptions {
             case RENDERER: return "native";
             case PRESENT_MODE: return "fifo";
             case HDR_PAPER_WHITE: return "200";  // Pinyon Shift's default
+            case HDR_HIGHLIGHTS: return "0.5";
             case RENDER_SCALE: return "100";
             case FPS: return "30";  // the Xbox 360's
             // Off: the GPU cost of the game's MSAA 4x nearly halves the frame rate on a phone (event menu on the
@@ -344,6 +348,15 @@ final class GameOptions {
             if (nits.equals(value)) return nits;
         }
         return defaultOf(HDR_PAPER_WHITE);
+    }
+
+    /** The highlight level, one of HDR_HIGHLIGHT_LEVELS (the default when the stored one is not). */
+    static String hdrHighlights(Context context) {
+        String value = get(context, HDR_HIGHLIGHTS);
+        for (String level : HDR_HIGHLIGHT_LEVELS) {
+            if (level.equals(value)) return level;
+        }
+        return defaultOf(HDR_HIGHLIGHTS);
     }
 
     static boolean nativeRenderer(Context context) {
@@ -578,6 +591,8 @@ final class GameOptions {
         if (hdr != null && flag(context, HDR)) {
             args.add("--present_hdr=true");
             args.add("--present_hdr_paper_white_nits=" + hdrPaperWhite(context));
+            // Native renderer only: it marks the HUD (nfsmw_nativo_destinos.cpp); the emulated GPU's output stays opaque.
+            args.add("--present_hdr_highlights=" + hdrHighlights(context));
             args.add("--present_hdr_display_hdr10=true");
             args.add("--present_hdr_display_max_nits=" + hdr[0]);
             args.add("--present_hdr_display_max_average_nits=" + hdr[1]);

@@ -20,11 +20,18 @@ for src in "$SHADERS"/atalho_conversao.cs.glsl; do
   } > "$out"
   echo "$out"
 done
-# The presenter's own fragment shaders (sdk/src/ui/vulkan/vulkan_presenter.cpp).
+# The presenter's own fragment shaders (sdk/src/ui/vulkan/vulkan_presenter.cpp) and the native renderer's
+# (app/src/nativo/nfsmw_nativo_destinos.cpp), each header next to its source's vulkan_spirv folder or, for the
+# native renderer, its own folder.
 UI_SHADERS=$RAIZ/sdk/src/ui/shaders
-for src in "$UI_SHADERS"/hdr_output.ps.glsl; do
+NATIVO_SHADERS=$RAIZ/app/src/nativo/shaders
+for src in "$UI_SHADERS"/hdr_output.ps.glsl "$UI_SHADERS"/hdr_ui_mask.ps.glsl \
+           "$NATIVO_SHADERS"/fh2_hdr_mascara_hud.ps.glsl; do
   name=$(basename "$src" .ps.glsl)_ps
-  out=$UI_SHADERS/vulkan_spirv/$name.h
+  case "$src" in
+    "$NATIVO_SHADERS"/*) out=$NATIVO_SHADERS/$name.h ;;
+    *) out=$UI_SHADERS/vulkan_spirv/$name.h ;;
+  esac
   {
     echo "// Generated with tools/compilar_shaders.sh from $(basename "$src")."
     echo "const uint32_t $name[] = {"

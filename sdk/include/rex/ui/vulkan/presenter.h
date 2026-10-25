@@ -64,6 +64,10 @@ class VulkanUIDrawContext final : public UIDrawContext {
 struct HdrOutputState {
   bool offered = false;
   bool active = false;
+  // Active with present_hdr_highlights above 0: the guest output's alpha
+  // should say where the game's HUD is (1) and where the scene is (0), so that
+  // only the scene is expanded. The refresher leaves it opaque otherwise.
+  bool hud_mask = false;
 };
 HdrOutputState GetHdrOutputState();
 
@@ -532,6 +536,9 @@ class VulkanPresenter final : public Presenter {
     VkRenderPass hdr_render_pass = VK_NULL_HANDLE;
     VkFormat hdr_render_pass_format = VK_FORMAT_UNDEFINED;
     VkPipeline hdr_pipeline = VK_NULL_HANDLE;
+    // Replaces the alpha of the painted guest output with the guest output's
+    // HUD coverage, in swapchain_render_pass (always kHdrStandInFormat).
+    VkPipeline hdr_ui_mask_pipeline = VK_NULL_HANDLE;
     VkDescriptorPool hdr_descriptor_pool = VK_NULL_HANDLE;
 
     VkSurfaceKHR vulkan_surface = VK_NULL_HANDLE;
@@ -577,7 +584,9 @@ class VulkanPresenter final : public Presenter {
   // layout is given.
   [[nodiscard]] VkPipeline CreateGuestOutputPaintPipeline(
       GuestOutputPaintEffect effect, VkRenderPass render_pass,
-      VkShaderModule fragment_shader = VK_NULL_HANDLE, VkPipelineLayout layout = VK_NULL_HANDLE);
+      VkShaderModule fragment_shader = VK_NULL_HANDLE, VkPipelineLayout layout = VK_NULL_HANDLE,
+      VkColorComponentFlags color_write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                               VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
   bool CreateHdrSwapchainImages(VkFormat swapchain_format);
 
 #if defined(REX_HAS_FIDELITYFX_RUNTIME) && REX_HAS_FIDELITYFX_RUNTIME
@@ -601,6 +610,7 @@ class VulkanPresenter final : public Presenter {
       guest_output_paint_pipeline_layouts_ = {};
   VkShaderModule guest_output_paint_vs_ = VK_NULL_HANDLE;
   VkShaderModule hdr_output_fs_ = VK_NULL_HANDLE;
+  VkShaderModule hdr_ui_mask_fs_ = VK_NULL_HANDLE;
   std::array<VkShaderModule, size_t(GuestOutputPaintEffect::kCount)> guest_output_paint_fs_ = {};
   // Not compatible with the swapchain render pass even if the format is the
   // same due to different dependencies (this is shader read > color

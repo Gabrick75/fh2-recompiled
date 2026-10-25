@@ -88,10 +88,11 @@ REXCVAR_DEFINE_DOUBLE(present_hdr_peak_nits, 1000.0, "UI/Presenter",
     .range(80.0, 10000.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-// 0 until the HUD mask is ported (Pinyon Shift's hdr_hud_mask): without it the HUD would be expanded with the scene.
-REXCVAR_DEFINE_DOUBLE(present_hdr_highlights, 0.0, "UI/Presenter",
+// Only where the guest output's alpha marks the scene (HdrOutputState::hud_mask): the HUD and frames without one
+// (menus, loading, the emulated GPU) stay opaque, so at the paper white.
+REXCVAR_DEFINE_DOUBLE(present_hdr_highlights, 0.5, "UI/Presenter",
                       "How far SDR white in the scene is expanded from the paper white towards the peak on "
-                      "an HDR swapchain (0 to 1)")
+                      "an HDR swapchain (0 to 1); the HUD and menus stay at the paper white")
     .range(0.0, 1.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -372,8 +373,9 @@ namespace shaders {
 #include "../shaders/vulkan_spirv/guest_output_ffx_fsr_rcas_ps.h"
 #endif
 #include "../shaders/vulkan_spirv/guest_output_triangle_strip_rect_vs.h"
-// tools/compilar_shaders.sh, from ../shaders/hdr_output.ps.glsl.
+// tools/compilar_shaders.sh, from ../shaders/hdr_output.ps.glsl and hdr_ui_mask.ps.glsl.
 #include "../shaders/vulkan_spirv/hdr_output_ps.h"
+#include "../shaders/vulkan_spirv/hdr_ui_mask_ps.h"
 }  // namespace shaders
 
 namespace {
@@ -415,8 +417,9 @@ VkExtent2D HdrSwapchainImageExtent(VkExtent2D extent) {
 }  // namespace
 
 HdrOutputState GetHdrOutputState() {
-  return {hdr_output_offered.load(std::memory_order_relaxed),
-          hdr_output_active.load(std::memory_order_relaxed)};
+  const bool active = hdr_output_active.load(std::memory_order_relaxed);
+  return {hdr_output_offered.load(std::memory_order_relaxed), active,
+          active && REXCVAR_GET(present_hdr_highlights) > 0.0};
 }
 
 namespace {
@@ -704,6 +707,7 @@ VulkanPresenter::~VulkanPresenter() {
     dfn.vkDestroyRenderPass(device, paint_context_.swapchain_render_pass, nullptr);
   }
   util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, paint_context_.hdr_pipeline);
+  util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, paint_context_.hdr_ui_mask_pipeline);
   util::DestroyAndNullHandle(dfn.vkDestroyRenderPass, device, paint_context_.hdr_render_pass);
 
   for (const PaintContext::UISetupCommandBuffer& ui_setup_command_buffer :
@@ -731,6 +735,7 @@ VulkanPresenter::~VulkanPresenter() {
   }
   util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device, guest_output_paint_vs_);
   util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device, hdr_output_fs_);
+  util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device, hdr_ui_mask_fs_);
   for (VkPipelineLayout& pipeline_layout : guest_output_paint_pipeline_layouts_) {
     util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device, pipeline_layout);
   }
@@ -3105,6 +3110,30 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
 
           dfn.vkCmdDraw(draw_command_buffer, 4, 1, 0, 0);
 
+          if (is_final_effect && paint_context_.swapchain_hdr) {
+            // The effects write an opaque alpha; the HDR pass reads the HUD coverage of the guest output
+            // from it instead.
+            VkPipelineLayout mask_pipeline_layout =
+                guest_output_paint_pipeline_layouts_[kGuestOutputPaintPipelineLayoutIndexBilinear];
+            dfn.vkCmdBindPipeline(draw_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  paint_context_.hdr_ui_mask_pipeline);
+            dfn.vkCmdBindDescriptorSets(
+                draw_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, mask_pipeline_layout, 0, 1,
+                &paint_context_.guest_output_descriptor_sets
+                     [PaintContext::kGuestOutputDescriptorSetGuestOutput0Sampled +
+                      guest_output_image_paint_ref_index],
+                0, nullptr);
+            dfn.vkCmdPushConstants(draw_command_buffer, mask_pipeline_layout,
+                                   VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(effect_rect_constants),
+                                   &effect_rect_constants);
+            BilinearConstants mask_constants;
+            mask_constants.Initialize(guest_output_flow, i);
+            dfn.vkCmdPushConstants(draw_command_buffer, mask_pipeline_layout,
+                                   VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(effect_rect_constants),
+                                   sizeof(mask_constants), &mask_constants);
+            dfn.vkCmdDraw(draw_command_buffer, 4, 1, 0, 0);
+          }
+
           if (is_final_effect) {
             // Clear the letterbox around the guest output if the guest output
             // doesn't cover the entire swapchain image.
@@ -3836,21 +3865,39 @@ bool VulkanPresenter::CreateHdrSwapchainImages(VkFormat swapchain_format) {
     }
     context.hdr_render_pass_format = swapchain_format;
   }
-  if (hdr_output_fs_ == VK_NULL_HANDLE) {
+  auto create_shader_module = [&](const uint32_t* code, size_t size, VkShaderModule& module) {
+    if (module != VK_NULL_HANDLE) {
+      return true;
+    }
     VkShaderModuleCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    create_info.codeSize = sizeof(shaders::hdr_output_ps);
-    create_info.pCode = shaders::hdr_output_ps;
-    if (dfn.vkCreateShaderModule(device, &create_info, nullptr, &hdr_output_fs_) != VK_SUCCESS) {
-      REXLOG_ERROR("VulkanPresenter: Failed to create the HDR output shader module");
+    create_info.codeSize = size;
+    create_info.pCode = code;
+    if (dfn.vkCreateShaderModule(device, &create_info, nullptr, &module) != VK_SUCCESS) {
+      REXLOG_ERROR("VulkanPresenter: Failed to create an HDR output shader module");
       return false;
     }
+    return true;
+  };
+  if (!create_shader_module(shaders::hdr_output_ps, sizeof(shaders::hdr_output_ps), hdr_output_fs_) ||
+      !create_shader_module(shaders::hdr_ui_mask_ps, sizeof(shaders::hdr_ui_mask_ps),
+                            hdr_ui_mask_fs_)) {
+    return false;
   }
   if (context.hdr_pipeline == VK_NULL_HANDLE) {
     context.hdr_pipeline = CreateGuestOutputPaintPipeline(
         GuestOutputPaintEffect::kBilinear, context.hdr_render_pass, hdr_output_fs_,
         guest_output_paint_pipeline_layouts_[kGuestOutputPaintPipelineLayoutIndexHdr]);
     if (context.hdr_pipeline == VK_NULL_HANDLE) {
+      return false;
+    }
+  }
+  if (context.hdr_ui_mask_pipeline == VK_NULL_HANDLE) {
+    // Compatible with every swapchain_render_pass of an HDR swapchain: the stand-in format does not change.
+    context.hdr_ui_mask_pipeline = CreateGuestOutputPaintPipeline(
+        GuestOutputPaintEffect::kBilinear, context.swapchain_render_pass, hdr_ui_mask_fs_,
+        VK_NULL_HANDLE, VK_COLOR_COMPONENT_A_BIT);
+    if (context.hdr_ui_mask_pipeline == VK_NULL_HANDLE) {
       return false;
     }
   }
@@ -3956,7 +4003,8 @@ bool VulkanPresenter::CreateHdrSwapchainImages(VkFormat swapchain_format) {
 VkPipeline VulkanPresenter::CreateGuestOutputPaintPipeline(GuestOutputPaintEffect effect,
                                                            VkRenderPass render_pass,
                                                            VkShaderModule fragment_shader,
-                                                           VkPipelineLayout layout) {
+                                                           VkPipelineLayout layout,
+                                                           VkColorComponentFlags color_write_mask) {
   VkPipelineShaderStageCreateInfo stages[2] = {};
   for (uint32_t i = 0; i < 2; ++i) {
     VkPipelineShaderStageCreateInfo& stage = stages[i];
@@ -3993,9 +4041,7 @@ VkPipeline VulkanPresenter::CreateGuestOutputPaintPipeline(GuestOutputPaintEffec
   multisample_state.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
   VkPipelineColorBlendAttachmentState color_blend_attachment_state = {};
-  color_blend_attachment_state.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
-                                                VK_COLOR_COMPONENT_G_BIT |
-                                                VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  color_blend_attachment_state.colorWriteMask = color_write_mask;
   VkPipelineColorBlendStateCreateInfo color_blend_state = {};
   color_blend_state.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
   color_blend_state.attachmentCount = 1;
