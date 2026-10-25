@@ -124,13 +124,19 @@
     <string name="gpu_driver">Driver da GPU</string>
     <string name="gpu_turbo">Turbo da GPU</string>
     <string name="graphics">Gráficos</string>
+    <string name="hdr">HDR</string>
+    <string name="hdr_highlights">Realces</string>
+    <string name="hdr_output">Saída HDR10</string>
+    <string name="hdr_white">Brilho do branco</string>
     <string name="hidden">OCULTO</string>
     <string name="hide_the_controls_when_a_gamepad">Ocultar os controles ao usar um controle físico</string>
     <string name="high">Altos</string>
     <string name="high_2">Alta</string>
     <string name="high_smooths_more_edges_the_faint">Alta suaviza mais bordas, inclusive as fracas, e deixa a imagem um pouco mais suave.</string>
     <string name="home">Início</string>
+    <string name="how_bright_white_menus_and_the">Quão claros ficam os menus e o HUD brancos, em nits. Com HDR ligado, o brilho do Android não muda o jogo: ajuste aqui.</string>
     <string name="how_far_objects_cast_shadows_nearly">Até onde os objetos projetam sombra: é aí que está quase todo o custo delas. Longe é como o jogo.</string>
+    <string name="how_far_the_scene_s_brightest">Quanto as luzes mais fortes da cena (sol, faróis, reflexos) passam do branco, até o pico da tela. O HUD fica no branco. Só no renderizador nativo.</string>
     <string name="how_much_of_the_xbox_360" formatted="false">Quanto da resolução original do Xbox 360 o jogo desenha, em passos de 12,5 %. Abaixo de 100 % a imagem fica menos nítida e a GPU trabalha bem menos.</string>
     <string name="how_much_of_the_xbox_360_2" formatted="false">Quanto da resolução original do Xbox 360 o jogo desenha, com os efeitos e o HUD. Abaixo de 100 % a imagem fica menos nítida e a GPU trabalha bem menos.</string>
     <string name="how_often_the_shadow_maps_are">A cada quanto os mapas de sombras são redesenhados. A cada 2 quadros custa menos e quase não se nota.</string>
@@ -293,6 +299,8 @@
     <string name="the_processor_and_the_gpu_driver">O processador e o driver da GPU.</string>
     <string name="the_report_is_no_longer_there">O relatório não está mais disponível. Gere outro.</string>
     <string name="the_save_from_replaces_the_current">O save de %1$s substitui o atual. O atual continua no backup automático da última vez que o jogo abriu.</string>
+    <string name="the_screen_s_hdr_mode_the_white">O modo HDR da tela. O branco segue o brilho do Android, e os realces vão até o pico que a tela permite no momento. Desligado por padrão.</string>
+    <string name="the_screen_s_hdr_mode_with">O modo HDR da tela, com a imagem do jogo no branco escolhido abaixo e os realces acima dele. Desligado por padrão.</string>
     <string name="the_zip_has_no_driver_so">o zip não tem nenhuma .so de driver</string>
     <string name="there_is_no_app_to_save">Não há um app para salvar arquivos.</string>
     <string name="there_is_no_save_yet">ainda não há save</string>

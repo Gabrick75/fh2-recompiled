@@ -59,6 +59,18 @@ class VulkanUIDrawContext final : public UIDrawContext {
   VkFormat render_pass_format_;
 };
 
+// From the latest swapchain: whether its surface offers HDR, and whether it is
+// in use (present_hdr).
+struct HdrOutputState {
+  bool offered = false;
+  bool active = false;
+  // Active with present_hdr_highlights above 0: the guest output's alpha
+  // should say where the game's HUD is (1) and where the scene is (0), so that
+  // only the scene is expanded. The refresher leaves it opaque otherwise.
+  bool hud_mask = false;
+};
+HdrOutputState GetHdrOutputState();
+
 class VulkanPresenter final : public Presenter {
  public:
   // Maximum number of different guest output image versions still potentially
@@ -267,6 +279,8 @@ class VulkanPresenter final : public Presenter {
     kGuestOutputPaintPipelineLayoutIndexFsrEasu,
     kGuestOutputPaintPipelineLayoutIndexFsrRcas,
 #endif
+    // present_hdr's last pass (HdrOutputConstants).
+    kGuestOutputPaintPipelineLayoutIndexHdr,
 
     kGuestOutputPaintPipelineLayoutCount,
   };
@@ -398,6 +412,27 @@ class VulkanPresenter final : public Presenter {
       VkFramebuffer framebuffer;
     };
 
+    /*
+     * present_hdr (from arcanite24/shiftglue-sdk, Pinyon Shift's HDR output). Everything above paints
+     * into an SDR stand-in per swapchain image as it would into an SDR swapchain; one last pass decodes
+     * it, scales white to the paper white and writes the HDR swapchain (HDR10 on Android).
+     */
+    struct HdrImage {
+      VkImage image = VK_NULL_HANDLE;
+      VkDeviceMemory memory = VK_NULL_HANDLE;
+      // Sampled by the last pass, which decodes the sRGB.
+      VkImageView srgb_view = VK_NULL_HANDLE;
+      VkImageView swapchain_view = VK_NULL_HANDLE;
+      VkFramebuffer swapchain_framebuffer = VK_NULL_HANDLE;
+      VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
+    };
+    // scRGB, or HDR10 where the surface pairs it with BT.2020 PQ.
+    static constexpr VkFormat kHdrFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+    // HDR10 where the surface offers no float format with it (Android).
+    static constexpr VkFormat kHdrPqFormat = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+    static constexpr VkFormat kHdrStandInFormat = VK_FORMAT_B8G8R8A8_UNORM;
+    static constexpr VkFormat kHdrStandInSrgbFormat = VK_FORMAT_B8G8R8A8_SRGB;
+
     explicit PaintContext(const VulkanDevice* const vulkan_device)
         : vulkan_device(vulkan_device), submission_tracker(vulkan_device) {}
     PaintContext(const PaintContext& paint_context) = delete;
@@ -411,7 +446,7 @@ class VulkanPresenter final : public Presenter {
         const VulkanDevice* vulkan_device, VkSurfaceKHR surface, uint32_t width, uint32_t height,
         VkSwapchainKHR old_swapchain, uint32_t& present_queue_family_out,
         VkFormat& image_format_out, VkExtent2D& image_extent_out, bool& is_fifo_out,
-        bool& ui_surface_unusable_out, bool registrar);
+        bool& hdr_out, bool& ui_surface_unusable_out, bool registrar);
 
     // Destroys the swapchain and its derivatives, nulls `swapchain` and returns
     // the original swapchain object, if it existed, for use as oldSwapchain if
@@ -494,14 +529,32 @@ class VulkanPresenter final : public Presenter {
     VkRenderPass swapchain_render_pass = VK_NULL_HANDLE;
     VkFormat swapchain_render_pass_format = VK_FORMAT_UNDEFINED;
     bool swapchain_render_pass_clear_load_op = false;
+    // Whether swapchain_render_pass ends in an HDR stand-in to be sampled.
+    bool swapchain_render_pass_hdr = false;
+    // The last pass into the HDR swapchain, and its pipeline, for a swapchain
+    // of hdr_render_pass_format.
+    VkRenderPass hdr_render_pass = VK_NULL_HANDLE;
+    VkFormat hdr_render_pass_format = VK_FORMAT_UNDEFINED;
+    VkPipeline hdr_pipeline = VK_NULL_HANDLE;
+    // Replaces the alpha of the painted guest output with the guest output's
+    // HUD coverage, in swapchain_render_pass (always kHdrStandInFormat).
+    VkPipeline hdr_ui_mask_pipeline = VK_NULL_HANDLE;
+    VkDescriptorPool hdr_descriptor_pool = VK_NULL_HANDLE;
 
     VkSurfaceKHR vulkan_surface = VK_NULL_HANDLE;
+    // The ANativeWindow of vulkan_surface on Android, for its data space.
+    void* android_window = nullptr;
     uint32_t present_queue_family = UINT32_MAX;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    // The size everything but the HDR pass paints at; an HDR swapchain pre-rotated for the panel has
+    // it swapped (HdrSwapchainImageExtent).
     VkExtent2D swapchain_extent = {};
     bool swapchain_is_fifo = false;
     std::vector<VkImage> swapchain_images;
     std::vector<SwapchainFramebuffer> swapchain_framebuffers;
+    bool swapchain_hdr = false;
+    // Per swapchain image when swapchain_hdr.
+    std::vector<HdrImage> hdr_images;
   };
 
   explicit VulkanPresenter(HostGpuLossCallback host_gpu_loss_callback,
@@ -527,8 +580,14 @@ class VulkanPresenter final : public Presenter {
    */
   void SellarRefrescosYEsperar();
 
-  [[nodiscard]] VkPipeline CreateGuestOutputPaintPipeline(GuestOutputPaintEffect effect,
-                                                          VkRenderPass render_pass);
+  // fragment_shader replaces the effect's own, with the effect's layout unless
+  // layout is given.
+  [[nodiscard]] VkPipeline CreateGuestOutputPaintPipeline(
+      GuestOutputPaintEffect effect, VkRenderPass render_pass,
+      VkShaderModule fragment_shader = VK_NULL_HANDLE, VkPipelineLayout layout = VK_NULL_HANDLE,
+      VkColorComponentFlags color_write_mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                               VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
+  bool CreateHdrSwapchainImages(VkFormat swapchain_format);
 
 #if defined(REX_HAS_FIDELITYFX_RUNTIME) && REX_HAS_FIDELITYFX_RUNTIME
   bool EnsureTemporalUpscalerContext(uint32_t render_width, uint32_t render_height,
@@ -550,6 +609,8 @@ class VulkanPresenter final : public Presenter {
   std::array<VkPipelineLayout, kGuestOutputPaintPipelineLayoutCount>
       guest_output_paint_pipeline_layouts_ = {};
   VkShaderModule guest_output_paint_vs_ = VK_NULL_HANDLE;
+  VkShaderModule hdr_output_fs_ = VK_NULL_HANDLE;
+  VkShaderModule hdr_ui_mask_fs_ = VK_NULL_HANDLE;
   std::array<VkShaderModule, size_t(GuestOutputPaintEffect::kCount)> guest_output_paint_fs_ = {};
   // Not compatible with the swapchain render pass even if the format is the
   // same due to different dependencies (this is shader read > color

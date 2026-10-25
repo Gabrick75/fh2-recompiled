@@ -2,6 +2,8 @@ package com.forzahorizon2.android;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.hardware.display.DisplayManager;
+import android.view.Display;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -25,6 +27,17 @@ final class GameOptions {
     static final String SHOW_FPS = "show_fps";
     static final String SHOW_USAGE = "show_usage";            // GPU, CPU and RAM use under the FPS (UsageMonitor)
     static final String PRESENT_MODE = "present_mode";        // "fifo" (vsync) or "mailbox"
+    // present_hdr: HDR10 output, offered only where the display reports HDR10 (hdrCapabilities)
+    static final String HDR = "hdr";
+    static final String HDR_PAPER_WHITE = "hdr_paper_white";  // present_hdr_paper_white_nits: the HUD's and menus' white
+    static final String[] HDR_PAPER_WHITES = {"100", "150", "200", "250", "300", "400"};
+    // present_hdr_highlights: how far the scene's white goes from the paper white to the display's peak (the HUD stays)
+    static final String HDR_HIGHLIGHTS = "hdr_highlights";
+    static final String[] HDR_HIGHLIGHT_LEVELS = {"0", "0.25", "0.5", "1"};  // Pinyon Shift's OFF, LOW, MEDIUM, HIGH
+    // Relative HDR: the headroom the game's surface asks for, as peak / SDR white. Android gives at most what the
+    // display can at its current brightness (the presenter follows that, GameActivity.startRelativeHdr); 8 lets a
+    // panel like the S23 Ultra's (about 1750 nits at its HDR peak) reach it from an ordinary indoor brightness.
+    static final float HDR_DESIRED_HEADROOM = 8f;
     // Graphics
     static final String RENDERER = "renderer";                // "emulated" (Xenos) or "native" (nfsmw_renderizador)
     static final String RENDER_SCALE = "render_scale";        // gpu_escala_render: percent of 1280x720
@@ -119,6 +132,8 @@ final class GameOptions {
             case RESOLUTION: return RES_NATIVE;
             case RENDERER: return "native";
             case PRESENT_MODE: return "fifo";
+            case HDR_PAPER_WHITE: return "200";  // Pinyon Shift's default
+            case HDR_HIGHLIGHTS: return "0.5";
             case RENDER_SCALE: return "100";
             case FPS: return "30";  // the Xbox 360's
             // Off: the GPU cost of the game's MSAA 4x nearly halves the frame rate on a phone (event menu on the
@@ -309,6 +324,65 @@ final class GameOptions {
             case "5": return "16";
             default: return "0";
         }
+    }
+
+    /**
+     * The default display's HDR10 levels as Android reports them, {peak, frame average, minimum} in nits (0 when
+     * unknown), or null when it does not report HDR10. The presenter takes them as the HDR10 metadata, so the panel
+     * shows the levels as they are instead of tone-mapping them from an assumed master.
+     */
+    static float[] hdrCapabilities(Context context) {
+        DisplayManager displays = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+        Display display = displays != null ? displays.getDisplay(Display.DEFAULT_DISPLAY) : null;
+        Display.HdrCapabilities caps = display != null ? display.getHdrCapabilities() : null;
+        if (caps == null) return null;
+        boolean hdr10 = false;
+        for (int type : caps.getSupportedHdrTypes()) {
+            hdr10 |= type == Display.HdrCapabilities.HDR_TYPE_HDR10;
+        }
+        if (!hdr10) return null;
+        return new float[] {Math.max(0f, caps.getDesiredMaxLuminance()),
+                Math.max(0f, caps.getDesiredMaxAverageLuminance()), Math.max(0f, caps.getDesiredMinLuminance())};
+    }
+
+    /**
+     * Relative HDR (Android 15 and later, where the display reports its HDR/SDR ratio): the game's white is the
+     * screen's own at the brightness the player chose, and the highlights reach the display's current peak, so the
+     * white brightness option is not needed. Elsewhere HDR10 with that option.
+     */
+    @android.annotation.TargetApi(35)
+    static boolean hdrRelative(Context context) {
+        if (android.os.Build.VERSION.SDK_INT < 35 || hdrCapabilities(context) == null) return false;
+        DisplayManager displays = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+        Display display = displays != null ? displays.getDisplay(Display.DEFAULT_DISPLAY) : null;
+        return display != null && display.isHdrSdrRatioAvailable();
+    }
+
+    /** The default display's current HDR/SDR ratio (1 when unknown): where the highlights start, before it changes. */
+    @android.annotation.TargetApi(34)
+    static float hdrSdrRatio(Context context) {
+        if (android.os.Build.VERSION.SDK_INT < 34) return 1f;
+        DisplayManager displays = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+        Display display = displays != null ? displays.getDisplay(Display.DEFAULT_DISPLAY) : null;
+        return display != null && display.isHdrSdrRatioAvailable() ? Math.max(1f, display.getHdrSdrRatio()) : 1f;
+    }
+
+    /** The paper white in nits, one of HDR_PAPER_WHITES (the default when the stored one is not). */
+    static String hdrPaperWhite(Context context) {
+        String value = get(context, HDR_PAPER_WHITE);
+        for (String nits : HDR_PAPER_WHITES) {
+            if (nits.equals(value)) return nits;
+        }
+        return defaultOf(HDR_PAPER_WHITE);
+    }
+
+    /** The highlight level, one of HDR_HIGHLIGHT_LEVELS (the default when the stored one is not). */
+    static String hdrHighlights(Context context) {
+        String value = get(context, HDR_HIGHLIGHTS);
+        for (String level : HDR_HIGHLIGHT_LEVELS) {
+            if (level.equals(value)) return level;
+        }
+        return defaultOf(HDR_HIGHLIGHTS);
     }
 
     static boolean nativeRenderer(Context context) {
@@ -537,6 +611,24 @@ final class GameOptions {
         args.add("--present_letterbox=false");
         args.add("--present_safe_area_x=100");
         args.add("--present_safe_area_y=100");
+        // HDR10 output (vulkan_presenter.cpp, from Pinyon Shift): the game's SDR image with white at the paper white.
+        // The display's levels go with it, so the SDK needs no JNI to read them.
+        float[] hdr = hdrCapabilities(context);
+        if (hdr != null && flag(context, HDR)) {
+            args.add("--present_hdr=true");
+            args.add("--present_hdr_paper_white_nits=" + hdrPaperWhite(context));
+            // Native renderer only: it marks the HUD (nfsmw_nativo_destinos.cpp); the emulated GPU's output stays opaque.
+            args.add("--present_hdr_highlights=" + hdrHighlights(context));
+            args.add("--present_hdr_display_hdr10=true");
+            args.add("--present_hdr_display_max_nits=" + hdr[0]);
+            args.add("--present_hdr_display_max_average_nits=" + hdr[1]);
+            args.add("--present_hdr_display_min_nits=" + hdr[2]);
+            if (hdrRelative(context)) {
+                // The white follows the brightness slider and the peak the display's ratio (updated while running).
+                args.add("--present_hdr_relative=true");
+                args.add("--present_hdr_headroom=" + hdrSdrRatio(context));
+            }
+        }
         return args;
     }
 }

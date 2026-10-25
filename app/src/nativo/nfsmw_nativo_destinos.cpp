@@ -792,6 +792,10 @@ namespace shaders {
 // The same sampling as guest_output_bilinear_ps with the game's gamma ramp
 // (shaders/nfsmw_salida_rampa_gamma.frag).
 #include "shaders/nfsmw_salida_rampa_gamma_ps.h"
+#if defined(FH2_RECOMP)
+// present_hdr: the HUD in the output's alpha (shaders/fh2_hdr_mascara_hud.ps.glsl, tools/compilar_shaders.sh).
+#include "shaders/fh2_hdr_mascara_hud_ps.h"
+#endif
 }  // namespace shaders
 
 namespace {
@@ -1053,6 +1057,17 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       if (p != VK_NULL_HANDLE) dfn_.vkDestroyPipeline(device_, p, nullptr);
     }
     if (fs_rampa_ != VK_NULL_HANDLE) dfn_.vkDestroyShaderModule(device_, fs_rampa_, nullptr);
+#if defined(FH2_RECOMP)
+    Destruir(fh2_hdr_foto_);
+    if (fh2_hdr_pipeline_ != VK_NULL_HANDLE) dfn_.vkDestroyPipeline(device_, fh2_hdr_pipeline_, nullptr);
+    if (fh2_hdr_fs_ != VK_NULL_HANDLE) dfn_.vkDestroyShaderModule(device_, fh2_hdr_fs_, nullptr);
+    if (fh2_hdr_layout_pipeline_ != VK_NULL_HANDLE)
+      dfn_.vkDestroyPipelineLayout(device_, fh2_hdr_layout_pipeline_, nullptr);
+    if (fh2_hdr_pool_descriptores_ != VK_NULL_HANDLE)
+      dfn_.vkDestroyDescriptorPool(device_, fh2_hdr_pool_descriptores_, nullptr);
+    if (fh2_hdr_layout_descriptores_ != VK_NULL_HANDLE)
+      dfn_.vkDestroyDescriptorSetLayout(device_, fh2_hdr_layout_descriptores_, nullptr);
+#endif
     for (RampaSalida& rampa : rampas_salida_) {
       if (rampa.bufer != VK_NULL_HANDLE) dfn_.vkDestroyBuffer(device_, rampa.bufer, nullptr);
       if (rampa.memoria != VK_NULL_HANDLE) dfn_.vkFreeMemory(device_, rampa.memoria, nullptr);
@@ -1465,13 +1480,173 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     }
     REXLOG_INFO("[nativo] C2: rampa de gamma del juego en la salida (nfsmw_nativo_rampa_gamma) = {}",
                 rampa_gamma_ ? "SI" : "no");
+#if defined(FH2_RECOMP)
+    if (!Fh2CrearMascaraHud()) {
+      REXLOG_WARN("[fh2 nativo] HDR: no se pudo crear la mascara del HUD; los brillos no se realzan");
+    }
+#endif
     // Parts C3-C6: without the required capabilities only copies and presentation remain.
     dibujos_ = DibujosVulkan::Crear(dispositivo_, memoria_, this);
     return true;
   }
 
-  // Pipeline of the output pass with the fragment shader fs (and its specialization constants, if any).
-  VkPipeline CrearPipelineSalida(VkShaderModule fs, const VkSpecializationInfo* especial) {
+#if defined(FH2_RECOMP)
+  /*
+   * present_hdr: where FH2's HUD is, for the presenter to expand only the scene's highlights (Pinyon Shift's HUD mask,
+   * arcanite24/shiftglue-sdk, BSD-3-Clause).
+   *
+   * FH2 ends its frame as FH1 does: the scene is composited, tone-mapped, into a 2_10_10_10 render target (base 0 in a
+   * race), and the HUD is drawn over it through the same EDRAM's 2_10_10_10_AS_10_10_10_10 view (85 blended draws in the
+   * frame traced 2026-10-19), which is then resolved to the front buffer. Both views are one image here
+   * (ObtenerDestino). At the first HUD draw that image is copied (Fh2HdrFotoAntesDelHud); the output pass then writes
+   * into the output's alpha where the frame differs from that copy (fh2_hdr_mascara_hud.ps.glsl). A frame without the
+   * copy (menus, loading) keeps the ramp's opaque alpha: all of it at the paper white.
+   */
+  bool Fh2CrearMascaraHud() {
+    VkDescriptorSetLayoutBinding enlaces[2]{};
+    for (uint32_t i = 0; i < 2; ++i) {
+      enlaces[i].binding = i;
+      enlaces[i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      enlaces[i].descriptorCount = 1;
+      enlaces[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo info_layout{};
+    info_layout.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    info_layout.bindingCount = 2;
+    info_layout.pBindings = enlaces;
+    if (dfn_.vkCreateDescriptorSetLayout(device_, &info_layout, nullptr, &fh2_hdr_layout_descriptores_) !=
+        VK_SUCCESS) {
+      return false;
+    }
+    // The same push constant ranges as the output pass: the rectangle, then 16 bytes for the fragment shader.
+    VkPushConstantRange rangos[2]{};
+    rangos[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    rangos[0].size = 16;
+    rangos[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    rangos[1].offset = 16;
+    rangos[1].size = 16;
+    VkPipelineLayoutCreateInfo info_pipeline_layout{};
+    info_pipeline_layout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    info_pipeline_layout.setLayoutCount = 1;
+    info_pipeline_layout.pSetLayouts = &fh2_hdr_layout_descriptores_;
+    info_pipeline_layout.pushConstantRangeCount = 2;
+    info_pipeline_layout.pPushConstantRanges = rangos;
+    if (dfn_.vkCreatePipelineLayout(device_, &info_pipeline_layout, nullptr, &fh2_hdr_layout_pipeline_) !=
+        VK_SUCCESS) {
+      return false;
+    }
+    const VkDescriptorPoolSize tamano = {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2 * kRanurasSalida};
+    VkDescriptorPoolCreateInfo info_pool{};
+    info_pool.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    info_pool.maxSets = kRanurasSalida;
+    info_pool.poolSizeCount = 1;
+    info_pool.pPoolSizes = &tamano;
+    if (dfn_.vkCreateDescriptorPool(device_, &info_pool, nullptr, &fh2_hdr_pool_descriptores_) != VK_SUCCESS) {
+      return false;
+    }
+    VkDescriptorSetAllocateInfo reserva{};
+    reserva.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    reserva.descriptorPool = fh2_hdr_pool_descriptores_;
+    reserva.descriptorSetCount = 1;
+    reserva.pSetLayouts = &fh2_hdr_layout_descriptores_;
+    for (uint32_t i = 0; i < kRanurasSalida; ++i) {
+      if (dfn_.vkAllocateDescriptorSets(device_, &reserva, &fh2_hdr_descriptores_[i]) != VK_SUCCESS) {
+        return false;
+      }
+    }
+    VkShaderModuleCreateInfo info_modulo{};
+    info_modulo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    info_modulo.codeSize = sizeof(shaders::fh2_hdr_mascara_hud_ps);
+    info_modulo.pCode = shaders::fh2_hdr_mascara_hud_ps;
+    if (dfn_.vkCreateShaderModule(device_, &info_modulo, nullptr, &fh2_hdr_fs_) != VK_SUCCESS) {
+      return false;
+    }
+    fh2_hdr_pipeline_ = CrearPipelineSalida(fh2_hdr_fs_, nullptr, fh2_hdr_layout_pipeline_, VK_COLOR_COMPONENT_A_BIT);
+    return fh2_hdr_pipeline_ != VK_NULL_HANDLE;
+  }
+
+  // From Dibujar, before the draw is recorded: remembers the scene's composite and copies its render target at the
+  // first HUD draw over it, once per frame and only while the presenter wants the mask.
+  void Fh2HdrFotoAntesDelHud(const uint32_t* r) {
+    if (!fh2_hdr_mascara_activa_ || fh2_hdr_pipeline_ == VK_NULL_HANDLE || !(r[kDiagRegColorMask] & 0xF)) {
+      return;
+    }
+    const uint32_t info = r[kDiagRegColorInfo];
+    const uint32_t formato = (info >> 16) & 0xF;
+    const uint32_t base = info & 0xFFF;
+    if (formato == 2) {  // 2_10_10_10: the composite
+      fh2_hdr_base_escena_ = base;
+      return;
+    }
+    if (formato != 10 || base != fh2_hdr_base_escena_ || fh2_hdr_foto_intentada_) {
+      return;  // not the 2_10_10_10_AS_10_10_10_10 view over the composite, or already copied
+    }
+    fh2_hdr_foto_intentada_ = true;
+    const uint32_t superficie = r[kDiagRegSurfaceInfo];
+    if ((superficie >> 16) & 0x3) {
+      return;  // MSAA: not FH2's composite
+    }
+    Imagen* destino = ObtenerDestino(base, formato, superficie & 0x3FFF);
+    if (!destino || destino->ms_imagen != VK_NULL_HANDLE || !Grabar()) {
+      return;
+    }
+    if (fh2_hdr_foto_.imagen != VK_NULL_HANDLE &&
+        (fh2_hdr_foto_.ancho != destino->ancho || fh2_hdr_foto_.alto != destino->alto ||
+         fh2_hdr_foto_.formato != destino->formato)) {
+      EsperarSalidas();  // an earlier output may still sample it; only when the render scale changes
+      EsperarGpu();
+      Destruir(fh2_hdr_foto_);
+    }
+    if (fh2_hdr_foto_.imagen == VK_NULL_HANDLE &&
+        !Crear(fh2_hdr_foto_, destino->ancho, destino->alto,
+               VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, destino->formato)) {
+      return;
+    }
+    if (dibujos_) dibujos_->TerminarPase();
+    Preparar(*destino);
+    Preparar(fh2_hdr_foto_);
+    // The composite's writes before the copy, and the outputs of earlier frames that sampled the copy (an earlier
+    // submission on the same queue) before overwriting it.
+    VkMemoryBarrier barrera{};
+    barrera.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrera.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrera.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    dfn_.vkCmdPipelineBarrier(comandos_trabajo_,
+                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrera, 0, nullptr, 0, nullptr);
+    VkImageCopy copia{};
+    copia.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copia.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copia.extent = {destino->ancho, destino->alto, 1};
+    MarcarGpu(kGpuCopias);
+    Fh2CopiarImagen(comandos_trabajo_, destino->imagen, VK_IMAGE_LAYOUT_GENERAL, fh2_hdr_foto_.imagen,
+                    VK_IMAGE_LAYOUT_GENERAL, 1, &copia);
+    // The HUD draws write the render target only after the copy read it, and the output samples the copy.
+    barrera.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrera.dstAccessMask =
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dfn_.vkCmdPipelineBarrier(comandos_trabajo_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                              1, &barrera, 0, nullptr, 0, nullptr);
+    fh2_hdr_foto_lista_ = true;
+    ++fh2_hdr_fotos_;
+    if (!fh2_hdr_foto_anotada_) {
+      fh2_hdr_foto_anotada_ = true;
+      REXLOG_INFO("[fh2 nativo] HDR: copia de la escena antes del HUD (base {:03X}, {}x{}) para la mascara del HUD",
+                  base, destino->ancho, destino->alto);
+    }
+  }
+#endif
+
+  // Pipeline of the output pass with the fragment shader fs (and its specialization constants, if any), with
+  // layout_pipeline_ unless another layout is given, writing the channels of mascara_escritura.
+  VkPipeline CrearPipelineSalida(VkShaderModule fs, const VkSpecializationInfo* especial,
+                                 VkPipelineLayout layout = VK_NULL_HANDLE,
+                                 VkColorComponentFlags mascara_escritura = VK_COLOR_COMPONENT_R_BIT |
+                                                                           VK_COLOR_COMPONENT_G_BIT |
+                                                                           VK_COLOR_COMPONENT_B_BIT |
+                                                                           VK_COLOR_COMPONENT_A_BIT) {
     VkPipelineShaderStageCreateInfo etapas[2]{};
     etapas[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     etapas[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -1501,8 +1676,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     muestreo.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     muestreo.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineColorBlendAttachmentState mezcla_adjunto{};
-    mezcla_adjunto.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                    VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    mezcla_adjunto.colorWriteMask = mascara_escritura;
     VkPipelineColorBlendStateCreateInfo mezcla{};
     mezcla.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     mezcla.attachmentCount = 1;
@@ -1523,7 +1697,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     info_pipeline.pMultisampleState = &muestreo;
     info_pipeline.pColorBlendState = &mezcla;
     info_pipeline.pDynamicState = &dinamico;
-    info_pipeline.layout = layout_pipeline_;
+    info_pipeline.layout = layout != VK_NULL_HANDLE ? layout : layout_pipeline_;
     info_pipeline.renderPass = render_pass_salida_;
     info_pipeline.basePipelineIndex = -1;
     VkPipeline pipeline = VK_NULL_HANDLE;
@@ -2543,6 +2717,26 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 
   bool Presentar(rex::ui::Presenter* presentador, const TexturaSwap& swap, uint32_t ancho,
                  uint32_t alto) override {
+    // present_hdr: this frame's copy of the scene before the HUD, if there is one, for the output's HUD mask; the
+    // next frame finds its own composite and HUD, and asks again whether the presenter wants the mask.
+    Imagen* foto_hud = nullptr;
+#if defined(FH2_RECOMP)
+    if (fh2_hdr_foto_lista_) {
+      foto_hud = &fh2_hdr_foto_;
+    }
+    if (fh2_hdr_mascara_activa_) {
+      // How many frames had the HUD mask (a race: nearly all; menus and loading: none).
+      static uint64_t swaps_hdr = 0;
+      if (++swaps_hdr % 900 == 0) {
+        REXLOG_INFO("[fh2 nativo] HDR: mascara del HUD en {} de los ultimos 900 fotogramas", fh2_hdr_fotos_);
+        fh2_hdr_fotos_ = 0;
+      }
+    }
+    fh2_hdr_foto_lista_ = false;
+    fh2_hdr_foto_intentada_ = false;
+    fh2_hdr_base_escena_ = UINT32_MAX;
+    fh2_hdr_mascara_activa_ = rex::ui::vulkan::GetHdrOutputState().hud_mask;
+#endif
     nfsmw::reflejo_demanda::AnotarSwap();  // nfsmw_reflejo_bajo_demanda
     // The per-draw diagnostic window opens here, on the PM4 ring thread, which is the one that records the
     // draws. Inside the paint call it would be another thread and the window would catch an arbitrary piece
@@ -2847,7 +3041,8 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
           auto& contexto =
               static_cast<VulkanPresenter::VulkanGuestOutputRefreshContext&>(base_contexto);
           pintado = PintarSalida(contexto, origen_frontal ? *origen_frontal : resuelta.imagen, w, h,
-                                 origen_frontal != nullptr);  // nfsmw_nativo_frontal_perezoso
+                                 origen_frontal != nullptr,  // nfsmw_nativo_frontal_perezoso
+                                 foto_hud);
           salida_llamada = std::chrono::steady_clock::now();
           return pintado;
         });
@@ -3517,6 +3712,11 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if (SombrasApagadas() && peticion.registros && EsMapaDeSombras(peticion.registros[0x2000] & 0x3FFF)) {
       return true;
     }
+#if defined(FH2_RECOMP)
+    if (peticion.registros) {
+      Fh2HdrFotoAntesDelHud(peticion.registros);  // present_hdr's HUD mask
+    }
+#endif
     return dibujos_ && dibujos_->Dibujar(peticion);
   }
 
@@ -7548,8 +7748,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   // desde_destino = the source is a render target's image (or a retained one) with the front buffer in its
   // corner and larger than the output (nfsmw_nativo_frontal_perezoso). Only requested with the exact variant
   // and without FXAA.
+  // foto_hud: the scene before FH2's HUD (Fh2HdrFotoAntesDelHud), to write the HUD mask into the output's alpha.
   bool PintarSalida(VulkanPresenter::VulkanGuestOutputRefreshContext& contexto, Imagen& origen,
-                    uint32_t ancho, uint32_t alto, bool desde_destino = false) {
+                    uint32_t ancho, uint32_t alto, bool desde_destino = false, Imagen* foto_hud = nullptr) {
     // With nfsmw_nativo_salida_sin_espera, the next of 3 slots, and it only waits if that one is still pending.
     // Without it, always slot 0: it waits for the previous output.
     const uint32_t s = salida_sin_espera_ ? (salida_actual_ + 1) % kRanurasSalida : 0;
@@ -7692,6 +7893,42 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     dfn_.vkCmdPushConstants(comandos_salida_[s], layout_pipeline_, VK_SHADER_STAGE_FRAGMENT_BIT, 16,
                             sizeof(bilineal), &bilineal);
     dfn_.vkCmdDraw(comandos_salida_[s], 4, 1, 0, 0);
+#if defined(FH2_RECOMP)
+    if (foto_hud && fh2_hdr_pipeline_ != VK_NULL_HANDLE) {
+      // present_hdr: the HUD in the alpha, the frame against the scene before the HUD (both from the same render
+      // target's pixels; the copy's work went in an earlier submission, whose last barrier covers this read).
+      VkDescriptorImageInfo imagenes[2]{};
+      imagenes[0].imageView = origen.vista;
+      imagenes[0].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+      imagenes[1].imageView = foto_hud->vista;
+      imagenes[1].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+      VkWriteDescriptorSet escritura_hud{};
+      escritura_hud.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      escritura_hud.dstSet = fh2_hdr_descriptores_[s];
+      escritura_hud.dstBinding = 0;
+      escritura_hud.descriptorCount = 2;
+      escritura_hud.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      escritura_hud.pImageInfo = imagenes;
+      dfn_.vkUpdateDescriptorSets(device_, 1, &escritura_hud, 0, nullptr);
+      dfn_.vkCmdBindPipeline(comandos_salida_[s], VK_PIPELINE_BIND_POINT_GRAPHICS, fh2_hdr_pipeline_);
+      dfn_.vkCmdBindDescriptorSets(comandos_salida_[s], VK_PIPELINE_BIND_POINT_GRAPHICS, fh2_hdr_layout_pipeline_,
+                                   0, 1, &fh2_hdr_descriptores_[s], 0, nullptr);
+      dfn_.vkCmdPushConstants(comandos_salida_[s], fh2_hdr_layout_pipeline_, VK_SHADER_STAGE_VERTEX_BIT, 0,
+                              sizeof(rectangulo), rectangulo);
+      // From a render target the output pixel is the texel (see exacta above); from a texture of another size,
+      // scaled.
+      struct {
+        float escala[2];
+        int32_t limite[2];
+      } hud = {{desde_destino ? 1.0f : float(origen.ancho) / float(ancho),
+                desde_destino ? 1.0f : float(origen.alto) / float(alto)},
+               {int32_t(std::min(origen.ancho, foto_hud->ancho)) - 1,
+                int32_t(std::min(origen.alto, foto_hud->alto)) - 1}};
+      dfn_.vkCmdPushConstants(comandos_salida_[s], fh2_hdr_layout_pipeline_, VK_SHADER_STAGE_FRAGMENT_BIT, 16,
+                              sizeof(hud), &hud);
+      dfn_.vkCmdDraw(comandos_salida_[s], 4, 1, 0, 0);
+    }
+#endif
     dfn_.vkCmdEndRenderPass(comandos_salida_[s]);
     if (desde_destino) {
       // And nothing submitted later (the next frame draws and clears that image again) writes it before the
@@ -7734,6 +7971,22 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   rex::memory::Memory* memoria_;
   uint32_t familia_;
 
+#if defined(FH2_RECOMP)
+  // present_hdr's HUD mask (Fh2CrearMascaraHud). PM4 ring thread only.
+  VkDescriptorSetLayout fh2_hdr_layout_descriptores_ = VK_NULL_HANDLE;
+  VkPipelineLayout fh2_hdr_layout_pipeline_ = VK_NULL_HANDLE;
+  VkDescriptorPool fh2_hdr_pool_descriptores_ = VK_NULL_HANDLE;
+  std::array<VkDescriptorSet, kRanurasSalida> fh2_hdr_descriptores_{};
+  VkShaderModule fh2_hdr_fs_ = VK_NULL_HANDLE;
+  VkPipeline fh2_hdr_pipeline_ = VK_NULL_HANDLE;
+  Imagen fh2_hdr_foto_{};                      // the scene before the HUD
+  bool fh2_hdr_mascara_activa_ = false;        // the presenter wants it (from the last Swap)
+  uint32_t fh2_hdr_base_escena_ = UINT32_MAX;  // EDRAM base of this frame's last 2_10_10_10 draw
+  bool fh2_hdr_foto_intentada_ = false;        // this frame
+  bool fh2_hdr_foto_lista_ = false;            // this frame, copied
+  bool fh2_hdr_foto_anotada_ = false;
+  uint64_t fh2_hdr_fotos_ = 0;
+#endif
   std::array<VkCommandPool, kRanurasSalida> pools_salida_{};  // output slots
   FnCopiarImagen copiar_imagen_ = nullptr;
   uint32_t reducciones_ = 0;  // resolves that had to shrink

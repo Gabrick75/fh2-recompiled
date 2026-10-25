@@ -1211,6 +1211,9 @@ public final class MainActivity extends AppCompatActivity {
     // ---- Display, performance, sound -----------------------------------------------------------------------
 
     private ScrollView displayPage() {
+        boolean hdrSupported = GameOptions.hdrCapabilities(this) != null;
+        // Relative HDR (Android 15+): the white follows the brightness slider, so there is no white to choose.
+        boolean hdrRelative = hdrSupported && GameOptions.hdrRelative(this);
         return pageScroll(ui.pageTitle(pageName(DISPLAY),
                         tr(R.string.the_final_image_and_what_shows)),
                 ui.header(tr(R.string.image)),
@@ -1226,6 +1229,21 @@ public final class MainActivity extends AppCompatActivity {
                                 tr(R.string.a_frame_that_misses_the_vsync),
                                 GameOptions.flag(this, GameOptions.ADAPTIVE_VBLANK),
                                 v -> GameOptions.flag(this, GameOptions.ADAPTIVE_VBLANK, v))),
+                // Only where the display reports HDR10 (GameOptions.hdrCapabilities).
+                hdrSupported ? ui.header(tr(R.string.hdr)) : null,
+                hdrSupported ? ui.group(ui.toggleRow(tr(R.string.hdr_output),
+                                tr(hdrRelative ? R.string.the_screen_s_hdr_mode_the_white
+                                        : R.string.the_screen_s_hdr_mode_with),
+                                GameOptions.flag(this, GameOptions.HDR),
+                                v -> GameOptions.flag(this, GameOptions.HDR, v)),
+                        hdrRelative ? null : ui.choiceRow(GameOptions.HDR_PAPER_WHITE, tr(R.string.hdr_white),
+                                tr(R.string.how_bright_white_menus_and_the),
+                                GameOptions.HDR_PAPER_WHITES, GameOptions.HDR_PAPER_WHITES),
+                        ui.choiceRow(GameOptions.HDR_HIGHLIGHTS, tr(R.string.hdr_highlights),
+                                tr(R.string.how_far_the_scene_s_brightest),
+                                new String[] {tr(R.string.off_masculine), tr(R.string.low), tr(R.string.medium),
+                                        tr(R.string.high)},
+                                GameOptions.HDR_HIGHLIGHT_LEVELS)) : null,
                 ui.header(tr(R.string.overlay)),
                 ui.group(ui.toggleRow(tr(R.string.show_fps),
                                 tr(R.string.a_counter_in_the_corner_frames),
