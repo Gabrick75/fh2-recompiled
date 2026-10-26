@@ -400,6 +400,8 @@ class Presenter {
    * The rest of the thread (startup, loop and notifications) is private, further down.
    */
   void ShutdownPaintThread();
+  // Whether the presenter's own thread is running (present_hilo_propio), for the derived presenter.
+  bool HiloDePintadoActivo() const { return paint_thread_activo_.load(std::memory_order_acquire); }
 
   enum class PaintResult {
     kPresented,

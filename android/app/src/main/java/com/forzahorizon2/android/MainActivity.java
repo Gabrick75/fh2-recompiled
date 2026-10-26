@@ -1232,7 +1232,11 @@ public final class MainActivity extends AppCompatActivity {
                         ui.toggleRow(tr(R.string.adaptive_vblank),
                                 tr(R.string.a_frame_that_misses_the_vsync),
                                 GameOptions.flag(this, GameOptions.ADAPTIVE_VBLANK),
-                                v -> GameOptions.flag(this, GameOptions.ADAPTIVE_VBLANK, v))),
+                                v -> GameOptions.flag(this, GameOptions.ADAPTIVE_VBLANK, v)),
+                        ui.toggleRow(tr(R.string.present_thread),
+                                tr(R.string.present_thread_desc),
+                                GameOptions.flag(this, GameOptions.PRESENT_THREAD),
+                                v -> GameOptions.flag(this, GameOptions.PRESENT_THREAD, v))),
                 // Only where the display reports HDR10 (GameOptions.hdrCapabilities).
                 hdrSupported ? ui.header(tr(R.string.hdr)) : null,
                 hdrSupported ? ui.group(ui.toggleRow(tr(R.string.hdr_output),

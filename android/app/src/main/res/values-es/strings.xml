@@ -365,4 +365,6 @@
     <string name="draws_the_reflection_mips_level_by_level">Dibuja las versiones más pequeñas de los reflejos todas juntas, en lugar de una por una. La imagen no cambia; alivia la GPU.</string>
     <string name="reflection_stagger">Reflejos actualizados por etapas</string>
     <string name="reflection_stagger_description">Los reflejos del coche se redibujan un tercio cada vez, la imagen entera cada 3 fotogramas, en lugar de entera en cada fotograma: mucho menos trabajo para la GPU. Pueden ir un poco atrasados en cambios rápidos.</string>
+    <string name="present_thread">Presentar en un hilo propio</string>
+    <string name="present_thread_desc">La imagen se envía a la pantalla desde un hilo aparte, y el juego empieza el siguiente cuadro sin esperar. Pruébalo en móviles débiles donde los FPS siguen bajos aunque la GPU esté poco usada. Aún sin medir; desactívalo si el movimiento se vuelve menos fluido.</string>
 </resources>

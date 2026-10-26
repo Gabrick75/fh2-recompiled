@@ -367,4 +367,6 @@
     <string name="draws_the_reflection_mips_level_by_level">Draws the reflections\' smaller versions all together instead of one by one. The image does not change; it eases the GPU.</string>
     <string name="reflection_stagger">Reflections updated in steps</string>
     <string name="reflection_stagger_description">The car reflections are redrawn a third at a time, the whole picture every 3 frames, instead of entirely every frame: much less work for the GPU. They may lag a little behind fast changes.</string>
+    <string name="present_thread">Present on its own thread</string>
+    <string name="present_thread_desc">The image is sent to the screen by a separate thread, so the game starts the next frame without waiting. Try it on weak phones where the FPS stays low even with the GPU lightly used. Not measured yet; turn it off if the motion gets less smooth.</string>
 </resources>

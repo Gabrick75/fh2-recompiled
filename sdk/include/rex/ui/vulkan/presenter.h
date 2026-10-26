@@ -192,6 +192,23 @@ class VulkanPresenter final : public Presenter {
   // A resize or rotation takes 1-2; the loop that never ends takes ~24 a second.
   static constexpr uint32_t kCiclosParaColaUnica = 8;
 
+  /*
+   * present_cola_unica_lenta_ms: moving presentation to queue 0 when presenting on the second queue holds
+   * the painting thread (see the cvar's comment). Only the thread that paints touches these, except the
+   * flag, which ColaDePresentacion reads.
+   */
+  void VigilarPresentLento(uint64_t inicio_ns, uint64_t fin_ns);
+  std::atomic<bool> cola_unica_por_espera_{false};
+  uint64_t lento_presents_ = 0;        // presents measured so far (the first kLentoIgnorar are skipped)
+  uint64_t lento_ultimo_fin_ns_ = 0;   // end of the previous present, for the frame interval
+  uint32_t lento_ventana_ = 0;         // presents in the current window
+  uint32_t lento_lentos_ = 0;          // of them, held >= the threshold in a slow frame
+  uint64_t lento_ns_ventana_ = 0;      // time inside PaintAndPresentImpl in the window
+  bool lento_informe_tras_cambio_ = false;  // one more window is logged after the switch
+  static constexpr uint64_t kLentoIgnorar = 600;  // loading screens and the first race frames
+  static constexpr uint32_t kLentoVentana = 300;
+  static constexpr uint32_t kLentoFotogramaMinimoMs = 25;  // under 40 fps: a vsync wait at 60 does not count
+
   // Usable for both the guest output image itself and for intermediate images.
   class GuestOutputImage {
    public:

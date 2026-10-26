@@ -365,4 +365,6 @@
     <string name="draws_the_reflection_mips_level_by_level">Desenha as versões menores dos reflexos todas juntas, em vez de uma por uma. A imagem não muda; alivia a GPU.</string>
     <string name="reflection_stagger">Reflexos atualizados em etapas</string>
     <string name="reflection_stagger_description">Os reflexos do carro são redesenhados um terço por vez, a imagem inteira a cada 3 quadros, em vez de inteira a cada quadro: bem menos trabalho para a GPU. Podem atrasar um pouco em mudanças rápidas.</string>
+    <string name="present_thread">Apresentar numa thread própria</string>
+    <string name="present_thread_desc">A imagem é enviada para a tela por uma thread separada, e o jogo começa o próximo quadro sem esperar. Teste em celulares fracos em que o FPS fica baixo mesmo com a GPU pouco usada. Ainda sem medição; desligue se o movimento ficar menos suave.</string>
 </resources>

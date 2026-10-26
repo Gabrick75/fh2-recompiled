@@ -213,6 +213,28 @@ REXCVAR_DEFINE_BOOL(present_segunda_cola, true, "UI/Presenter",
 REXCVAR_DEFINE_BOOL(present_cola_unica_auto, true, "UI/Presenter",
                     "Pasar a presentar en la cola 0 cuando un bucle de reconexion no termina en la segunda cola");
 
+/*
+ * Moving presentation to queue 0 when presenting on the second queue holds the painting thread.
+ *
+ * usuario-23 (Galaxy A17 SM-A175F, Mali-G57 MC2, driver r54p1, 0.4.1, 2026-10-26): the ring thread spent
+ * ~31 ms of every frame inside the present ("RefreshGuestOutput: despues") while the GPU sat idle ~28 ms
+ * between submissions ("hueco entre trabajos"), the time the ring takes to record a frame. Every other user
+ * log, Mali-G720 and G615 included, stays at 0-5 ms. The present waited for the GPU to finish, so recording
+ * and GPU work never overlapped: ~14 fps with 46 ms of real GPU work per frame. The suspect is the same as
+ * on Mali-G615: the present on queue 1 waits on a semaphore the paint signals on queue 0.
+ *
+ * A present counts as slow when PaintAndPresentImpl takes at least N ms in a frame longer than
+ * kLentoFotogramaMinimoMs (a phone waiting for vsync at 60 fps never counts). After kLentoIgnorar presents,
+ * a window of kLentoVentana with 3/4 of them slow moves presentation to queue 0 for the rest of the session,
+ * with the second queue idle first, and logs the window before and the one after. With the presenter's own
+ * thread (present_hilo_propio) it does nothing: there a present blocked on queue 0 would hold the lock the
+ * ring submits through, and the ring is no longer the one waiting.
+ */
+REXCVAR_DEFINE_INT32(present_cola_unica_lenta_ms, 10, "UI/Presenter",
+                     "Pasar a presentar en la cola 0 cuando presentar en la segunda cola tiene al hilo que pinta "
+                     "parado al menos N ms en 3 de cada 4 fotogramas lentos. 0 = nunca")
+    .range(0, 1000);
+
 #if REX_PLATFORM_SWITCH
 // MAILBOX does not exist on the NVK VI surface: wsi_common_switch.c only exposes FIFO and IMMEDIATE.
 #define REX_VULKAN_ALLOW_UNSYNCED_PRESENT_DEFAULT false
@@ -2471,10 +2493,71 @@ bool VulkanPresenter::GuestOutputImage::Initialize() {
 }
 
 uint32_t VulkanPresenter::ColaDePresentacion() const {
-  if (!REXCVAR_GET(present_segunda_cola) || cola_unica_por_bucle_.load(std::memory_order_relaxed)) {
+  if (!REXCVAR_GET(present_segunda_cola) || cola_unica_por_bucle_.load(std::memory_order_relaxed) ||
+      cola_unica_por_espera_.load(std::memory_order_relaxed)) {
     return 0;
   }
   return vulkan_device_->queue_families()[paint_context_.present_queue_family].queues.size() > 1 ? 1 : 0;
+}
+
+// See the present_cola_unica_lenta_ms comment.
+void VulkanPresenter::VigilarPresentLento(uint64_t inicio_ns, uint64_t fin_ns) {
+  const int32_t umbral_ms = REXCVAR_GET(present_cola_unica_lenta_ms);
+  const uint64_t intervalo_ns = lento_ultimo_fin_ns_ ? fin_ns - lento_ultimo_fin_ns_ : 0;
+  lento_ultimo_fin_ns_ = fin_ns;
+  const bool en_cola_0 = cola_unica_por_espera_.load(std::memory_order_relaxed);
+  // After the switch only the one window that is logged; before it, only presents on the second queue
+  // from the thread that records.
+  if (umbral_ms <= 0 ||
+      (en_cola_0 ? !lento_informe_tras_cambio_ : (ColaDePresentacion() == 0 || HiloDePintadoActivo()))) {
+    return;
+  }
+  if (++lento_presents_ <= kLentoIgnorar) {
+    return;
+  }
+  const uint64_t dentro_ns = fin_ns - inicio_ns;
+  ++lento_ventana_;
+  lento_ns_ventana_ += dentro_ns;
+  if (dentro_ns >= uint64_t(umbral_ms) * 1000000ull &&
+      intervalo_ns >= uint64_t(kLentoFotogramaMinimoMs) * 1000000ull) {
+    ++lento_lentos_;
+  }
+  if (lento_ventana_ < kLentoVentana) {
+    return;
+  }
+  const double media_ms = double(lento_ns_ventana_) / 1e6 / double(lento_ventana_);
+  const uint32_t lentos = lento_lentos_;
+  lento_ventana_ = 0;
+  lento_lentos_ = 0;
+  lento_ns_ventana_ = 0;
+  if (en_cola_0) {
+    if (lento_informe_tras_cambio_) {
+      lento_informe_tras_cambio_ = false;
+      REXLOG_INFO(
+          "[presentador] tras pasar a la cola 0 (present_cola_unica_lenta_ms): {} de {} presents parados >= {} "
+          "ms, {:.2f} ms de media dentro de PaintAndPresent",
+          lentos, kLentoVentana, umbral_ms, media_ms);
+    }
+    return;
+  }
+  if (lentos * 4 < kLentoVentana * 3) {
+    return;
+  }
+  // As in RecrearSemaforosDePresentacion: the second queue idle first, so nothing still waits there.
+  const uint32_t cola_anterior = ColaDePresentacion();
+  {
+    const VulkanDevice::Queue::Acquisition queue_acquisition =
+        vulkan_device_->AcquireQueue(paint_context_.present_queue_family, cola_anterior);
+    vulkan_device_->functions().vkQueueWaitIdle(queue_acquisition.queue());
+  }
+  cola_unica_por_espera_.store(true, std::memory_order_relaxed);
+  lento_informe_tras_cambio_ = true;
+  REXLOG_WARN(
+      "[presentador] presentar en la cola {} de la familia {} tiene parado al hilo que pinta: {} de {} presents "
+      ">= {} ms en fotogramas de mas de {} ms, {:.2f} ms de media dentro de PaintAndPresent. Se presenta en la "
+      "cola 0, la del pintado, el resto de la sesion (present_cola_unica_lenta_ms)",
+      cola_anterior, paint_context_.present_queue_family, lentos, kLentoVentana, umbral_ms,
+      kLentoFotogramaMinimoMs, media_ms);
 }
 
 void VulkanPresenter::RecrearSemaforosDePresentacion() {
@@ -2562,6 +2645,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
 
   // First mark of the fine-grained breakdown. With the switch off this is just a bool.
   uint64_t perfil = PintadoAhora();
+  // present_cola_unica_lenta_ms: the whole call, whichever piece of it waits.
+  const uint64_t inicio_present_ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                  std::chrono::steady_clock::now().time_since_epoch())
+                                                  .count());
 
   // Begin the submission in place of the one not currently potentially used on
   // the GPU.
@@ -3534,6 +3621,12 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
   }
   PintadoTramo(kTrozoCierre, perfil);
   PintadoVolcarSiToca(PaintContext::kSubmissionCount);
+  if (present_result == VK_SUCCESS || present_result == VK_SUBOPTIMAL_KHR) {
+    VigilarPresentLento(inicio_present_ns,
+                        uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::steady_clock::now().time_since_epoch())
+                                     .count()));
+  }
 
   switch (present_result) {
     case VK_SUCCESS:
