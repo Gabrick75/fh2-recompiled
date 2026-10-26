@@ -90,7 +90,8 @@ final class GameOptions {
     // fh2_nativo_mips_reflejo_juntos (native), on by default (2026-10-26: 48 passes fewer, matches the emulated image)
     static final String REFLECTION_MIPS = "reflection_mips";
     static final String TIGHT_AREA = "tight_area";  // fh2_nativo_area_justa (native), on by default
-    // fh2_reflexo_faces: the car reflection cube redrawn 2 faces a frame instead of 6 (both renderers), off by default
+    // fh2_reflexo_faces: the car reflection cube redrawn 2 faces a frame instead of 6 (both renderers), on by default
+    // (2026-10-26, S23 A/B in one session: +5 % fps, no visible difference)
     static final String REFLECTION_STAGGER = "reflection_stagger";
     // Diagnostics (About page)
     static final String GPU_MEASUREMENTS = "gpu_measurements";  // fh2_nativo_medir_gpu: GPU times in the logs
@@ -213,7 +214,7 @@ final class GameOptions {
                 ADAPTIVE_VBLANK.equals(key) || RESOLVE_SHORTCUT.equals(key) || VERTEX_CACHE.equals(key) ||
                 INDEX_CACHE.equals(key) || VERTEX_NO_WAIT.equals(key) || EXACT_TARGETS.equals(key) ||
                 VIBRATION_PHONE.equals(key) || TIGHT_AREA.equals(key) || REFLECTION_MIPS.equals(key) ||
-                STEP_PACING.equals(key);
+                STEP_PACING.equals(key) || REFLECTION_STAGGER.equals(key);
         return prefs(context).getBoolean(key, byDefault);
     }
 
