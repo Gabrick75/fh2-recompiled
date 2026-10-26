@@ -60,6 +60,9 @@
 #if defined(__aarch64__)
 #include <arm_neon.h>
 #endif
+#if defined(__linux__)
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -206,6 +209,11 @@ extern std::atomic<uint64_t> g_nfsmw_fotogramas_juego;
 
 #if defined(FH2_RECOMP)
 bool Fh2UmaFaixaAtiva();  // app/src/fh2_desempenho.cpp
+
+// Kernel tid of the ring thread, 0 until it starts. Threads the ring creates (the Vulkan driver's own) inherit its
+// name "GPU anillo nativo", so the Android core pinning (android/app/src/main/cpp/android_rendimiento.cpp) tells
+// the ring apart by this tid, not by the name.
+std::atomic<int> g_fh2_nativo_anillo_tid{0};
 #endif
 
 namespace nfsmw::nativo {
@@ -1794,6 +1802,9 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   int BucleAnillo() {
 #if defined(FH2_RECOMP)
     hilo_anillo_id_ = std::this_thread::get_id();
+#if defined(__linux__)
+    g_fh2_nativo_anillo_tid.store(int(gettid()), std::memory_order_release);
+#endif
     fh2_lecturas_diferidas_ = REXCVAR_GET(fh2_nativo_lecturas_diferidas);
 #endif
     /*
