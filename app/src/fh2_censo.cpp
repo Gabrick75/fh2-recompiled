@@ -3710,13 +3710,6 @@ REX_HOOK_RAW(sub_824753A0) {
   }
   __imp__sub_824753A0(ctx, base);
 }
-REX_EXTERN(__imp__sub_82475730);
-REX_HOOK_RAW(sub_82475730) {
-  if (REXCVAR_GET(fh2_censo)) {
-    Count(417, ctx, base);
-  }
-  __imp__sub_82475730(ctx, base);
-}
 REX_EXTERN(__imp__sub_82475738);
 REX_HOOK_RAW(sub_82475738) {
   if (REXCVAR_GET(fh2_censo)) {
