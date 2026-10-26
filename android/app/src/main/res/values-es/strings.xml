@@ -54,6 +54,8 @@
     <string name="creates_the_small_render_targets_reflect">Dibuja las imágenes pequeñas del juego, como los reflejos, solo al tamaño que necesitan, en lugar del de la pantalla entera: menos trabajo para la GPU. Cuando hace falta, vuelve solo al tamaño completo.</string>
     <string name="decode_audio_in_the_background">Decodificar audio en segundo plano</string>
     <string name="defaults_restored">Valores predeterminados restaurados.</string>
+    <string name="step_pacing">Movimiento suave</string>
+    <string name="step_pacing_description">Cada fotograma mostrado avanza el juego exactamente un paso, en vez de 0 o 2 cuando los FPS bajan de 30. Desactívalo para comparar.</string>
     <string name="deferred_scene_copy">Copia diferida de la escena</string>
     <string name="delete">Borrar</string>
     <string name="delete_2">¿Borrar %1$s?</string>

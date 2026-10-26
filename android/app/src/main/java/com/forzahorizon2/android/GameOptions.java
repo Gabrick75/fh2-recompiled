@@ -99,6 +99,7 @@ final class GameOptions {
     static final String RESOLVE_SHORTCUT = "resolve_shortcut";  // gpu_atalho_resolve
     static final String ASYNC_SHADERS = "async_shaders";      // async_shader_compilation (emulated)
     static final String LAZY_COMPOSITE = "lazy_composite";    // nfsmw_nativo_compuesta_perezosa (native)
+    static final String STEP_PACING = "step_pacing";          // fh2_ritmo_passos: one game step per frame, on
     static final String DRIVER = "driver";                    // imported driver name, "" = system; not loaded yet
     static final String TURBO = "turbo";                      // not applied yet
     // Sound
@@ -209,7 +210,8 @@ final class GameOptions {
         boolean byDefault = PIN_THREADS.equals(key) || PERFORMANCE_HINTS.equals(key) || ONE_PASS.equals(key) ||
                 ADAPTIVE_VBLANK.equals(key) || RESOLVE_SHORTCUT.equals(key) || VERTEX_CACHE.equals(key) ||
                 INDEX_CACHE.equals(key) || VERTEX_NO_WAIT.equals(key) || EXACT_TARGETS.equals(key) ||
-                VIBRATION_PHONE.equals(key) || TIGHT_AREA.equals(key) || REFLECTION_MIPS.equals(key);
+                VIBRATION_PHONE.equals(key) || TIGHT_AREA.equals(key) || REFLECTION_MIPS.equals(key) ||
+                STEP_PACING.equals(key);
         return prefs(context).getBoolean(key, byDefault);
     }
 
@@ -217,7 +219,7 @@ final class GameOptions {
     // hidden ones too, but the imported GPU driver.
     private static final String[] RESTORABLE = {RENDERER, RENDER_SCALE, FPS, ANTI_ALIASING, MSAA_SAMPLES, FXAA_QUALITY,
             SCALING, SHARPNESS, FSR_MODE, ANISOTROPIC, SHADOWS, SHADOW_DISTANCE, CAR_REFLECTIONS, SHADOW_MAP_SCALE,
-            WORLD_GRASS, WORLD_OBJECTS, WORLD_REFLECTIONS, WORLD_SHADOWS, WORLD_CROWD, FOLIAGE_COVERAGE, ONE_PASS, RESOLVE_SHORTCUT, ASYNC_SHADERS, LAZY_COMPOSITE, PIN_THREADS, JOGO_RAPIDO, PERFORMANCE_HINTS,
+            WORLD_GRASS, WORLD_OBJECTS, WORLD_REFLECTIONS, WORLD_SHADOWS, WORLD_CROWD, FOLIAGE_COVERAGE, ONE_PASS, RESOLVE_SHORTCUT, ASYNC_SHADERS, LAZY_COMPOSITE, STEP_PACING, PIN_THREADS, JOGO_RAPIDO, PERFORMANCE_HINTS,
             VERTEX_CACHE, INDEX_CACHE, VERTEX_NO_WAIT, EXACT_TARGETS, REFLECTION_MIPS, TIGHT_AREA, TURBO};
 
     /** The Graphics and Performance options back to their defaults (defaultOf, flag): the stored values go. */
@@ -510,6 +512,7 @@ final class GameOptions {
         GpuDrivers.arguments(context, args);  // the chosen Vulkan driver, or the system's
         // The FPS limit is the guest vblank rate (fpsLimit).
         args.add("--video_mode_refresh_rate=" + vblankRate(context));
+        args.add("--fh2_ritmo_passos=" + flag(context, STEP_PACING));
         // World detail: the game's TrackSettings.xml rewritten at start (fh2_mundo.cpp), both renderers; grass is the
         // native renderer's (the vegetation's fade distances in its draws).
         args.add("--fh2_mundo_grama=" + worldFactor(context, WORLD_GRASS));

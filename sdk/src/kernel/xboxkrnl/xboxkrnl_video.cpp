@@ -86,10 +86,16 @@ void WarnNoGpuEmulation(const char* export_name, std::atomic<bool>& warned) {
     REXKRNL_WARN("{}: no GPU emulation loaded (gpu_plugin not set); call ignored", export_name);
   }
 }
+
+std::atomic<rex::kernel::xboxkrnl::VdSwapObserver> g_vd_swap_observer{nullptr};
 }  // namespace
 
 namespace rex::kernel::xboxkrnl {
 using namespace rex::system;
+
+void SetVdSwapObserver(VdSwapObserver observer) {
+  g_vd_swap_observer.store(observer, std::memory_order_release);
+}
 
 REX_EXPORT_STUB(__imp__VdBlockUntilGUIIdle);
 REX_EXPORT_STUB(__imp__VdDisplayFatalError);
@@ -455,6 +461,10 @@ void VdSwap_entry(mapped_void buffer_ptr,      // ptr into primary ringbuffer
   assert(texture_format_ptr);
   assert(width);
   assert(height);
+
+  if (const VdSwapObserver observer = g_vd_swap_observer.load(std::memory_order_acquire)) {
+    observer();
+  }
 
   namespace xenos = rex::graphics::xenos;
 

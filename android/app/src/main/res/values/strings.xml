@@ -56,6 +56,8 @@
     <string name="creates_the_small_render_targets_reflect">Draws the game\'s small images, like the reflections, only at the size they need instead of the whole screen\'s: less work for the GPU. When needed, it goes back to full size on its own.</string>
     <string name="decode_audio_in_the_background">Decode audio in the background</string>
     <string name="defaults_restored">Defaults restored.</string>
+    <string name="step_pacing">Smooth motion</string>
+    <string name="step_pacing_description">Every frame shown moves the game forward by exactly one step, instead of 0 or 2 when the frame rate is below 30. Turn it off to compare.</string>
     <string name="deferred_scene_copy">Deferred scene copy</string>
     <string name="delete">Delete</string>
     <string name="delete_2">Delete %1$s?</string>
