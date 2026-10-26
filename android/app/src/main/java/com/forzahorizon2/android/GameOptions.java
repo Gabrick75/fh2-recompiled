@@ -90,6 +90,8 @@ final class GameOptions {
     // fh2_nativo_mips_reflejo_juntos (native), on by default (2026-10-26: 48 passes fewer, matches the emulated image)
     static final String REFLECTION_MIPS = "reflection_mips";
     static final String TIGHT_AREA = "tight_area";  // fh2_nativo_area_justa (native), on by default
+    // fh2_reflexo_faces: the car reflection cube redrawn 2 faces a frame instead of 6 (both renderers), off by default
+    static final String REFLECTION_STAGGER = "reflection_stagger";
     // Diagnostics (About page)
     static final String GPU_MEASUREMENTS = "gpu_measurements";  // fh2_nativo_medir_gpu: GPU times in the logs
     static final String VERBOSE_LOG = "verbose_log";  // log_detalhado: every repeated message (stubs, textures)
@@ -220,7 +222,7 @@ final class GameOptions {
     private static final String[] RESTORABLE = {RENDERER, RENDER_SCALE, FPS, ANTI_ALIASING, MSAA_SAMPLES, FXAA_QUALITY,
             SCALING, SHARPNESS, FSR_MODE, ANISOTROPIC, SHADOWS, SHADOW_DISTANCE, CAR_REFLECTIONS, SHADOW_MAP_SCALE,
             WORLD_GRASS, WORLD_OBJECTS, WORLD_REFLECTIONS, WORLD_SHADOWS, WORLD_CROWD, FOLIAGE_COVERAGE, ONE_PASS, RESOLVE_SHORTCUT, ASYNC_SHADERS, LAZY_COMPOSITE, STEP_PACING, PIN_THREADS, JOGO_RAPIDO, PERFORMANCE_HINTS,
-            VERTEX_CACHE, INDEX_CACHE, VERTEX_NO_WAIT, EXACT_TARGETS, REFLECTION_MIPS, TIGHT_AREA, TURBO};
+            VERTEX_CACHE, INDEX_CACHE, VERTEX_NO_WAIT, EXACT_TARGETS, REFLECTION_MIPS, TIGHT_AREA, REFLECTION_STAGGER, TURBO};
 
     /** The Graphics and Performance options back to their defaults (defaultOf, flag): the stored values go. */
     static void restoreDefaults(Context context) {
@@ -513,6 +515,8 @@ final class GameOptions {
         // The FPS limit is the guest vblank rate (fpsLimit).
         args.add("--video_mode_refresh_rate=" + vblankRate(context));
         args.add("--fh2_ritmo_passos=" + flag(context, STEP_PACING));
+        // The game's EnvMapFrequencyScale capped (fh2_desempenho.cpp): the whole cube over 3 frames instead of every frame.
+        args.add("--fh2_reflexo_faces=" + (flag(context, REFLECTION_STAGGER) ? 2 : 6));
         // World detail: the game's TrackSettings.xml rewritten at start (fh2_mundo.cpp), both renderers; grass is the
         // native renderer's (the vegetation's fade distances in its draws).
         args.add("--fh2_mundo_grama=" + worldFactor(context, WORLD_GRASS));

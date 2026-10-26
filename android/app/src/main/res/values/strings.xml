@@ -365,4 +365,6 @@
     <string name="tight_pass_area_description">Each pass loads and stores only the rectangle its draws use, not the whole 1280x720 image: the small bloom passes stop moving the whole image through memory. Turn it off to compare.</string>
     <string name="reflection_mips_in_one_pass">Reflection mips in one pass per level</string>
     <string name="draws_the_reflection_mips_level_by_level">Draws the reflections\' smaller versions all together instead of one by one. The image does not change; it eases the GPU.</string>
+    <string name="reflection_stagger">Reflections updated in steps</string>
+    <string name="reflection_stagger_description">The car reflections are redrawn a third at a time, the whole picture every 3 frames, instead of entirely every frame: much less work for the GPU. They may lag a little behind fast changes.</string>
 </resources>

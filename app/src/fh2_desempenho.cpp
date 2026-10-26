@@ -314,3 +314,48 @@ REX_HOOK_RAW(sub_82482390) {
     ctx.r3.u64 = uint64_t(forced);
   }
 }
+
+// REFLECTION CUBE FACES PER FRAME (sub_824041C8)
+//
+// The game's render scenarios (media/renderscenarios.zip, CDynamicRender*Control, same system as Forza Horizon 1)
+// have an EnvMapFrequencyScale control, id 30 (+364 in a scenario, offset table at 0x8333F928). sub_824041C8 reads
+// its value (a debug override, then the scenario stack, then the default 1.0), and sub_82409D08 turns it into the
+// number of faces of the car reflection cube redrawn this frame: int(value * 6) clamped to 1-6, unless it forces 6
+// (+457 / +480 of its argument) or 1 (some camera modes). No FH2 scenario sets the control, so the game redraws all
+// six faces, and their mip chains, every frame. Pinyon Shift measured the same control at a quarter rate on FH1
+// (Odin 2, Adreno 740: 25.0 -> 22.7 ms a frame, reflections looking the same).
+//
+// With fh2_reflexo_faces at 1-5 the value read by sub_82409D08 (told apart by the return address) is capped so that
+// it gives that many faces: the cube is still fully redrawn, over 6 / faces frames. The forced cases and the other
+// readers of the value (which only compare it with 0) are left as they are.
+REXCVAR_DEFINE_INT32(fh2_reflexo_faces, 6, "FH2",
+                     "Faces of the car reflection cube redrawn per frame, 1-6 (6: the game's own, all of them every "
+                     "frame; app/src/fh2_desempenho.cpp)");
+
+REX_EXTERN(__imp__sub_824041C8);
+
+namespace {
+
+// Return address of the call to sub_824041C8 in sub_82409D08 (the faces per frame).
+constexpr uint32_t kReflectionFacesReturn = 0x82409DE0;
+
+}  // namespace
+
+REX_HOOK_RAW(sub_824041C8) {
+  const uint32_t from = static_cast<uint32_t>(ctx.lr);
+  __imp__sub_824041C8(ctx, base);
+  const int32_t faces = REXCVAR_GET(fh2_reflexo_faces);
+  if (from != kReflectionFacesReturn || faces < 1 || faces >= 6) {
+    return;
+  }
+  // fctiwz truncates: half a face of margin keeps faces * 6 / 6 from landing just under the integer.
+  const double limit = (faces + 0.5) / 6.0;
+  if (ctx.f1.f64 > limit) {
+    static std::atomic<int> reported{0};
+    if (reported.fetch_add(1, std::memory_order_relaxed) == 0) {
+      REXLOG_INFO("[fh2] reflejo: EnvMapFrequencyScale {:.2f} -> {:.2f} ({} caras por fotograma)", ctx.f1.f64, limit,
+                  faces);
+    }
+    ctx.f1.f64 = limit;
+  }
+}
