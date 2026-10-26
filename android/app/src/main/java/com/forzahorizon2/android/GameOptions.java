@@ -89,6 +89,7 @@ final class GameOptions {
     static final String EXACT_TARGETS = "exact_targets";  // fh2_nativo_destinos_exactos (native), on by default
     // fh2_nativo_mips_reflejo_juntos (native), on by default (2026-10-26: 48 passes fewer, matches the emulated image)
     static final String REFLECTION_MIPS = "reflection_mips";
+    static final String TIGHT_AREA = "tight_area";  // fh2_nativo_area_justa (native), on by default
     // Diagnostics (About page)
     static final String GPU_MEASUREMENTS = "gpu_measurements";  // fh2_nativo_medir_gpu: GPU times in the logs
     static final String VERBOSE_LOG = "verbose_log";  // log_detalhado: every repeated message (stubs, textures)
@@ -208,7 +209,7 @@ final class GameOptions {
         boolean byDefault = PIN_THREADS.equals(key) || PERFORMANCE_HINTS.equals(key) || ONE_PASS.equals(key) ||
                 ADAPTIVE_VBLANK.equals(key) || RESOLVE_SHORTCUT.equals(key) || VERTEX_CACHE.equals(key) ||
                 INDEX_CACHE.equals(key) || VERTEX_NO_WAIT.equals(key) || EXACT_TARGETS.equals(key) ||
-                VIBRATION_PHONE.equals(key) || REFLECTION_MIPS.equals(key);
+                VIBRATION_PHONE.equals(key) || TIGHT_AREA.equals(key) || REFLECTION_MIPS.equals(key);
         return prefs(context).getBoolean(key, byDefault);
     }
 
@@ -217,7 +218,7 @@ final class GameOptions {
     private static final String[] RESTORABLE = {RENDERER, RENDER_SCALE, FPS, ANTI_ALIASING, MSAA_SAMPLES, FXAA_QUALITY,
             SCALING, SHARPNESS, FSR_MODE, ANISOTROPIC, SHADOWS, SHADOW_DISTANCE, CAR_REFLECTIONS, SHADOW_MAP_SCALE,
             WORLD_GRASS, WORLD_OBJECTS, WORLD_REFLECTIONS, WORLD_SHADOWS, WORLD_CROWD, FOLIAGE_COVERAGE, ONE_PASS, RESOLVE_SHORTCUT, ASYNC_SHADERS, LAZY_COMPOSITE, PIN_THREADS, JOGO_RAPIDO, PERFORMANCE_HINTS,
-            VERTEX_CACHE, INDEX_CACHE, VERTEX_NO_WAIT, EXACT_TARGETS, REFLECTION_MIPS, TURBO};
+            VERTEX_CACHE, INDEX_CACHE, VERTEX_NO_WAIT, EXACT_TARGETS, REFLECTION_MIPS, TIGHT_AREA, TURBO};
 
     /** The Graphics and Performance options back to their defaults (defaultOf, flag): the stored values go. */
     static void restoreDefaults(Context context) {
@@ -549,6 +550,7 @@ final class GameOptions {
             args.add("--fh2_nativo_vertices_sin_espera=" + flag(context, VERTEX_NO_WAIT));
             args.add("--fh2_nativo_destinos_exactos=" + flag(context, EXACT_TARGETS));
             args.add("--fh2_nativo_mips_reflejo_juntos=" + flag(context, REFLECTION_MIPS));
+            args.add("--fh2_nativo_area_justa=" + flag(context, TIGHT_AREA));
             // Only does something with MSAA: soft but grainy foliage edges instead of the alpha test's hard cut.
             args.add("--fh2_nativo_msaa_a2c=" + flag(context, FOLIAGE_COVERAGE));
         }

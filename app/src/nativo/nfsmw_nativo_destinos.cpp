@@ -2349,7 +2349,13 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
           // Held until the next pass on it (fh2_nativo_borrados_diferidos); the whole image, as below.
           VkClearValue valor{};
           valor.color = color;
-          Fh2DiferirBorrado(*destino_render, valor);
+          // A resolve narrower than the target (not a full-width strip) clears only its rectangle on the Xbox 360:
+          // that rectangle goes with the held clear, for fh2_nativo_area_justa (the strips clear the whole image).
+          const bool fh2_parcial = gx0 > 0 || uint32_t(gx1) < (pitch & ~7u);
+          const VkRect2D fh2_rect{{std::max(x0, 0), std::max(y0, 0)},
+                                  {uint32_t(std::max(x1 - std::max(x0, 0), 0)), uint32_t(std::max(y1 - std::max(y0, 0), 0))}};
+          Fh2DiferirBorrado(*destino_render, valor,
+                            fh2_parcial && fh2_rect.extent.width && fh2_rect.extent.height ? &fh2_rect : nullptr);
           QuitarBanda(*destino_render);
         } else
 #endif
@@ -4938,7 +4944,21 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 
 #if defined(FH2_RECOMP)
   // fh2_nativo_borrados_diferidos. The clear is held in the image (fh2_borrar) and the image in fh2_por_borrar_.
-  void Fh2DiferirBorrado(Imagen& imagen, const VkClearValue& valor) {
+  // rect: what the game's clear covers (a partial resolve's rectangle, image pixels); nullptr = the whole image.
+  void Fh2DiferirBorrado(Imagen& imagen, const VkClearValue& valor, const VkRect2D* rect = nullptr) {
+    if (!rect) {
+      imagen.fh2_borrar_entero = true;
+    } else if (!imagen.fh2_borrar) {
+      imagen.fh2_borrar_entero = false;
+      imagen.fh2_rect_borrar = *rect;
+    } else if (!imagen.fh2_borrar_entero) {  // another held clear on it: both rectangles
+      VkRect2D& u = imagen.fh2_rect_borrar;
+      const int32_t x0 = std::min(u.offset.x, rect->offset.x), y0 = std::min(u.offset.y, rect->offset.y);
+      const int32_t x1 = std::max(u.offset.x + int32_t(u.extent.width), rect->offset.x + int32_t(rect->extent.width));
+      const int32_t y1 =
+          std::max(u.offset.y + int32_t(u.extent.height), rect->offset.y + int32_t(rect->extent.height));
+      u = VkRect2D{{x0, y0}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
+    }
     imagen.fh2_borrar = true;
     imagen.fh2_valor_borrar = valor;
     if (std::find(fh2_por_borrar_.begin(), fh2_por_borrar_.end(), &imagen) == fh2_por_borrar_.end()) {
