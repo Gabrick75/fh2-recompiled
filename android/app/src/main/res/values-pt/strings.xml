@@ -363,4 +363,6 @@
     <string name="tight_pass_area_description">Cada passada carrega e grava só o retângulo que os desenhos usam, não a imagem inteira de 1280x720: as passadas pequenas do brilho deixam de mover a imagem toda pela memória. Desligue para comparar.</string>
     <string name="reflection_mips_in_one_pass">Mips do reflexo num passe por nível</string>
     <string name="draws_the_reflection_mips_level_by_level">Desenha as versões menores dos reflexos todas juntas, em vez de uma por uma. A imagem não muda; alivia a GPU.</string>
+    <string name="reflection_stagger">Reflexos atualizados em etapas</string>
+    <string name="reflection_stagger_description">Os reflexos do carro são redesenhados um terço por vez, a imagem inteira a cada 3 quadros, em vez de inteira a cada quadro: bem menos trabalho para a GPU. Podem atrasar um pouco em mudanças rápidas.</string>
 </resources>

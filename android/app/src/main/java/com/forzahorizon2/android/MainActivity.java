@@ -1343,6 +1343,10 @@ public final class MainActivity extends AppCompatActivity {
                     tr(R.string.draws_the_reflection_mips_level_by_level),
                     GameOptions.flag(this, GameOptions.REFLECTION_MIPS),
                     v -> GameOptions.flag(this, GameOptions.REFLECTION_MIPS, v)));
+            rows.add(ui.toggleRow(tr(R.string.reflection_stagger),
+                    tr(R.string.reflection_stagger_description),
+                    GameOptions.flag(this, GameOptions.REFLECTION_STAGGER),
+                    v -> GameOptions.flag(this, GameOptions.REFLECTION_STAGGER, v)));
             rows.add(ui.toggleRow(tr(R.string.tight_pass_area),
                     tr(R.string.tight_pass_area_description),
                     GameOptions.flag(this, GameOptions.TIGHT_AREA),
