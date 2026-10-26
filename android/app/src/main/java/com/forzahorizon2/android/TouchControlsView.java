@@ -39,6 +39,8 @@ public final class TouchControlsView extends View {
     private static final int BUTTON = 0, STICK = 1, DPAD = 2, PEDAL = 3, MENU = 4, ARROW = 5;
     private static final int TRIGGER_NONE = 0, TRIGGER_LEFT = 1, TRIGGER_RIGHT = 2;
     private static final String PREFS = "fh2_controls";
+    // 2: the steering arrows got half their first size; a layout saved before keeps theirs out.
+    private static final int LAYOUT_VERSION = 2;
     // Steering arrows: seconds from the centre to full lock while held, and from full lock back to the centre
     // once let go (faster, like a wheel that straightens itself).
     private static final float ARROW_RAMP_SECONDS = .25f, ARROW_RETURN_SECONDS = .1f;
@@ -160,8 +162,8 @@ public final class TouchControlsView extends View {
         final int grey = 0xFF2A3440;
         // Left hand: steering stick, D-pad, LB.
         add(new Control("ls", STICK, "", "", 0, TRIGGER_NONE, grey, .15f, .70f, .40f, true));
-        add(new Control("steer_left", ARROW, "", "", 0, TRIGGER_NONE, grey, .07f, .72f, .24f, true));
-        add(new Control("steer_right", ARROW, "", "", 0, TRIGGER_NONE, grey, .23f, .72f, .24f, true));
+        add(new Control("steer_left", ARROW, "", "", 0, TRIGGER_NONE, grey, .06f, .76f, .12f, true));
+        add(new Control("steer_right", ARROW, "", "", 0, TRIGGER_NONE, grey, .15f, .76f, .12f, true));
         add(new Control("dpad", DPAD, "", "", 0, TRIGGER_NONE, grey, .10f, .30f, .27f, true));
         add(new Control("lb", BUTTON, "LB", "", LB, TRIGGER_NONE, grey, .07f, .09f, .13f, true));
         // Right hand: pedals, A/B/X/Y diamond, RB.
@@ -199,10 +201,11 @@ public final class TouchControlsView extends View {
         if (json == null) {
             return;
         }
+        boolean oldArrows = prefs.getInt("layout_version", 1) < 2;
         try {
             JSONObject all = new JSONObject(json);
             for (Control c : controls) {
-                JSONObject o = all.optJSONObject(c.id);
+                JSONObject o = oldArrows && c.type == ARROW ? null : all.optJSONObject(c.id);
                 if (o != null) {
                     c.x = clamp((float) o.optDouble("x", c.defX), 0f, 1f);
                     c.y = clamp((float) o.optDouble("y", c.defY), 0f, 1f);
@@ -228,6 +231,7 @@ public final class TouchControlsView extends View {
         }
         prefs.edit()
                 .putString("layout", all.toString())
+                .putInt("layout_version", LAYOUT_VERSION)
                 .putFloat("opacity", opacity)
                 .putBoolean("haptics", haptics)
                 .putBoolean("tilt", tiltSteering)

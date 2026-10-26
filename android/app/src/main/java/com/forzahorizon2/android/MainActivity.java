@@ -1584,18 +1584,25 @@ public final class MainActivity extends AppCompatActivity {
         vibrationBox.addView(vibrationToggle);
         vibrationBox.addView(vibrationModeRow);
 
-        // Touch controls: the two steering arrows, and how far they turn (shown only with the arrows on).
-        int[] locks = {40, 60, 80, 100};
-        SegmentedControl lockControl = new SegmentedControl(this, new String[] {"40 %", "60 %", "80 %", "100 %"});
-        int lock = Math.round(GameOptions.arrowLock(this) * 100);
-        int chosenLock = locks.length - 1;
-        for (int i = 0; i < locks.length; i++) {
-            if (Math.abs(locks[i] - lock) < Math.abs(locks[chosenLock] - lock)) chosenLock = i;
-        }
-        lockControl.choose(chosenLock, false);
-        lockControl.setOnChoice(index -> GameOptions.arrowLock(this, locks[index] / 100f));
+        // Touch controls: the two steering arrows, and how far they turn, 40 to 100 % in 1 % steps (shown only
+        // with the arrows on).
+        LinearLayout lockBox = ui.column();
+        TextView lockPercent = ui.text("", 22, Menu.PRIMARY, true);
+        lockBox.addView(lockPercent);
+        int lock = Math.max(40, Math.min(100, Math.round(GameOptions.arrowLock(this) * 100)));
+        lockPercent.setText(lock + " %");
+        Slider lockSlider = ui.slider(40, 100, 1, lock);
+        LinearLayout.LayoutParams lockLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lockLp.topMargin = dp(2);
+        lockBox.addView(lockSlider, lockLp);
+        lockSlider.addOnChangeListener((s, value, fromUser) -> {
+            if (!fromUser) return;
+            GameOptions.arrowLock(this, Math.round(value) / 100f);
+            lockPercent.setText(Math.round(value) + " %");
+        });
         LinearLayout lockRow = ui.stackedRow(tr(R.string.arrow_steering_strength),
-                tr(R.string.how_far_the_arrows_turn_the_wheel), lockControl);
+                tr(R.string.how_far_the_arrows_turn_the_wheel), lockBox);
         lockRow.setVisibility(GameOptions.steeringArrows(this) ? View.VISIBLE : View.GONE);
         LinearLayout touchBox = ui.group(
                 ui.toggleRow(tr(R.string.steer_with_arrows),
