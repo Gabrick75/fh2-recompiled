@@ -922,7 +922,11 @@ public final class MainActivity extends AppCompatActivity {
                     ui.toggleRow(tr(R.string.deferred_scene_copy),
                             tr(R.string.experimental_the_copy_of_the_finished),
                             GameOptions.flag(this, GameOptions.LAZY_COMPOSITE),
-                            v -> GameOptions.flag(this, GameOptions.LAZY_COMPOSITE, v)));
+                            v -> GameOptions.flag(this, GameOptions.LAZY_COMPOSITE, v)),
+                    ui.toggleRow(tr(R.string.step_pacing),
+                            tr(R.string.step_pacing_description),
+                            GameOptions.flag(this, GameOptions.STEP_PACING),
+                            v -> GameOptions.flag(this, GameOptions.STEP_PACING, v)));
             Menu.refreshDividers(performance);
             rendererOptions.addView(performance);
         } else {
