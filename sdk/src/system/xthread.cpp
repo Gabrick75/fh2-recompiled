@@ -49,6 +49,22 @@ REXCVAR_DEFINE_BOOL(ignore_thread_priorities, true, "Kernel",
 REXCVAR_DEFINE_BOOL(ignore_thread_affinities, true, "Kernel",
                     "Ignores game-specified thread affinities");
 
+// ARM64 only by default (ported from ShiftGlue d6504f6, NN-1.1): x86 cores can take microcode assists on denormal
+// operands, which flush-to-zero avoided. Pinyon Shift measured on the Odin 2 (the S23's SoC) that the FP control
+// writes were 69.8 % of the physics cycles; FH2's code has ~51,000 conditional and ~6,000 unconditional toggles.
+#if defined(__aarch64__) || defined(_M_ARM64)
+#define REX_FIXED_FP_MODE_DEFAULT true
+#else
+#define REX_FIXED_FP_MODE_DEFAULT false
+#endif
+REXCVAR_DEFINE_BOOL(ppc_fixed_fp_mode, REX_FIXED_FP_MODE_DEFAULT, "CPU",
+                    "Run guest code in IEEE FP mode only: never turn on flush-to-zero for VMX code, which skips the "
+                    "host FP control writes around it. VMX results keep denormals the console flushes");
+
+namespace rex::ppc {
+std::atomic<bool> g_fixed_fp_mode{REX_FIXED_FP_MODE_DEFAULT};
+}  // namespace rex::ppc
+
 namespace rex::system {
 
 const uint32_t XAPC::kSize;
@@ -677,6 +693,7 @@ void XThread::Execute() {
   if (args.size() > 7)
     ctx->r10.u64 = args[7];
 
+  rex::ppc::g_fixed_fp_mode.store(REXCVAR_GET(ppc_fixed_fp_mode), std::memory_order_relaxed);
   ctx->fpscr.InitHost();
 
   // Convert this host thread to a fiber so SwitchTo works bidirectionally.
