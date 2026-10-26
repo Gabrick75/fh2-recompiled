@@ -87,7 +87,7 @@ final class GameOptions {
     static final String INDEX_CACHE = "index_cache";
     static final String VERTEX_NO_WAIT = "vertex_no_wait";  // fh2_nativo_vertices_sin_espera (native), on by default
     static final String EXACT_TARGETS = "exact_targets";  // fh2_nativo_destinos_exactos (native), on by default
-    // fh2_nativo_mips_reflejo_juntos (native), off by default until the phone A/B
+    // fh2_nativo_mips_reflejo_juntos (native), on by default (2026-10-26: 48 passes fewer, matches the emulated image)
     static final String REFLECTION_MIPS = "reflection_mips";
     // Diagnostics (About page)
     static final String GPU_MEASUREMENTS = "gpu_measurements";  // fh2_nativo_medir_gpu: GPU times in the logs
@@ -208,7 +208,7 @@ final class GameOptions {
         boolean byDefault = PIN_THREADS.equals(key) || PERFORMANCE_HINTS.equals(key) || ONE_PASS.equals(key) ||
                 ADAPTIVE_VBLANK.equals(key) || RESOLVE_SHORTCUT.equals(key) || VERTEX_CACHE.equals(key) ||
                 INDEX_CACHE.equals(key) || VERTEX_NO_WAIT.equals(key) || EXACT_TARGETS.equals(key) ||
-                VIBRATION_PHONE.equals(key);
+                VIBRATION_PHONE.equals(key) || REFLECTION_MIPS.equals(key);
         return prefs(context).getBoolean(key, byDefault);
     }
 
