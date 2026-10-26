@@ -361,6 +361,8 @@
     <string name="world_shadows_description">How far away shadows are drawn. Off: no shadows, with the native renderer. Below 1x, the native renderer leaves out the shadows of trees and bushes (faster).</string>
     <string name="writes_every_repetition_of_the_messages">Writes every repetition of the messages that repeat many times a second (renderer textures, unimplemented functions). Off, each shows only its first 20 times, and the log keeps more play time. For investigating only.</string>
     <string name="writes_to_the_log_how_long">Writes to the log how long the GPU spends on each part of the frame. For investigating only: it slows the game down, since each measurement makes the GPU wait.</string>
+    <string name="tight_pass_area">Passes only where the game draws</string>
+    <string name="tight_pass_area_description">Each pass loads and stores only the rectangle its draws use, not the whole 1280x720 image: the small bloom passes stop moving the whole image through memory. Turn it off to compare.</string>
     <string name="reflection_mips_in_one_pass">Reflection mips in one pass per level</string>
     <string name="draws_the_reflection_mips_level_by_level">Draws the reflections\' smaller versions all together instead of one by one. The image does not change; it eases the GPU.</string>
 </resources>

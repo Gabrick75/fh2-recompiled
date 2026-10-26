@@ -428,7 +428,10 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_lecturas_diferidas, true, "FH2",
 // of one draw each, about half the GPU frame on tilers. Each level only samples the same face's previous level (2D
 // fetch), so the ring holds the chain and plays it back level by level with the six faces side by side in one target
 // six times wider (window offset = face x pitch), then the six resolves: 8 passes. Same shader, inputs and pixels.
-REXCVAR_DEFINE_BOOL(fh2_nativo_mips_reflejo_juntos, false, "FH2",
+// On by default since 2026-10-26: on the PC (RADV) the 52 one-draw passes per frame drop to 4 and the per-face path
+// was the one that differed from the emulated renderer (dark chrome and black rims on the car's lights and trim, the
+// joined path and the emulated one both bright); on Mali the user logs put those passes at 8-30 ms per frame.
+REXCVAR_DEFINE_BOOL(fh2_nativo_mips_reflejo_juntos, true, "FH2",
                     "Native renderer: draw the reflection cube's mip levels with the six faces in one pass per level "
                     "(48 passes -> 8); the image does not change")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);

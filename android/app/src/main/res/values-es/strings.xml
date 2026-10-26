@@ -359,6 +359,8 @@
     <string name="world_shadows_description">Hasta qué distancia se dibujan las sombras. Desactivada: sin sombras, con el renderizador nativo. Por debajo de 1x, el renderizador nativo no dibuja las sombras de árboles y arbustos (más rápido).</string>
     <string name="writes_every_repetition_of_the_messages">Graba todas las repeticiones de los mensajes que se repiten varias veces por segundo (texturas del renderizador, funciones no implementadas). Desactivado, cada uno aparece solo las 20 primeras veces, y el log guarda más tiempo de juego. Solo para investigar.</string>
     <string name="writes_to_the_log_how_long">Graba en el log cuánto tiempo gasta la GPU en cada parte del cuadro. Solo para investigar: hace el juego más lento, porque cada medición hace esperar a la GPU.</string>
+    <string name="tight_pass_area">Pasadas solo donde el juego dibuja</string>
+    <string name="tight_pass_area_description">Cada pasada carga y guarda solo el rectángulo que usan sus dibujos, no la imagen entera de 1280x720: las pasadas pequeñas del brillo dejan de mover la imagen entera por la memoria. Desactívalo para comparar.</string>
     <string name="reflection_mips_in_one_pass">Mips del reflejo en un pase por nivel</string>
     <string name="draws_the_reflection_mips_level_by_level">Dibuja las versiones más pequeñas de los reflejos todas juntas, en lugar de una por una. La imagen no cambia; alivia la GPU.</string>
 </resources>
