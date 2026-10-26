@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 
 #if defined(__linux__)
@@ -332,6 +333,13 @@ REXCVAR_DEFINE_INT32(fh2_reflexo_faces, 6, "FH2",
                      "Faces of the car reflection cube redrawn per frame, 1-6 (6: the game's own, all of them every "
                      "frame; app/src/fh2_desempenho.cpp)");
 
+// A/B test within one game (same heat, same place): with fh2_reflexo_alternar_s > 0 the faces alternate every that
+// many seconds between fh2_reflexo_faces (2 when it is 6) and the game's 6, starting with the reduced ones. Each switch
+// is logged ("[fh2] reflejo A/B"), to be matched with the _uso.log samples and the C2 lines by their time.
+REXCVAR_DEFINE_INT32(fh2_reflexo_alternar_s, 0, "FH2",
+                     "Test: alternate the reflection cube faces per frame between fh2_reflexo_faces and 6 every this "
+                     "many seconds (0: off)");
+
 REX_EXTERN(__imp__sub_824041C8);
 
 namespace {
@@ -339,13 +347,36 @@ namespace {
 // Return address of the call to sub_824041C8 in sub_82409D08 (the faces per frame).
 constexpr uint32_t kReflectionFacesReturn = 0x82409DE0;
 
+// The faces for this frame: the cvar, or the A/B alternation.
+int32_t ReflectionFaces() {
+  int32_t faces = REXCVAR_GET(fh2_reflexo_faces);
+  const int32_t period = REXCVAR_GET(fh2_reflexo_alternar_s);
+  if (period <= 0) {
+    return faces;
+  }
+  using Clock = std::chrono::steady_clock;
+  static const Clock::time_point start = Clock::now();
+  static int64_t last_window = -1;
+  const int64_t window = std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - start).count() / period;
+  const int32_t reduced = faces >= 1 && faces < 6 ? faces : 2;
+  faces = window % 2 == 0 ? reduced : 6;
+  if (window != last_window) {
+    last_window = window;
+    REXLOG_INFO("[fh2] reflejo A/B: ventana {} de {} s, {} caras por fotograma", window, period, faces);
+  }
+  return faces;
+}
+
 }  // namespace
 
 REX_HOOK_RAW(sub_824041C8) {
   const uint32_t from = static_cast<uint32_t>(ctx.lr);
   __imp__sub_824041C8(ctx, base);
-  const int32_t faces = REXCVAR_GET(fh2_reflexo_faces);
-  if (from != kReflectionFacesReturn || faces < 1 || faces >= 6) {
+  if (from != kReflectionFacesReturn) {
+    return;
+  }
+  const int32_t faces = ReflectionFaces();
+  if (faces < 1 || faces >= 6) {
     return;
   }
   // fctiwz truncates: half a face of margin keeps faces * 6 / 6 from landing just under the integer.
