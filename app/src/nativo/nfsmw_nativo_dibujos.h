@@ -99,6 +99,10 @@ struct ImagenNativa {
   // it); anything else that touches the image first records it as a normal clear (ContextoDestinos).
   bool fh2_borrar = false;
   VkClearValue fh2_valor_borrar{};
+  // What that clear covers on the Xbox 360, in image pixels: the rectangle a partial resolve cleared (union of the
+  // held ones), or the whole image (fh2_borrar_entero). fh2_nativo_area_justa opens the pass over it.
+  bool fh2_borrar_entero = true;
+  VkRect2D fh2_rect_borrar{};
 #endif
   uint32_t resuelta_base = 0;  // where its content is while contenido_invalido
 #if defined(FH2_RECOMP)
