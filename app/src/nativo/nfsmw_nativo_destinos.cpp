@@ -721,6 +721,11 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_cementerio, true, "FH2",
                     "A resolved texture replaced by another shape at the same address is destroyed once the GPU is done "
                     "with it, instead of waiting for the GPU right there (about 4.5 waits per frame in the race: 10 fps "
                     "on the PC without it, the game's 30 with it)");
+REXCVAR_DEFINE_BOOL(fh2_nativo_cementerio_sondeo, false, "FH2",
+                    "Before reusing what waits for the GPU (the graveyard's images, the scaled copy's descriptor "
+                    "pools), ask the driver for each pending slot's fence (vkGetFenceStatus); false = trust the slots "
+                    "the ring has already completed. On the Moto G9 Play with Turnip over KGSL each query slept in "
+                    "the GPU timestamp wait: 280 ms a second of the ring");
 REXCVAR_DEFINE_BOOL(fh2_nativo_variantes_limpias, true, "FH2",
                     "With fh2_nativo_variantes: a kept texture is cleared when it comes back, as a new image would be");
 REXCVAR_DEFINE_BOOL(fh2_nativo_variantes, false, "FH2",
@@ -5294,15 +5299,27 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   }
 
 #if defined(FH2_RECOMP)
-  // Destroys the graveyard's images whose last possible submission has finished (no pending slot at or before it).
-  void Fh2VaciarCementerio(bool todo = false) {
-    if (fh2_cementerio_.empty()) return;
+  // The oldest submission that may still be on the GPU (UINT64_MAX if none). A slot stays pending until CompletarUna
+  // has seen its fence signaled, so by default the driver is not asked: what waits goes a slot or two later, never
+  // early. ObtenerResuelta empties the graveyard on every resolve (680 a second on the Moto G9 Play), and on Turnip
+  // over KGSL each vkGetFenceStatus slept in the GPU timestamp wait (adreno_drawctxt_wait): with the query the ring's
+  // copies took 346 ms a second of wall time for 71 of CPU, without it 76 for 70; the GPU went from 89 to 99 % busy
+  // and the frame rate up 3 % (in-run A/B, 30 s windows). fh2_nativo_cementerio_sondeo asks the driver as before.
+  uint64_t Fh2PendienteMinima() {
+    const bool sondear = REXCVAR_GET(fh2_nativo_cementerio_sondeo);
     uint64_t pendiente_minima = UINT64_MAX;
     for (RanuraTrabajo& r : ranuras_) {
-      if (r.pendiente && dfn_.vkGetFenceStatus(device_, r.fence) != VK_SUCCESS) {
+      if (r.pendiente && (!sondear || dfn_.vkGetFenceStatus(device_, r.fence) != VK_SUCCESS)) {
         pendiente_minima = std::min(pendiente_minima, r.orden);
       }
     }
+    return pendiente_minima;
+  }
+
+  // Destroys the graveyard's images whose last possible submission has finished (no pending slot at or before it).
+  void Fh2VaciarCementerio(bool todo = false) {
+    if (fh2_cementerio_.empty()) return;
+    const uint64_t pendiente_minima = Fh2PendienteMinima();
     for (auto it = fh2_cementerio_.begin(); it != fh2_cementerio_.end();) {
       if (todo || (it->orden <= envios_ && it->orden < pendiente_minima)) {
         if (dibujos_) {
@@ -5846,12 +5863,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     fh2_escala_pool_ = VK_NULL_HANDLE;
     fh2_escala_sets_.clear();
     ++fh2_escala_trocas_;
-    uint64_t pendiente_minima = UINT64_MAX;
-    for (RanuraTrabajo& r : ranuras_) {
-      if (r.pendiente && dfn_.vkGetFenceStatus(device_, r.fence) != VK_SUCCESS) {
-        pendiente_minima = std::min(pendiente_minima, r.orden);
-      }
-    }
+    const uint64_t pendiente_minima = Fh2PendienteMinima();
     for (auto it = fh2_escala_retirados_.begin(); it != fh2_escala_retirados_.end(); ++it) {
       if (it->orden <= envios_ && it->orden < pendiente_minima) {
         fh2_escala_pool_ = it->pool;
