@@ -50,6 +50,7 @@
 #include <cstdlib>
 #include <array>
 #include <map>
+#include <tuple>
 #include <source_location>
 #include <set>
 #include <chrono>
@@ -726,6 +727,16 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_cementerio_sondeo, false, "FH2",
                     "pools), ask the driver for each pending slot's fence (vkGetFenceStatus); false = trust the slots "
                     "the ring has already completed. On the Moto G9 Play with Turnip over KGSL each query slept in "
                     "the GPU timestamp wait: 280 ms a second of the ring");
+REXCVAR_DEFINE_BOOL(fh2_nativo_reciclar_resueltas, true, "FH2",
+                    "A resolved texture replaced by another shape at the same address goes, once the GPU is done with "
+                    "it, to a pool by size and format instead of being destroyed, and the next resolve of that shape "
+                    "takes it back as a new, cleared image (no vkCreateImage/vkAllocateMemory). The S23 Ultra created "
+                    "about 490 a second: 150 ms of the ring's CPU, plus 85 destroying them");
+REXCVAR_DEFINE_INT32(fh2_nativo_reciclar_resueltas_alternar_s, 0, "FH2",
+                     "Test: alternate fh2_nativo_reciclar_resueltas on/off every this many seconds, logged "
+                     "('reciclaje A/B'); 0 = use the cvar");
+REXCVAR_DEFINE_INT32(fh2_nativo_reciclar_resueltas_mb, 64, "FH2",
+                     "Most memory the resolved texture pool may hold, estimated at 8 bytes a pixel (MB)");
 REXCVAR_DEFINE_BOOL(fh2_nativo_variantes_limpias, true, "FH2",
                     "With fh2_nativo_variantes: a kept texture is cleared when it comes back, as a new image would be");
 REXCVAR_DEFINE_BOOL(fh2_nativo_variantes, false, "FH2",
@@ -1040,6 +1051,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       Destruir(enterrada.imagen);
     }
     fh2_cementerio_.clear();
+    Fh2SoltarReciclaje();
 #endif
     Destruir(mosaico_);
     for (ImagenFrontal& repuesto : frontales_imagenes_) {  // nfsmw_nativo_frontal_perezoso
@@ -5330,13 +5342,111 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
           s = s->first.first == it->imagen.vista || s->first.second == it->imagen.vista ? fh2_escala_sets_.erase(s)
                                                                                       : std::next(s);
         }
-        Destruir(it->imagen);
+        if (!todo && Fh2Reciclar(it->imagen)) {
+          ++fh2_recicladas_;
+        } else {
+          Destruir(it->imagen);
+        }
         it = fh2_cementerio_.erase(it);
         ++fh2_enterradas_;
       } else {
         ++it;
       }
     }
+  }
+
+  // fh2_nativo_reciclar_resueltas, or its A/B test.
+  static bool Fh2ReciclajeActivo() {
+    const int32_t periodo = REXCVAR_GET(fh2_nativo_reciclar_resueltas_alternar_s);
+    if (periodo <= 0) return REXCVAR_GET(fh2_nativo_reciclar_resueltas);
+    using Reloj = std::chrono::steady_clock;
+    static const Reloj::time_point inicio = Reloj::now();
+    static int64_t ultima = -1;
+    const int64_t ventana = std::chrono::duration_cast<std::chrono::seconds>(Reloj::now() - inicio).count() / periodo;
+    const bool activo = ventana % 2 == 0;
+    if (ventana != ultima) {
+      ultima = ventana;
+      REXLOG_INFO("[fh2 nativo] reciclaje A/B: ventana {} de {} s, reciclar resueltas {}", ventana, periodo,
+                  activo ? "SI" : "no (como antes)");
+    }
+    return activo;
+  }
+
+  struct Fh2ClaveReciclaje {
+    uint32_t ancho, alto;
+    VkFormat formato;
+    VkImageUsageFlags uso;
+    bool operator<(const Fh2ClaveReciclaje& o) const {
+      return std::tie(ancho, alto, formato, uso) < std::tie(o.ancho, o.alto, o.formato, o.uso);
+    }
+  };
+  static uint64_t Fh2BytesReciclaje(const Imagen& imagen) { return uint64_t(imagen.ancho) * imagen.alto * 8; }
+
+  // A graveyard image the GPU is done with (its submissions finished, its references already dropped): into the pool
+  // if it is a resolved texture of ours and fits, true; false to destroy it. What Destruir would forget besides the
+  // Vulkan objects (the held clear, the framebuffers on its view) is forgotten here too, since the image comes back
+  // as a different texture.
+  bool Fh2Reciclar(Imagen& imagen) {
+    if (!Fh2ReciclajeActivo() || imagen.fh2_uso == 0 || imagen.memoria == VK_NULL_HANDLE ||
+        imagen.pool_bloque != 0xFFFFFFFFu || imagen.ms_imagen != VK_NULL_HANDLE || imagen.vista == VK_NULL_HANDLE) {
+      return false;
+    }
+    const Fh2ClaveReciclaje clave{imagen.ancho, imagen.alto, imagen.formato, imagen.fh2_uso};
+    auto& libres = fh2_reciclaje_[clave];
+    const uint64_t bytes = Fh2BytesReciclaje(imagen);
+    if (libres.size() >= 2 ||
+        fh2_reciclaje_bytes_ + bytes > uint64_t(std::max(0, REXCVAR_GET(fh2_nativo_reciclar_resueltas_mb))) << 20) {
+      return false;
+    }
+    imagen.fh2_borrar = false;
+    fh2_por_borrar_.erase(std::remove(fh2_por_borrar_.begin(), fh2_por_borrar_.end(), &imagen), fh2_por_borrar_.end());
+    if (dibujos_) {
+      dibujos_->OlvidarVista(imagen.vista);
+    }
+    Imagen limpia;
+    limpia.imagen = imagen.imagen;
+    limpia.memoria = imagen.memoria;
+    limpia.vista = imagen.vista;
+    limpia.ancho = imagen.ancho;
+    limpia.alto = imagen.alto;
+    limpia.formato = imagen.formato;
+    limpia.fh2_uso = imagen.fh2_uso;
+    limpia.preparada = false;  // the next user clears it, as it would a new image
+    libres.push_back(limpia);
+    fh2_reciclaje_bytes_ += bytes;
+    imagen = Imagen{};
+    return true;
+  }
+
+  // A pooled image of that shape and usage, as a new one (not prepared); false if there is none.
+  bool Fh2TomarReciclada(Imagen& imagen, uint32_t ancho, uint32_t alto, VkFormat formato, VkImageUsageFlags uso) {
+    if (fh2_reciclaje_.empty() || !Fh2ReciclajeActivo()) return false;
+    const auto it = fh2_reciclaje_.find(Fh2ClaveReciclaje{ancho, alto, formato, uso});
+    if (it == fh2_reciclaje_.end() || it->second.empty()) return false;
+    imagen = it->second.back();
+    it->second.pop_back();
+    fh2_reciclaje_bytes_ -= Fh2BytesReciclaje(imagen);
+    ++fh2_reutilizadas_;
+    if (fh2_reutilizadas_ == 1 || fh2_reutilizadas_ % 5000 == 0) {
+      REXLOG_INFO("[fh2 nativo] resueltas recicladas: {} reutilizadas, {} al pool, {} creadas; pool {} formas, {:.1f} MB",
+                  fh2_reutilizadas_, fh2_recicladas_, fh2_resueltas_creadas_, fh2_reciclaje_.size(),
+                  double(fh2_reciclaje_bytes_) / 1048576.0);
+    }
+    return true;
+  }
+
+  // Destroys every pooled image (shutdown, or the GPU out of memory). True if there was any.
+  bool Fh2SoltarReciclaje() {
+    bool alguna = false;
+    for (auto& [clave, libres] : fh2_reciclaje_) {
+      for (Imagen& imagen : libres) {
+        Destruir(imagen);
+        alguna = true;
+      }
+    }
+    fh2_reciclaje_.clear();
+    fh2_reciclaje_bytes_ = 0;
+    return alguna;
   }
 
   static uint64_t Fh2ClaveVariante(uint32_t base, uint32_t ancho, uint32_t alto, VkFormat formato) {
@@ -5484,14 +5594,24 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 #else
     const bool almacenamiento = false;
 #endif
-    if (!Crear(resuelta.imagen, ancho, alto,
-               VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | uso_destino |
-                   (almacenamiento ? VK_IMAGE_USAGE_STORAGE_BIT : 0),
-               formato_host)) {
-      Rechazar(10, "no se pudo crear una textura resuelta");
-      return nullptr;
+    const VkImageUsageFlags uso = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT | uso_destino |
+                                  (almacenamiento ? VK_IMAGE_USAGE_STORAGE_BIT : 0);
+#if defined(FH2_RECOMP)
+    if (!Fh2TomarReciclada(resuelta.imagen, ancho, alto, formato_host, uso))
+#endif
+    {
+      if (!Crear(resuelta.imagen, ancho, alto, uso, formato_host)) {
+        Rechazar(10, "no se pudo crear una textura resuelta");
+        return nullptr;
+      }
+#if defined(FH2_RECOMP)
+      ++fh2_resueltas_creadas_;
+#endif
     }
+#if defined(FH2_RECOMP)
+    resuelta.imagen.fh2_uso = uso;
+#endif
     resuelta.formato_guest = formato;
     resuelta.intercambio_rb = intercambio_rb;
     resuelta.imagen.intercambio_rb = intercambio_rb;
@@ -6487,7 +6607,14 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
             imagen.memoria)) {
       // The GPU can run out of memory here too. Render targets are few and large, so one that does not fit
       // shows up at once: the texture cache is asked to release memory and the allocation is retried once.
-      if (!dibujos_ || !dibujos_->SoltarTexturasPorFaltaDeMemoria() ||
+      bool soltado = false;
+#if defined(FH2_RECOMP)
+      soltado = Fh2SoltarReciclaje();  // the pool of resolved textures first
+#endif
+      if (!soltado && dibujos_) {
+        soltado = dibujos_->SoltarTexturasPorFaltaDeMemoria();
+      }
+      if (!soltado ||
           !rex::ui::vulkan::util::CreateDedicatedAllocationImage(
               dispositivo_, info, rex::ui::vulkan::util::MemoryPurpose::kDeviceLocal, imagen.imagen,
               imagen.memoria)) {
@@ -8171,6 +8298,10 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   };
   std::vector<Fh2Enterrada> fh2_cementerio_;
   uint64_t fh2_enterradas_ = 0;
+  // fh2_nativo_reciclar_resueltas: graveyard images kept by shape for the next resolve of that shape.
+  std::map<Fh2ClaveReciclaje, std::vector<Imagen>> fh2_reciclaje_;
+  uint64_t fh2_reciclaje_bytes_ = 0;
+  uint64_t fh2_recicladas_ = 0, fh2_reutilizadas_ = 0, fh2_resueltas_creadas_ = 0;
   uint32_t fh2_copias_foto_ = 0;  // copies to fh2_nativo_foto_copia in this frame
 #endif
   Imagen mosaico_;
