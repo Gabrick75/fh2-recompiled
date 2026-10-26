@@ -13,6 +13,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <bit>
 #include <cstdint>
 #include <cstring>
@@ -145,6 +146,11 @@ constexpr uint32_t kRoundUp = 0x02;
 constexpr uint32_t kRoundDown = 0x03;
 constexpr uint32_t kRoundMask = 0x03;
 
+// ppc_fixed_fp_mode (src/system/xthread.cpp): guest code never turns flush-to-zero on, so VMX code keeps the
+// denormals the console flushes and the per-site writes of the host FP control register (FPCR on ARM64, a
+// serializing write) are skipped. Read on the toggles' rare path only. One definition, in the runtime.
+extern std::atomic<bool> g_fixed_fp_mode;
+
 struct FPSCRRegister {
   uint32_t csr;
 
@@ -178,18 +184,27 @@ struct FPSCRRegister {
     setcsr(csr);
   }
 
+  static bool FixedMode() noexcept { return g_fixed_fp_mode.load(std::memory_order_relaxed); }
+
   inline void enableFlushModeUnconditional() noexcept {
+    if (FixedMode()) return;
     csr |= FlushMask;
     setcsr(csr);
   }
 
+  // In fixed mode nothing sets flush-to-zero, so the cached csr is exact and the write can be skipped.
   inline void disableFlushModeUnconditional() noexcept {
+    if (FixedMode()) {
+      disableFlushMode();
+      return;
+    }
     csr &= ~FlushMask;
     setcsr(csr);
   }
 
   inline void enableFlushMode() noexcept {
     if ((csr & FlushMask) != FlushMask) [[unlikely]] {
+      if (FixedMode()) return;
       csr |= FlushMask;
       setcsr(csr);
     }
