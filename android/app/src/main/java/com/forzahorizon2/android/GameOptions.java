@@ -27,6 +27,7 @@ final class GameOptions {
     static final String SHOW_FPS = "show_fps";
     static final String SHOW_USAGE = "show_usage";            // GPU, CPU and RAM use under the FPS (UsageMonitor)
     static final String PRESENT_MODE = "present_mode";        // "fifo" (vsync) or "mailbox"
+    static final String PRESENT_THREAD = "present_thread";    // present_hilo_propio, off by default (unstable)
     // present_hdr: HDR10 output, offered only where the display reports HDR10 (hdrCapabilities)
     static final String HDR = "hdr";
     static final String HDR_PAPER_WHITE = "hdr_paper_white";  // present_hdr_paper_white_nits: the HUD's and menus' white
@@ -231,7 +232,7 @@ final class GameOptions {
     // hidden ones too, but the imported GPU driver.
     private static final String[] RESTORABLE = {RENDERER, RENDER_SCALE, FPS, ANTI_ALIASING, MSAA_SAMPLES, FXAA_QUALITY,
             SCALING, SHARPNESS, FSR_MODE, ANISOTROPIC, SHADOWS, SHADOW_DISTANCE, CAR_REFLECTIONS, SHADOW_MAP_SCALE,
-            WORLD_GRASS, WORLD_OBJECTS, WORLD_REFLECTIONS, WORLD_SHADOWS, WORLD_CROWD, FOLIAGE_COVERAGE, ONE_PASS, RESOLVE_SHORTCUT, ASYNC_SHADERS, LAZY_COMPOSITE, STEP_PACING, PIN_THREADS, JOGO_RAPIDO, PERFORMANCE_HINTS,
+            WORLD_GRASS, WORLD_OBJECTS, WORLD_REFLECTIONS, WORLD_SHADOWS, WORLD_CROWD, FOLIAGE_COVERAGE, ONE_PASS, RESOLVE_SHORTCUT, ASYNC_SHADERS, LAZY_COMPOSITE, STEP_PACING, PIN_THREADS, JOGO_RAPIDO, PRESENT_THREAD, PERFORMANCE_HINTS,
             VERTEX_CACHE, INDEX_CACHE, VERTEX_NO_WAIT, EXACT_TARGETS, REFLECTION_MIPS, TIGHT_AREA, REFLECTION_STAGGER, TURBO};
 
     /** The Graphics and Performance options back to their defaults (defaultOf, flag): the stored values go. */
@@ -638,6 +639,13 @@ final class GameOptions {
         // whole core and GPU time taken from the game (event menu on the S23 Ultra: 7.0 fps MAILBOX, 11.0 FIFO).
         args.add("--vulkan_allow_present_mode_mailbox=" + "mailbox".equals(get(context, PRESENT_MODE)));
         args.add("--vulkan_allow_present_mode_immediate=false");
+        // Off by default and marked unstable in the menu. Presenting on its own thread is meant to keep the
+        // thread that feeds the GPU recording while the present waits, but measured on 2026-10-26 (S23 and Moto,
+        // stopped cars, same scene, on then off) it changed nothing: S23 20.6 vs 21.3 fps with frames over 50 ms
+        // 47.9 % vs 35.6 %, Moto 20.6 vs 19.9 fps, and ~20 ms inside the present either way (the FIFO wait of a
+        // GPU-bound frame). The Switch measurement (presenter.cpp) also found more frame-time variance with it.
+        // Read at start (kRequiresRestart).
+        args.add("--present_hilo_propio=" + flag(context, PRESENT_THREAD));
         // The view gives the aspect ratio (16:9 or stretched, GameActivity.layoutSurface) and the presenter
         // fills the whole buffer. The scaling effect (bilinear, CAS sharpening or FSR 1.0) needs
         // REX_HAS_FIDELITYFX_SDK on Android (sdk/src/ui/CMakeLists.txt).

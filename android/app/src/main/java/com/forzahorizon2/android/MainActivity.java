@@ -1330,6 +1330,10 @@ public final class MainActivity extends AppCompatActivity {
                 tr(R.string.instead_of_the_ring_gives_the),
                 GameOptions.flag(this, GameOptions.JOGO_RAPIDO),
                 v -> GameOptions.flag(this, GameOptions.JOGO_RAPIDO, v)));
+        rows.add(ui.toggleRow(tr(R.string.present_thread),
+                tr(R.string.present_thread_desc),
+                GameOptions.flag(this, GameOptions.PRESENT_THREAD),
+                v -> GameOptions.flag(this, GameOptions.PRESENT_THREAD, v)));
         if (nativeRenderer) {
             rows.add(ui.toggleRow(tr(R.string.vertex_cache_across_frames),
                     tr(R.string.reuses_the_vertices_the_game_has),
