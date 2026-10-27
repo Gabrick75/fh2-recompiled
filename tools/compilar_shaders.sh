@@ -20,3 +20,24 @@ for src in "$SHADERS"/atalho_conversao.cs.glsl; do
   } > "$out"
   echo "$out"
 done
+# The presenter's own fragment shaders (sdk/src/ui/vulkan/vulkan_presenter.cpp) and the native renderer's
+# (app/src/nativo/nfsmw_nativo_destinos.cpp), each header next to its source's vulkan_spirv folder or, for the
+# native renderer, its own folder.
+UI_SHADERS=$RAIZ/sdk/src/ui/shaders
+NATIVO_SHADERS=$RAIZ/app/src/nativo/shaders
+for src in "$UI_SHADERS"/hdr_output.ps.glsl "$UI_SHADERS"/hdr_ui_mask.ps.glsl \
+           "$NATIVO_SHADERS"/fh2_hdr_mascara_hud.ps.glsl; do
+  name=$(basename "$src" .ps.glsl)_ps
+  case "$src" in
+    "$NATIVO_SHADERS"/*) out=$NATIVO_SHADERS/$name.h ;;
+    *) out=$UI_SHADERS/vulkan_spirv/$name.h ;;
+  esac
+  {
+    echo "// Generated with tools/compilar_shaders.sh from $(basename "$src")."
+    echo "const uint32_t $name[] = {"
+    "$GLSLC" -fshader-stage=fragment --target-env=vulkan1.0 -O -mfmt=num -o - "$src" | tr -d '\n ' |
+        tr ',' '\n' | grep . | paste -d, - - - - - - - - | sed 's/,*$//; s/^/    /; s/$/,/'
+    echo "};"
+  } > "$out"
+  echo "$out"
+done

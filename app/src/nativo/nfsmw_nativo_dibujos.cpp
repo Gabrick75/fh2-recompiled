@@ -1498,6 +1498,30 @@ REXCVAR_DEFINE_BOOL(nfsmw_nativo_pase_area_util, true, "NFSMW",
                     "verdad en vez de sobre la imagen entera. El alto de los destinos se deduce del pitch, "
                     "asi que la escena abre 1280x1280 para dibujar 1280x720 y el cubo 320x720 para dibujar "
                     "320x256. La imagen es identica: Vulkan solo carga y guarda el renderArea");
+#if defined(FH2_RECOMP)
+/*
+ * The pass opened over its first draw's scissor, not the whole useful area (fh2_nativo_area_justa).
+ *
+ * FH2's bloom and blur chain draws on the 1280-pitch surface one quad at a time, each into a small corner
+ * (320x192, 160x96, 64x32, 32x32, 20x12...) that it resolves right away: about 25 one-draw passes per frame,
+ * each opened 1280x720 ("escena sin profundidad" in C6: ~23 passes and ~22.6 Mtexels per frame). On a tiler
+ * every one of them loads and stores the whole 1280x720 color (and depth) to touch a few thousand pixels.
+ *
+ * A pass that loads (no held clear, 1x, not the shadow map) opens over the window scissor of the draw that
+ * opens it, rounded out to 16 pixels. Vulkan loads and stores only the renderArea and keeps everything
+ * outside, so the image cannot change as long as every draw stays inside: a later draw of the same pass whose
+ * scissor goes outside closes the pass and reopens it (loadOp LOAD, same framebuffer) over the union, which
+ * only grows. A pass with a held clear opens small only if the game's clear was a rectangle (a resolve narrower
+ * than the target clears only what it copied on the Xbox 360): the area takes that rectangle too, so CLEAR clears
+ * exactly it, where the host used to clear the whole image; a clear of the whole image keeps the whole area.
+ * "C6 area justa" in the log: passes opened small, regrown, and texels not opened.
+ */
+REXCVAR_DEFINE_BOOL(fh2_nativo_area_justa, true, "FH2",
+                    "Native renderer: open each loading pass over its first draw's scissor instead of the whole "
+                    "target, growing it if a later draw goes outside; on tilers the small bloom passes stop "
+                    "loading and storing the whole 1280x720 image. The image does not change")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+#endif
 constexpr uint64_t kHuellaBrightPass = 0xE849A9F6D3323B87ull;
 /*
  * The pixel shader of the sky dome (nfsmw_nativo_cielo_aplazado).
@@ -4817,6 +4841,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         apuntado = redondeado;
       }
     }
+#if defined(FH2_RECOMP)
+    AmpliarAreaPase(tijera);  // fh2_nativo_area_justa: before anything of this draw is recorded (or deferred)
+#endif
     const float mezcla_constante[4] = {Flotante(r[gr::XE_GPU_REG_RB_BLEND_RED]),
                                        Flotante(r[gr::XE_GPU_REG_RB_BLEND_GREEN]),
                                        Flotante(r[gr::XE_GPU_REG_RB_BLEND_BLUE]),
@@ -5761,6 +5788,81 @@ class DibujosVulkanImpl final : public DibujosVulkan {
    * multiplications GCC could fuse with an add or subtract (ancho * 0.5 and alto * 0.5) are exact, so
    * fused or not they give the same bits.
    */
+#if defined(FH2_RECOMP)
+  // fh2_nativo_area_justa. The window scissor CalcularEncuadre gives the draw, for a pass of that scale and size,
+  // rounded out to 16 pixels and clamped to the pass. false if it is empty.
+  bool TijeraDeVentana(const uint32_t* r, float escala, uint32_t ancho, uint32_t alto, VkRect2D& tijera) const {
+    const uint32_t ventana = r[gr::XE_GPU_REG_PA_SC_WINDOW_OFFSET];
+    const int32_t ventana_x = int32_t((ventana & 0x7FFF) << 17) >> 17;
+    const int32_t ventana_y = int32_t(((ventana >> 16) & 0x7FFF) << 17) >> 17;
+    const uint32_t tl = r[gr::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL];
+    const uint32_t br = r[gr::XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR];
+    int32_t x0 = int32_t(tl & 0x3FFF), y0 = int32_t((tl >> 16) & 0x3FFF);
+    int32_t x1 = int32_t(br & 0x3FFF), y1 = int32_t((br >> 16) & 0x3FFF);
+    if (!((tl >> 31) & 0x1)) {
+      x0 += ventana_x;
+      y0 += ventana_y;
+      x1 += ventana_x;
+      y1 += ventana_y;
+    }
+    if (escala != 1.0f) {
+      x0 = int32_t(std::floor(float(x0) * escala));
+      y0 = int32_t(std::floor(float(y0) * escala));
+      x1 = int32_t(std::ceil(float(x1) * escala));
+      y1 = int32_t(std::ceil(float(y1) * escala));
+    }
+    x0 = std::clamp(x0 & ~15, 0, int32_t(ancho));
+    y0 = std::clamp(y0 & ~15, 0, int32_t(alto));
+    x1 = std::clamp((x1 + 15) & ~15, 0, int32_t(ancho));
+    y1 = std::clamp((y1 + 15) & ~15, 0, int32_t(alto));
+    if (x1 <= x0 || y1 <= y0) {
+      return false;
+    }
+    tijera = VkRect2D{{x0, y0}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
+    return true;
+  }
+
+  // fh2_nativo_area_justa. A draw of the open pass whose scissor goes outside the renderArea: close the pass and
+  // reopen it over the union, loading what the part already drawn stored (pase_rp_ loads: a pass with a held
+  // clear never opens small). The deferred sky and the occlusion query are closed as TerminarPase does.
+  void AmpliarAreaPase(const VkRect2D& tijera) {
+    if (!area_justa_pase_ || !pase_activo_ || tijera.extent.width == 0 || tijera.extent.height == 0) {
+      return;
+    }
+    const int32_t x0 = std::max(0, std::min(area_pase_.offset.x, tijera.offset.x));
+    const int32_t y0 = std::max(0, std::min(area_pase_.offset.y, tijera.offset.y));
+    const int32_t x1 = std::min(int32_t(area_pase_completa_.width),
+                                std::max(area_pase_.offset.x + int32_t(area_pase_.extent.width),
+                                         tijera.offset.x + int32_t(tijera.extent.width)));
+    const int32_t y1 = std::min(int32_t(area_pase_completa_.height),
+                                std::max(area_pase_.offset.y + int32_t(area_pase_.extent.height),
+                                         tijera.offset.y + int32_t(tijera.extent.height)));
+    if (x0 >= area_pase_.offset.x && y0 >= area_pase_.offset.y &&
+        x1 <= area_pase_.offset.x + int32_t(area_pase_.extent.width) &&
+        y1 <= area_pase_.offset.y + int32_t(area_pase_.extent.height)) {
+      return;  // inside
+    }
+    if (cielo_pendiente_) {
+      EmitirCieloAplazado(pase_comandos_, kCieloPorFinDePase);
+    }
+    if (consulta_oclusion_ != UINT32_MAX) {
+      contexto_->TerminarConsultaOclusion(consulta_oclusion_);
+      consulta_oclusion_ = UINT32_MAX;
+    }
+    dfn_.vkCmdEndRenderPass(pase_comandos_);
+    VkRenderPassBeginInfo inicio{};
+    inicio.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    inicio.renderPass = pase_rp_carga_;
+    inicio.framebuffer = pase_framebuffer_;
+    inicio.renderArea = VkRect2D{{x0, y0}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
+    dfn_.vkCmdBeginRenderPass(pase_comandos_, &inicio, VK_SUBPASS_CONTENTS_INLINE);
+    texels_pases_ += uint64_t(inicio.renderArea.extent.width) * inicio.renderArea.extent.height;
+    area_pase_ = inicio.renderArea;
+    area_justa_pase_ = inicio.renderArea.extent.width < area_pase_completa_.width ||
+                       inicio.renderArea.extent.height < area_pase_completa_.height;
+    ++area_justa_ampliaciones_;
+  }
+#endif
   uint32_t CalcularEncuadre(const uint32_t* r, uint32_t vte, bool sin_recorte, uint32_t modo_sc, VkViewport& viewport,
                             float ndc[4], VkRect2D& tijera) {
     float escala_x = (vte & 0x1) ? Flotante(r[gr::XE_GPU_REG_PA_CL_VPORT_XSCALE]) : 1.0f;
@@ -6482,6 +6584,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     vertices_base_cero_ = REXCVAR_GET(nfsmw_nativo_vertices_base_cero) && !vertices_base_cero_apagado_;
     diag_estadisticas_dibujo_ = REXCVAR_GET(nfsmw_nativo_estadisticas_por_dibujo_s) > 0;
     area_util_ = REXCVAR_GET(nfsmw_nativo_pase_area_util);
+#if defined(FH2_RECOMP)
+    area_justa_ = REXCVAR_GET(fh2_nativo_area_justa);
+#endif
     // The small per-draw savings.
     encuadre_cache_ = REXCVAR_GET(nfsmw_nativo_encuadre_cache) && !encuadre_cache_apagada_;
     alto_util_memo_activo_ = REXCVAR_GET(nfsmw_nativo_alto_util_memo) && !alto_util_memo_apagado_;
@@ -12890,6 +12995,69 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       }
     }
     inicio.renderArea.extent = {ancho, alto_pase};
+    area_justa_pase_ = false;
+#if defined(FH2_RECOMP)
+    // fh2_nativo_area_justa: a pass that loads everything opens over its first draw's scissor.
+    // A held clear opens it too if the game's clear covers only a rectangle (a partial resolve): the area then
+    // also takes that rectangle, which CLEAR clears exactly as the Xbox 360 did; the rest keeps its content.
+    bool borrados_con_rect = true;
+    for (uint32_t i = 0; i < 5 && borrados_con_rect; ++i) {
+      if (mascara_borrar & (1u << i)) {
+        borrados_con_rect = !imagenes[i]->fh2_borrar_entero;
+      }
+    }
+    if (area_justa_ && muestras < 2 && borrados_con_rect && modo_base == kCargaLeer && !es_sombras) {
+      // The same scale the pass's framing gets below (pase_escala_), half-pitch 4x factor included.
+      float escala = (pitch && ancho && ancho != pitch) ? float(ancho) / float(pitch) : 1.0f;
+      for (uint32_t i = 0; i < 5; ++i) {
+        if (claves[i] & (uint64_t(1) << 15)) {
+          escala *= 2.0f;
+          break;
+        }
+      }
+      VkRect2D tijera;
+      bool con_tijera = TijeraDeVentana(r, escala, ancho, alto_pase, tijera);
+      for (uint32_t i = 0; i < 5 && con_tijera; ++i) {
+        if (mascara_borrar & (1u << i)) {
+          const VkRect2D& b = imagenes[i]->fh2_rect_borrar;
+          const int32_t x0 = std::max(0, std::min(tijera.offset.x, b.offset.x));
+          const int32_t y0 = std::max(0, std::min(tijera.offset.y, b.offset.y));
+          const int32_t x1 = std::min(int32_t(ancho), std::max(tijera.offset.x + int32_t(tijera.extent.width),
+                                                               b.offset.x + int32_t(b.extent.width)));
+          const int32_t y1 = std::min(int32_t(alto_pase), std::max(tijera.offset.y + int32_t(tijera.extent.height),
+                                                                   b.offset.y + int32_t(b.extent.height)));
+          con_tijera = x1 > x0 && y1 > y0;
+          if (con_tijera) {
+            tijera = VkRect2D{{x0, y0}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
+          }
+        }
+      }
+      if (con_tijera && uint64_t(tijera.extent.width) * tijera.extent.height < uint64_t(ancho) * alto_pase) {
+        inicio.renderArea = tijera;
+        area_justa_pase_ = true;
+        ++area_justa_pases_;
+        area_justa_texels_ahorrados_ +=
+            uint64_t(ancho) * alto_pase - uint64_t(tijera.extent.width) * tijera.extent.height;
+      }
+    }
+    area_pase_ = inicio.renderArea;
+    area_pase_completa_ = {ancho, alto_pase};
+    pase_framebuffer_ = framebuffer;
+    // The pass that reopens it bigger loads everything (its clears are done by then).
+    pase_rp_carga_ = area_justa_pase_ && mascara_borrar ? PaseDe(formatos, modo_base, 0) : pase;
+    if (pase_rp_carga_ == VK_NULL_HANDLE) {
+      inicio.renderArea = VkRect2D{{0, 0}, {ancho, alto_pase}};
+      area_pase_ = inicio.renderArea;
+      area_justa_pase_ = false;
+    }
+    if (area_justa_ && std::chrono::steady_clock::now() - area_justa_informe_ >= std::chrono::seconds(10)) {
+      area_justa_informe_ = std::chrono::steady_clock::now();
+      NFSMW_INFORME_ANILLO("[fh2 nativo] C6 area justa: {} pases abiertos sobre la tijera de su primer dibujo, {} "
+                           "ampliados, {:.1f} Mtexels sin abrir",
+                           area_justa_pases_, area_justa_ampliaciones_, double(area_justa_texels_ahorrados_) / 1e6);
+      area_justa_pases_ = area_justa_ampliaciones_ = area_justa_texels_ahorrados_ = 0;
+    }
+#endif
     // nfsmw_nativo_diag_borrados. What this pass loads and stores of each render target, to compare with
     // what is cleared of it (C2 clears per target). Before opening the pass.
     for (const ImagenNativa* imagen : imagenes) {
@@ -12924,17 +13092,19 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     }
     pase_activo_ = true;
     ++pases_empezados_;
-    texels_pases_ += uint64_t(ancho) * alto_pase;  // how much tile is loaded by loadOp = LOAD
+    // How much tile is loaded by loadOp = LOAD (the renderArea: smaller with fh2_nativo_area_justa).
+    const uint64_t texels_abiertos = uint64_t(inicio.renderArea.extent.width) * inicio.renderArea.extent.height;
+    texels_pases_ += texels_abiertos;
 #if defined(FH2_RECOMP)
     if (pases_por_destino_activo_) {
-      AnotarPaseDestino(claves, imagenes, pitch, uint64_t(ancho) * alto_pase);
+      AnotarPaseDestino(claves, imagenes, pitch, texels_abiertos);
     }
     pase_reanudado_motivo_ = -1;
 #endif
     {
       // Same criterion as the per-category GPU time: the render target's pitch decides.
       const uint32_t categoria = CategoriaDeDestino(pitch, claves);
-      texels_por_categoria_[categoria] += uint64_t(ancho) * alto_pase;
+      texels_por_categoria_[categoria] += texels_abiertos;
       ++pases_por_categoria_[categoria];
     }
     pase_comandos_ = cmd;
@@ -15963,6 +16133,18 @@ class DibujosVulkanImpl final : public DibujosVulkan {
   // Height actually used by each render target, deduced from the scissor. It only grows.
   std::unordered_map<uint32_t, uint32_t> alto_util_;
   bool area_util_ = true;
+  // fh2_nativo_area_justa: the open pass's renderArea when it was opened over its first draw's scissor
+  // (area_justa_pase_), the whole area it could have had, and its framebuffer, to reopen it bigger.
+  bool area_justa_ = false;
+  bool area_justa_pase_ = false;
+  VkRect2D area_pase_{};
+  VkExtent2D area_pase_completa_{};
+  VkFramebuffer pase_framebuffer_ = VK_NULL_HANDLE;
+  VkRenderPass pase_rp_carga_ = VK_NULL_HANDLE;  // the open pass's render pass with every attachment loaded
+  uint64_t area_justa_pases_ = 0;        // C6 area justa: passes opened smaller than the whole area
+  uint64_t area_justa_ampliaciones_ = 0;  // reopened bigger because a draw went outside
+  uint64_t area_justa_texels_ahorrados_ = 0;  // texels not opened (whole area minus what was opened)
+  std::chrono::steady_clock::time_point area_justa_informe_{};
   // Small per-draw savings. See their cvars.
   bool encuadre_cache_ = true;             // C1: the cvar, once per frame
   bool encuadre_cache_apagada_ = false;    // C1: the guard saw a difference

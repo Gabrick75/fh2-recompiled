@@ -74,6 +74,12 @@ public final class GameActivity extends SDLActivity
     // (android_rendimiento.cpp).
     private static native String nativeSetFlag(String name, String value);
     private static final String NIGHT_LIGHT = "night_light_percent";
+    // Relative HDR (android_hdr.cpp): the display's current HDR/SDR ratio, for the presenter's highlights.
+    private static native void nativeSetHdrHeadroom(float ratio);
+
+    // Relative HDR's listener of the display's HDR/SDR ratio while the game is in front (null otherwise).
+    private Display hdrDisplay;
+    private java.util.function.Consumer<Display> hdrRatioListener;
 
     private final Handler clock = new Handler(Looper.getMainLooper());
     private boolean stretched = true;
@@ -383,6 +389,38 @@ public final class GameActivity extends SDLActivity
         }
         updateTiltListener();
         applyStretch(controls.stretch);
+        startRelativeHdr();
+    }
+
+    /*
+     * Relative HDR (GameOptions.hdrRelative, present_hdr_relative in the presenter). The game's surface asks Android
+     * for HDR headroom above the SDR white, and the display's ratio, which follows the brightness slider and the ambient
+     * light, reaches the presenter whenever it changes: the highlights go up to the peak the display gives right now.
+     */
+    @android.annotation.TargetApi(35)
+    private void startRelativeHdr() {
+        if (Build.VERSION.SDK_INT < 35 || hdrRatioListener != null || !GameOptions.hdrRelative(this)) return;
+        if (mSurface != null) mSurface.setDesiredHdrHeadroom(GameOptions.HDR_DESIRED_HEADROOM);
+        hdrDisplay = getWindowManager().getDefaultDisplay();
+        hdrRatioListener = display -> sendHdrHeadroom(display.getHdrSdrRatio());
+        hdrDisplay.registerHdrSdrRatioChangedListener(getMainExecutor(), hdrRatioListener);
+        sendHdrHeadroom(hdrDisplay.getHdrSdrRatio());
+    }
+
+    @android.annotation.TargetApi(35)
+    private void stopRelativeHdr() {
+        if (Build.VERSION.SDK_INT < 35 || hdrRatioListener == null) return;
+        hdrDisplay.unregisterHdrSdrRatioChangedListener(hdrRatioListener);
+        hdrRatioListener = null;
+        hdrDisplay = null;
+    }
+
+    private static void sendHdrHeadroom(float ratio) {
+        try {
+            nativeSetHdrHeadroom(ratio);
+        } catch (UnsatisfiedLinkError e) {
+            // The game's library did not load (SDL shows its own error).
+        }
     }
 
     private void applyStretch(boolean stretch) {
@@ -562,6 +600,7 @@ public final class GameActivity extends SDLActivity
 
     @Override
     protected void onPause() {
+        stopRelativeHdr();
         if (inputManager != null) {
             inputManager.unregisterInputDeviceListener(this);
         }

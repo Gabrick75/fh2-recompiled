@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -35,6 +36,9 @@
 #endif
 
 #if REX_PLATFORM_ANDROID
+#include <android/data_space.h>
+#include <android/native_window.h>
+#include <dlfcn.h>
 #include <rex/ui/surface_android.h>
 #endif
 #if REX_PLATFORM_GNU_LINUX
@@ -60,6 +64,117 @@ extern "C" {
 
 REXCVAR_DEFINE_BOOL(present_render_pass_clear, true, "UI/Presenter",
                     "Clear render pass during presentation");
+
+/*
+ * HDR output, from arcanite24/shiftglue-sdk (Pinyon Shift's, BSD-3-Clause). The game still tone-maps to
+ * SDR; the presenter paints the SDR image into a stand-in and a last pass shows it on an HDR swapchain
+ * with white at present_hdr_paper_white_nits. On Android the swapchain is HDR10 (BT.2020 PQ): Android
+ * takes scRGB 1.0 as SDR white and clips above it unless the app asks for headroom (Pinyon Shift #500).
+ */
+REXCVAR_DEFINE_BOOL(present_hdr, false, "UI/Presenter",
+                    "Present to an HDR swapchain (scRGB, HDR10 on Android) where the display offers one, "
+                    "with the SDR image at present_hdr_paper_white_nits; switching recreates the swapchain")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(present_hdr_paper_white_nits, 200.0, "UI/Presenter",
+                      "Brightness of SDR white on an HDR swapchain, in nits")
+    .range(80.0, 1000.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(present_hdr_peak_nits, 1000.0, "UI/Presenter",
+                      "The display's peak brightness on an HDR swapchain, in nits, when the display does "
+                      "not report one (present_hdr_display_max_nits); at or below the paper white nothing "
+                      "is expanded")
+    .range(80.0, 10000.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// Only where the guest output's alpha marks the scene (HdrOutputState::hud_mask): the HUD and frames without one
+// (menus, loading, the emulated GPU) stay opaque, so at the paper white.
+REXCVAR_DEFINE_DOUBLE(present_hdr_highlights, 0.5, "UI/Presenter",
+                      "How far SDR white in the scene is expanded from the paper white towards the peak on "
+                      "an HDR swapchain (0 to 1); the HUD and menus stay at the paper white")
+    .range(0.0, 1.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+/*
+ * Where the highlights start and how fast they grow. Pinyon Shift starts at linear 0.5 (73 % in sRGB) with t^2,
+ * tuned for FH1 on a 1000-nit TV; on the S23 Ultra (2026-10-24) FH2's headlights, bright but not white (~75 %
+ * linear), got only 26 % of the expansion and looked unchanged while pure white grew. From 0.18 (46 % in sRGB)
+ * with t^1.5 they get 59 %, and mid-tones such as the sky (~32 % linear) about 7 %.
+ */
+REXCVAR_DEFINE_DOUBLE(present_hdr_knee, 0.18, "UI/Presenter",
+                      "Linear SDR brightness where the HDR highlight expansion starts (0 to 0.95)")
+    .range(0.0, 0.95)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(present_hdr_curve, 1.5, "UI/Presenter",
+                      "Exponent of the HDR highlight expansion from the knee: lower reaches less-than-white "
+                      "lights sooner")
+    .range(0.5, 4.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+/*
+ * Where the expansion is complete. FH2's tone mapping stops its lights short of white: in a night capture on the
+ * S23 Ultra (2026-10-25) reversing lights were (239, 235, 234), taillights (235, 35, 35), lit windows (217, 209, 125):
+ * linear 0.67-0.86, never 1.0, which only the HUD's white text reaches (and the HUD mask keeps that out). With the
+ * expansion complete at 0.85 the reversing lights reach the peak and taillights and windows about 63 % of it.
+ */
+REXCVAR_DEFINE_DOUBLE(present_hdr_top, 0.85, "UI/Presenter",
+                      "Linear SDR brightness where the HDR highlight expansion reaches the peak (above "
+                      "present_hdr_knee, up to 1 = SDR white)")
+    .range(0.05, 1.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_DOUBLE(present_hdr_gamma, 2.2, "UI/Presenter",
+                      "Decode the SDR image for an HDR swapchain with this gamma, as an SDR display does; 0 "
+                      "decodes piecewise sRGB, whose linear toe lifts the blacks")
+    .range(0.0, 3.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_BOOL(present_hdr_compare, false, "UI/Presenter",
+                    "On an HDR swapchain, show the left half as SDR (piecewise sRGB at the paper white) "
+                    "beside the HDR right half")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_INT32(present_hdr_test_pattern, 0, "UI/Presenter",
+                     "HDR calibration pattern under the UI: 0 none, 1 black level, 2 paper white, 3 peak "
+                     "(a square at the peak in the brightest field)")
+    .range(0, 3)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+/*
+ * Android 14 and later: relative HDR, the platform's own way. The swapchain is extended sRGB (scRGB), where Android
+ * takes 1.0 as the display's SDR white at the brightness the user has chosen, and values above it as HDR up to the
+ * headroom the app requested (SurfaceView.setDesiredHdrHeadroom, the launcher) and the display grants at the moment
+ * (Display.getHdrSdrRatio, which follows brightness and ambient light). So the paper white follows the brightness
+ * slider and the highlights reach the display's current peak, with nothing to set. Without the extended color space
+ * on the surface, HDR10 as before.
+ */
+REXCVAR_DEFINE_BOOL(present_hdr_relative, false, "UI/Presenter",
+                    "Android 14+: prefer an extended sRGB HDR swapchain whose 1.0 is the display's SDR white "
+                    "(set by the launcher when Android reports an HDR/SDR ratio); highlights reach "
+                    "present_hdr_headroom")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(present_hdr_headroom, 1.0, "UI/Presenter",
+                      "The display's current HDR/SDR ratio (Display.getHdrSdrRatio), updated by the launcher "
+                      "while the game runs: the peak of the highlights on a relative HDR swapchain")
+    .range(1.0, 100.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// The display's HDR capabilities as Android reports them (Display.getHdrCapabilities), passed by the launcher
+// (GameOptions.arguments) so that the SDK needs no JNI. Pinyon Shift reads them itself.
+REXCVAR_DEFINE_BOOL(present_hdr_display_hdr10, false, "UI/Presenter",
+                    "The display reports HDR10 (set by the Android launcher): where Vulkan lists no HDR10 "
+                    "color space (Android 13), a 10-bit swapchain is marked BT.2020 PQ by hand");
+REXCVAR_DEFINE_DOUBLE(present_hdr_display_max_nits, 0.0, "UI/Presenter",
+                      "The display's desired peak luminance in nits, 0 unknown (set by the Android launcher)")
+    .range(0.0, 10000.0);
+REXCVAR_DEFINE_DOUBLE(present_hdr_display_max_average_nits, 0.0, "UI/Presenter",
+                      "The display's desired frame-average luminance in nits, 0 unknown (set by the Android "
+                      "launcher)")
+    .range(0.0, 10000.0);
+REXCVAR_DEFINE_DOUBLE(present_hdr_display_min_nits, 0.0, "UI/Presenter",
+                      "The display's desired minimum luminance in nits (set by the Android launcher)")
+    .range(0.0, 10000.0);
 
 // The guest output sampled with nearest filtering instead of linear: a small render scale shows as blocks, with
 // no upscaling filter at all (the Android launcher's "Off" scaling). It is the sampler of every guest output
@@ -305,7 +420,57 @@ namespace shaders {
 #include "../shaders/vulkan_spirv/guest_output_ffx_fsr_rcas_ps.h"
 #endif
 #include "../shaders/vulkan_spirv/guest_output_triangle_strip_rect_vs.h"
+// tools/compilar_shaders.sh, from ../shaders/hdr_output.ps.glsl and hdr_ui_mask.ps.glsl.
+#include "../shaders/vulkan_spirv/hdr_output_ps.h"
+#include "../shaders/vulkan_spirv/hdr_ui_mask_ps.h"
 }  // namespace shaders
+
+namespace {
+
+// hdr_output.ps.glsl's push constants, after the rectangle constants.
+struct HdrOutputConstants {
+  float paper_white_scale;
+  float highlight_scale;
+  float knee;
+  float knee_range_inv;
+  float gamma;
+  float max_channel_weight;
+  float compare_x;
+  uint32_t pattern;
+  float pattern_value;
+  uint32_t output_flags;
+  float size[2];
+  float curve;
+};
+static_assert(sizeof(HdrOutputConstants) == 52);
+
+// From the latest swapchain (GetHdrOutputState).
+std::atomic<bool> hdr_output_offered = false;
+std::atomic<bool> hdr_output_active = false;
+// The active HDR swapchain is HDR10 (BT.2020 PQ), not scRGB.
+std::atomic<bool> hdr_output_pq = false;
+// The active HDR swapchain is Android's extended sRGB: 1.0 is the SDR white (present_hdr_relative).
+std::atomic<bool> hdr_output_relative = false;
+// HDR10 through a 10-bit swapchain whose window buffers are marked BT.2020 PQ by hand (Android before 14
+// offers no HDR10 color space to Vulkan).
+std::atomic<bool> hdr_output_pq_dataspace = false;
+// The HDR swapchain is pre-rotated by this (hdr_output.ps.glsl kRotation*): the compositor's own rotation
+// only takes 8-bit buffers and tone-maps HDR10 down to SDR before it, which washed the image out on the
+// Odin 2 Portal. The S23 Ultra's panel is portrait too, so the game in landscape is rotated.
+std::atomic<uint32_t> hdr_output_rotation = 0;
+
+VkExtent2D HdrSwapchainImageExtent(VkExtent2D extent) {
+  return hdr_output_rotation.load(std::memory_order_relaxed) ? VkExtent2D{extent.height, extent.width}
+                                                              : extent;
+}
+
+}  // namespace
+
+HdrOutputState GetHdrOutputState() {
+  const bool active = hdr_output_active.load(std::memory_order_relaxed);
+  return {hdr_output_offered.load(std::memory_order_relaxed), active,
+          active && REXCVAR_GET(present_hdr_highlights) > 0.0};
+}
 
 namespace {
 
@@ -591,6 +756,9 @@ VulkanPresenter::~VulkanPresenter() {
   if (paint_context_.swapchain_render_pass != VK_NULL_HANDLE) {
     dfn.vkDestroyRenderPass(device, paint_context_.swapchain_render_pass, nullptr);
   }
+  util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, paint_context_.hdr_pipeline);
+  util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, paint_context_.hdr_ui_mask_pipeline);
+  util::DestroyAndNullHandle(dfn.vkDestroyRenderPass, device, paint_context_.hdr_render_pass);
 
   for (const PaintContext::UISetupCommandBuffer& ui_setup_command_buffer :
        paint_context_.ui_setup_command_buffers) {
@@ -616,6 +784,8 @@ VulkanPresenter::~VulkanPresenter() {
     util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device, shader_module);
   }
   util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device, guest_output_paint_vs_);
+  util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device, hdr_output_fs_);
+  util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device, hdr_ui_mask_fs_);
   for (VkPipelineLayout& pipeline_layout : guest_output_paint_pipeline_layouts_) {
     util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device, pipeline_layout);
   }
@@ -1150,8 +1320,8 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
     paint_context_.swapchain = PaintContext::CreateSwapchainForVulkanSurface(
         vulkan_device_, paint_context_.vulkan_surface, new_surface_width, new_surface_height,
         old_swapchain, paint_context_.present_queue_family, new_swapchain_format,
-        paint_context_.swapchain_extent, paint_context_.swapchain_is_fifo, surface_unusable,
-        BucleReconexionRegistra());
+        paint_context_.swapchain_extent, paint_context_.swapchain_is_fifo,
+        paint_context_.swapchain_hdr, surface_unusable, BucleReconexionRegistra());
     // Destroy the old swapchain that may be retired now.
     if (old_swapchain != VK_NULL_HANDLE) {
       dfn.vkDestroySwapchainKHR(device, old_swapchain, nullptr);
@@ -1189,6 +1359,7 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
         surface_create_info.window = android_native_window_surface.window();
         vulkan_surface_create_result = ifn.vkCreateAndroidSurfaceKHR(
             instance, &surface_create_info, nullptr, &paint_context_.vulkan_surface);
+        paint_context_.android_window = android_native_window_surface.window();
       } break;
 #endif
 #if REX_PLATFORM_GNU_LINUX
@@ -1276,8 +1447,8 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
     paint_context_.swapchain = PaintContext::CreateSwapchainForVulkanSurface(
         vulkan_device_, paint_context_.vulkan_surface, new_surface_width, new_surface_height,
         VK_NULL_HANDLE, paint_context_.present_queue_family, new_swapchain_format,
-        paint_context_.swapchain_extent, paint_context_.swapchain_is_fifo, surface_unusable,
-        BucleReconexionRegistra());
+        paint_context_.swapchain_extent, paint_context_.swapchain_is_fifo,
+        paint_context_.swapchain_hdr, surface_unusable, BucleReconexionRegistra());
     if (paint_context_.swapchain == VK_NULL_HANDLE) {
       // Failed to create the swapchain for the new Vulkan surface - destroy the
       // Vulkan surface.
@@ -1293,16 +1464,84 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
   // paint_context_.DestroySwapchainAndVulkanSurface must be called before
   // returning.
 
-  // Update the render pass to the new format.
-  if (paint_context_.swapchain_render_pass_format != new_swapchain_format) {
+  if (paint_context_.swapchain_hdr && hdr_output_pq.load(std::memory_order_relaxed) &&
+      vulkan_device_->extensions().ext_EXT_hdr_metadata) {
+    // Mastered for the display itself, so that it shows the levels as they are, clipping at its own
+    // peak, rather than tone-mapping them from an assumed 1000-10000 nit master (which flattened the
+    // whole image on the Odin 2 Portal and kept the peak calibration square visible).
+    float max_nits = float(REXCVAR_GET(present_hdr_peak_nits));
+    float max_average_nits = max_nits;
+    float min_nits = 0.0f;
+    if (REXCVAR_GET(present_hdr_display_max_nits) > 0.0) {
+      max_nits = float(REXCVAR_GET(present_hdr_display_max_nits));
+      max_average_nits = REXCVAR_GET(present_hdr_display_max_average_nits) > 0.0
+                             ? float(REXCVAR_GET(present_hdr_display_max_average_nits))
+                             : max_nits;
+      min_nits = float(REXCVAR_GET(present_hdr_display_min_nits));
+    }
+    VkHdrMetadataEXT metadata = {};
+    metadata.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT;
+    // BT.2020 primaries, D65 white.
+    metadata.displayPrimaryRed = {0.708f, 0.292f};
+    metadata.displayPrimaryGreen = {0.170f, 0.797f};
+    metadata.displayPrimaryBlue = {0.131f, 0.046f};
+    metadata.whitePoint = {0.3127f, 0.3290f};
+    metadata.maxLuminance = max_nits;
+    metadata.minLuminance = min_nits;
+    metadata.maxContentLightLevel = max_nits;
+    metadata.maxFrameAverageLightLevel = max_average_nits;
+    dfn.vkSetHdrMetadataEXT(device, 1, &paint_context_.swapchain, &metadata);
+    if (BucleReconexionRegistra()) {
+      REXLOG_INFO("VulkanPresenter: HDR10 metadata: peak {} nits, frame average {} nits, black {} nits",
+                  max_nits, max_average_nits, min_nits);
+    }
+  } else if (paint_context_.swapchain_hdr && hdr_output_pq.load(std::memory_order_relaxed)) {
+    REXLOG_WARN("VulkanPresenter: HDR10 without metadata (no VK_EXT_hdr_metadata)");
+  }
+#if REX_PLATFORM_ANDROID
+  if (paint_context_.swapchain_hdr && hdr_output_pq_dataspace.load(std::memory_order_relaxed) &&
+      paint_context_.android_window) {
+    // After the swapchain set its own data space from the color space. API 28, and the app's native
+    // code targets 26: looked up at run time.
+    using SetBuffersDataSpace = int32_t (*)(ANativeWindow*, int32_t);
+    static const auto set_buffers_data_space = [] {
+      void* library = dlopen("libnativewindow.so", RTLD_NOW);
+      return library ? reinterpret_cast<SetBuffersDataSpace>(
+                           dlsym(library, "ANativeWindow_setBuffersDataSpace"))
+                     : nullptr;
+    }();
+    const int32_t result =
+        set_buffers_data_space
+            ? set_buffers_data_space(static_cast<ANativeWindow*>(paint_context_.android_window),
+                                     ADATASPACE_BT2020_PQ)
+            : -1;
+    if (result != 0) {
+      REXLOG_WARN("VulkanPresenter: Failed to mark the window HDR10 ({})", result);
+    }
+  }
+#endif
+
+  // Update the render pass to the new format. With an HDR swapchain, it draws into the SDR stand-ins,
+  // and the last pass samples them.
+  const bool hdr = paint_context_.swapchain_hdr;
+  const VkFormat render_pass_format = hdr ? PaintContext::kHdrStandInFormat : new_swapchain_format;
+  if (paint_context_.swapchain_render_pass_format != render_pass_format ||
+      paint_context_.swapchain_render_pass_hdr != hdr) {
     util::DestroyAndNullHandle(dfn.vkDestroyRenderPass, device,
                                paint_context_.swapchain_render_pass);
-    paint_context_.swapchain_render_pass_format = new_swapchain_format;
+    // The final effect's pipelines were made for that render pass: with HDR switched it may keep the
+    // format (B8G8R8A8 off Android) while its dependencies change. Every paint submission is complete
+    // (PrepareForSwapchainRetirement).
+    for (PaintContext::GuestOutputPaintPipeline& pipeline : paint_context_.guest_output_paint_pipelines) {
+      util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, pipeline.swapchain_pipeline);
+      pipeline.swapchain_format = VK_FORMAT_UNDEFINED;
+    }
+    paint_context_.swapchain_render_pass_format = render_pass_format;
   }
   if (paint_context_.swapchain_render_pass == VK_NULL_HANDLE) {
     VkAttachmentDescription render_pass_attachment;
     render_pass_attachment.flags = 0;
-    render_pass_attachment.format = new_swapchain_format;
+    render_pass_attachment.format = render_pass_format;
     render_pass_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
     render_pass_attachment.loadOp = REXCVAR_GET(present_render_pass_clear)
                                         ? VK_ATTACHMENT_LOAD_OP_CLEAR
@@ -1311,7 +1550,8 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
     render_pass_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     render_pass_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     render_pass_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    render_pass_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    render_pass_attachment.finalLayout =
+        hdr ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     VkAttachmentReference render_pass_color_attachment;
     render_pass_color_attachment.attachment = 0;
     render_pass_color_attachment.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -1340,6 +1580,14 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
         VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     render_pass_dependencies[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
     render_pass_dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+    if (hdr) {
+      // The stand-in was last sampled by an earlier frame's HDR pass, and is sampled next by this
+      // frame's.
+      render_pass_dependencies[0].srcStageMask |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+      render_pass_dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+      render_pass_dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      render_pass_dependencies[1].dependencyFlags = 0;
+    }
     VkRenderPassCreateInfo render_pass_create_info;
     render_pass_create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     render_pass_create_info.pNext = nullptr;
@@ -1360,7 +1608,8 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
       return SurfacePaintConnectResult::kFailure;
     }
     paint_context_.swapchain_render_pass = new_render_pass;
-    paint_context_.swapchain_render_pass_format = new_swapchain_format;
+    paint_context_.swapchain_render_pass_format = render_pass_format;
+    paint_context_.swapchain_render_pass_hdr = hdr;
     paint_context_.swapchain_render_pass_clear_load_op =
         render_pass_attachment.loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
   }
@@ -1413,6 +1662,11 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
     return SurfacePaintConnectResult::kFailure;
   }
 
+  if (hdr && !CreateHdrSwapchainImages(new_swapchain_format)) {
+    paint_context_.DestroySwapchainAndVulkanSurface();
+    return SurfacePaintConnectResult::kFailure;
+  }
+
   // Create the image views and the framebuffers.
   assert_true(paint_context_.swapchain_framebuffers.empty());
   paint_context_.swapchain_framebuffers.reserve(paint_context_.swapchain_images.size());
@@ -1421,7 +1675,7 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
   image_view_create_info.pNext = nullptr;
   image_view_create_info.flags = 0;
   image_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-  image_view_create_info.format = new_swapchain_format;
+  image_view_create_info.format = render_pass_format;
   image_view_create_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
   image_view_create_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
   image_view_create_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -1442,8 +1696,10 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_su
   framebuffer_create_info.width = paint_context_.swapchain_extent.width;
   framebuffer_create_info.height = paint_context_.swapchain_extent.height;
   framebuffer_create_info.layers = 1;
-  for (VkImage image : paint_context_.swapchain_images) {
-    image_view_create_info.image = image;
+  for (size_t image_index = 0; image_index < paint_context_.swapchain_images.size();
+       ++image_index) {
+    image_view_create_info.image = hdr ? paint_context_.hdr_images[image_index].image
+                                       : paint_context_.swapchain_images[image_index];
     if (dfn.vkCreateImageView(device, &image_view_create_info, nullptr, &image_view) !=
         VK_SUCCESS) {
       REXLOG_ERROR("VulkanPresenter: Failed to create a swapchain image view");
@@ -1599,9 +1855,10 @@ bool VulkanPresenter::RefreshGuestOutputImpl(
 VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
     const VulkanDevice* vulkan_device, VkSurfaceKHR surface, uint32_t width, uint32_t height,
     VkSwapchainKHR old_swapchain, uint32_t& present_queue_family_out, VkFormat& image_format_out,
-    VkExtent2D& image_extent_out, bool& is_fifo_out, bool& ui_surface_unusable_out,
+    VkExtent2D& image_extent_out, bool& is_fifo_out, bool& hdr_out, bool& ui_surface_unusable_out,
     bool registrar) {
   ui_surface_unusable_out = false;
+  hdr_out = false;
 
   const VulkanInstance::Functions& ifn = vulkan_device->vulkan_instance()->functions();
   const VkPhysicalDevice physical_device = vulkan_device->physical_device();
@@ -1789,6 +2046,113 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
       image_format = surface_formats.front();
     }
   }
+  // Where asked and offered, an HDR swapchain. The SDR image is painted into a stand-in and converted by
+  // the last pass.
+  // - Android: HDR10 (BT.2020 PQ, absolute nits). Android takes scRGB 1.0 as SDR white and, without a
+  //   requested headroom (and before Android 14 at all), clips there. A PQ layer puts the display in its
+  //   HDR mode instead.
+  // - Elsewhere: scRGB, linear BT.709 with 1.0 at 80 nits.
+  if (registrar) {
+    static std::atomic<bool> logged_formats = false;
+    if (!logged_formats.exchange(true)) {
+      std::string formats;
+      for (const VkSurfaceFormatKHR& surface_format : surface_formats) {
+        formats += fmt::format(" {}/{}", uint32_t(surface_format.format),
+                               uint32_t(surface_format.colorSpace));
+      }
+      REXLOG_INFO("VulkanPresenter: surface formats (format/color space):{}", formats);
+    }
+  }
+  bool hdr_offered = false;
+  bool hdr_pq = false;
+  bool hdr_pq_dataspace = false;
+  bool hdr_relative = false;
+  if (vulkan_device->vulkan_instance()->extensions().ext_EXT_swapchain_colorspace) {
+    const VkSurfaceFormatKHR* hdr_format = nullptr;
+#if REX_PLATFORM_ANDROID
+    // Relative HDR first where the launcher asks for it (present_hdr_relative).
+    if (REXCVAR_GET(present_hdr_relative)) {
+      for (const VkSurfaceFormatKHR& surface_format : surface_formats) {
+        if (surface_format.format == kHdrFormat &&
+            surface_format.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT) {
+          hdr_format = &surface_format;
+          hdr_relative = true;
+          break;
+        }
+      }
+    }
+#endif
+    for (const VkSurfaceFormatKHR& surface_format : surface_formats) {
+      if (hdr_relative) {
+        break;
+      }
+#if REX_PLATFORM_ANDROID
+      // The float format first: it keeps the stand-in's precision.
+      if (surface_format.colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT &&
+          (surface_format.format == kHdrFormat ||
+           (surface_format.format == kHdrPqFormat && !hdr_format))) {
+        hdr_format = &surface_format;
+        hdr_pq = true;
+      }
+#else
+      if (surface_format.format == kHdrFormat &&
+          surface_format.colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT) {
+        hdr_format = &surface_format;
+        break;
+      }
+#endif
+    }
+#if REX_PLATFORM_ANDROID
+    // Android 13 lists no HDR10 color space even for an HDR10 display; the window still composes
+    // BT.2020 PQ buffers, as video players use.
+    if (!hdr_format && REXCVAR_GET(present_hdr_display_hdr10)) {
+      for (const VkSurfaceFormatKHR& surface_format : surface_formats) {
+        if (surface_format.format == kHdrPqFormat &&
+            surface_format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+          hdr_format = &surface_format;
+          hdr_pq = true;
+          hdr_pq_dataspace = true;
+          break;
+        }
+      }
+    }
+#endif
+    if (hdr_format) {
+      hdr_offered = true;
+      if (REXCVAR_GET(present_hdr)) {
+        image_format = *hdr_format;
+        hdr_out = true;
+      }
+    }
+  }
+  hdr_output_offered.store(hdr_offered, std::memory_order_relaxed);
+  hdr_output_active.store(hdr_out, std::memory_order_relaxed);
+  hdr_output_pq.store(hdr_out && hdr_pq, std::memory_order_relaxed);
+  hdr_output_pq_dataspace.store(hdr_out && hdr_pq_dataspace, std::memory_order_relaxed);
+  hdr_output_relative.store(hdr_out && hdr_relative, std::memory_order_relaxed);
+  {
+    // 0 not logged, 1 SDR, 2 not offered, 3 scRGB, 4 and 5 HDR10, 6 relative.
+    static std::atomic<int> logged_hdr_choice = 0;
+    const int choice = !REXCVAR_GET(present_hdr) ? 1
+                       : !hdr_out               ? 2
+                       : hdr_relative           ? 6
+                       : !hdr_pq                ? 3
+                       : image_format.format == kHdrFormat ? 4
+                                                           : 5;
+    const int previous = logged_hdr_choice.exchange(choice);
+    // Off from the start is not worth a line.
+    if (previous != choice && (choice != 1 || previous != 0)) {
+      REXLOG_INFO("VulkanPresenter: HDR presentation {}",
+                  choice == 6   ? "uses an extended sRGB swapchain (relative: 1.0 is the SDR white, highlights "
+                                  "up to the display's HDR/SDR ratio)"
+                  : choice == 5 ? (hdr_pq_dataspace ? "uses a 10-bit swapchain marked HDR10"
+                                                    : "uses an HDR10 swapchain (10-bit)")
+                  : choice == 4 ? "uses an HDR10 swapchain (16-bit float)"
+                  : choice == 3 ? "uses an scRGB swapchain"
+                  : choice == 2 ? "is not offered by the surface"
+                                : "is off");
+    }
+  }
 
   // Get presentation modes.
   std::vector<VkPresentModeKHR> present_modes;
@@ -1872,6 +2236,30 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
       (surface_capabilities.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
           ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
           : VK_SURFACE_TRANSFORM_INHERIT_BIT_KHR;
+  uint32_t rotation = 0;
+#if REX_PLATFORM_ANDROID
+  // HDR10 only reaches the panel unrotated: take the display's transform and rotate in the last pass,
+  // which alone writes the HDR swapchain. The rest of the presenter keeps the unrotated extent
+  // (image_extent_out). The relative swapchain too: the compositor's rotation is the same path, and a
+  // pre-rotated buffer is the cheapest one for the display either way.
+  if (hdr_out && (hdr_pq || hdr_relative) &&
+      (surface_capabilities.supportedTransforms & surface_capabilities.currentTransform)) {
+    const VkExtent2D rotated = {image_extent.height, image_extent.width};
+    const bool fits = rotated.width <= max_framebuffer_extent.width &&
+                      rotated.height <= max_framebuffer_extent.height;
+    if (fits && surface_capabilities.currentTransform == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR) {
+      rotation = 1;
+    } else if (fits &&
+               surface_capabilities.currentTransform == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR) {
+      rotation = 2;
+    }
+    if (rotation) {
+      swapchain_create_info.preTransform = surface_capabilities.currentTransform;
+      swapchain_create_info.imageExtent = rotated;
+    }
+  }
+#endif
+  hdr_output_rotation.store(rotation, std::memory_order_relaxed);
   // Prefer opaque to avoid blending in the window system, or let that be
   // specified via the window system if it can't be forced. As a last resort,
   // just pick any - guest output will write alpha of 1 anyway.
@@ -1956,16 +2344,18 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
   if (registrar) {
     REXLOG_INFO(
         "VulkanPresenter: Created {}x{} swapchain with format {}, color space "
-        "{}, presentation mode {} ({}), {} images requested",
+        "{}, presentation mode {} ({}), {} images requested, transform {:#x} (display {:#x})",
         swapchain_create_info.imageExtent.width, swapchain_create_info.imageExtent.height,
         uint32_t(swapchain_create_info.imageFormat), uint32_t(swapchain_create_info.imageColorSpace),
         uint32_t(swapchain_create_info.presentMode), nombre_modo,
-        swapchain_create_info.minImageCount);
+        swapchain_create_info.minImageCount, uint32_t(swapchain_create_info.preTransform),
+        uint32_t(surface_capabilities.currentTransform));
   }
 
   present_queue_family_out = queue_family_index_present;
   image_format_out = swapchain_create_info.imageFormat;
-  image_extent_out = swapchain_create_info.imageExtent;
+  // Unrotated: only the HDR pass sees the pre-rotated size (HdrSwapchainImageExtent).
+  image_extent_out = rotation ? image_extent : swapchain_create_info.imageExtent;
   is_fifo_out = swapchain_create_info.presentMode == VK_PRESENT_MODE_FIFO_KHR ||
                 swapchain_create_info.presentMode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
   return swapchain;
@@ -1982,6 +2372,15 @@ VkSwapchainKHR VulkanPresenter::PaintContext::PrepareForSwapchainRetirement() {
     dfn.vkDestroyImageView(device, framebuffer.image_view, nullptr);
   }
   swapchain_framebuffers.clear();
+  for (const HdrImage& hdr_image : hdr_images) {
+    dfn.vkDestroyFramebuffer(device, hdr_image.swapchain_framebuffer, nullptr);
+    dfn.vkDestroyImageView(device, hdr_image.swapchain_view, nullptr);
+    dfn.vkDestroyImageView(device, hdr_image.srgb_view, nullptr);
+    dfn.vkDestroyImage(device, hdr_image.image, nullptr);
+    dfn.vkFreeMemory(device, hdr_image.memory, nullptr);
+  }
+  hdr_images.clear();
+  util::DestroyAndNullHandle(dfn.vkDestroyDescriptorPool, device, hdr_descriptor_pool);
   swapchain_images.clear();
   swapchain_extent.width = 0;
   swapchain_extent.height = 0;
@@ -2012,6 +2411,7 @@ void VulkanPresenter::PaintContext::DestroySwapchainAndVulkanSurface() {
                                                      nullptr);
     vulkan_surface = VK_NULL_HANDLE;
   }
+  android_window = nullptr;
 }
 
 VulkanPresenter::GuestOutputImage::~GuestOutputImage() {
@@ -2165,6 +2565,13 @@ void VulkanPresenter::RegistrarSuperficieDesactualizada(const char* llamada, VkR
 }
 
 Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_drawers) {
+  // present_hdr switched: recreate the swapchain in the other format through the reconnection. Where
+  // the surface offers no HDR, nothing changes.
+  if (REXCVAR_GET(present_hdr) != paint_context_.swapchain_hdr &&
+      (paint_context_.swapchain_hdr || hdr_output_offered.load(std::memory_order_relaxed))) {
+    return PaintResult::kNotPresentedConnectionOutdated;
+  }
+
   // First mark of the fine-grained breakdown. With the switch off this is just a bool.
   uint64_t perfil = PintadoAhora();
 
@@ -2775,6 +3182,30 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
 
           dfn.vkCmdDraw(draw_command_buffer, 4, 1, 0, 0);
 
+          if (is_final_effect && paint_context_.swapchain_hdr) {
+            // The effects write an opaque alpha; the HDR pass reads the HUD coverage of the guest output
+            // from it instead.
+            VkPipelineLayout mask_pipeline_layout =
+                guest_output_paint_pipeline_layouts_[kGuestOutputPaintPipelineLayoutIndexBilinear];
+            dfn.vkCmdBindPipeline(draw_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  paint_context_.hdr_ui_mask_pipeline);
+            dfn.vkCmdBindDescriptorSets(
+                draw_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, mask_pipeline_layout, 0, 1,
+                &paint_context_.guest_output_descriptor_sets
+                     [PaintContext::kGuestOutputDescriptorSetGuestOutput0Sampled +
+                      guest_output_image_paint_ref_index],
+                0, nullptr);
+            dfn.vkCmdPushConstants(draw_command_buffer, mask_pipeline_layout,
+                                   VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(effect_rect_constants),
+                                   &effect_rect_constants);
+            BilinearConstants mask_constants;
+            mask_constants.Initialize(guest_output_flow, i);
+            dfn.vkCmdPushConstants(draw_command_buffer, mask_pipeline_layout,
+                                   VK_SHADER_STAGE_FRAGMENT_BIT, sizeof(effect_rect_constants),
+                                   sizeof(mask_constants), &mask_constants);
+            dfn.vkCmdDraw(draw_command_buffer, 4, 1, 0, 0);
+          }
+
           if (is_final_effect) {
             // Clear the letterbox around the guest output if the guest output
             // doesn't cover the entire swapchain image.
@@ -2859,6 +3290,88 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
   }
 
   dfn.vkCmdEndRenderPass(draw_command_buffer);
+
+  if (paint_context_.swapchain_hdr) {
+    // The SDR stand-in, guest output and UI included, to the HDR swapchain: sampled through its sRGB
+    // view as linear and scaled so that white is the paper white (scRGB 1.0 is 80 nits), then encoded
+    // as HDR10 on Android.
+    const PaintContext::HdrImage& hdr_image = paint_context_.hdr_images[swapchain_image_index];
+    VkRenderPassBeginInfo hdr_render_pass_begin_info = {};
+    hdr_render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    hdr_render_pass_begin_info.renderPass = paint_context_.hdr_render_pass;
+    hdr_render_pass_begin_info.framebuffer = hdr_image.swapchain_framebuffer;
+    const VkExtent2D hdr_extent = HdrSwapchainImageExtent(paint_context_.swapchain_extent);
+    hdr_render_pass_begin_info.renderArea.extent = hdr_extent;
+    dfn.vkCmdBeginRenderPass(draw_command_buffer, &hdr_render_pass_begin_info,
+                             VK_SUBPASS_CONTENTS_INLINE);
+    VkViewport hdr_viewport = {};
+    hdr_viewport.width = float(hdr_extent.width);
+    hdr_viewport.height = float(hdr_extent.height);
+    hdr_viewport.maxDepth = 1.0f;
+    VkRect2D hdr_scissor = {{0, 0}, hdr_extent};
+    dfn.vkCmdSetViewport(draw_command_buffer, 0, 1, &hdr_viewport);
+    dfn.vkCmdSetScissor(draw_command_buffer, 0, 1, &hdr_scissor);
+    dfn.vkCmdBindPipeline(draw_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          paint_context_.hdr_pipeline);
+    VkPipelineLayout hdr_pipeline_layout =
+        guest_output_paint_pipeline_layouts_[kGuestOutputPaintPipelineLayoutIndexHdr];
+    dfn.vkCmdBindDescriptorSets(draw_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                hdr_pipeline_layout, 0, 1, &hdr_image.descriptor_set, 0, nullptr);
+    GuestOutputPaintRectangleConstants hdr_rect_constants;
+    hdr_rect_constants.x = -1.0f;
+    hdr_rect_constants.y = -1.0f;
+    hdr_rect_constants.width = 2.0f;
+    hdr_rect_constants.height = 2.0f;
+    dfn.vkCmdPushConstants(draw_command_buffer, hdr_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0,
+                           sizeof(hdr_rect_constants), &hdr_rect_constants);
+    HdrOutputConstants hdr_constants = {};
+    // Relative (present_hdr_relative): 1.0 is the SDR white wherever the brightness slider is, and the peak is
+    // the display's current HDR/SDR ratio. Absolute (HDR10, scRGB elsewhere): scRGB 1.0 is 80 nits.
+    const bool relative = hdr_output_relative.load(std::memory_order_relaxed);
+    const double paper_white_nits = REXCVAR_GET(present_hdr_paper_white_nits);
+    const double peak_nits = REXCVAR_GET(present_hdr_display_max_nits) > 0.0
+                                 ? REXCVAR_GET(present_hdr_display_max_nits)
+                                 : REXCVAR_GET(present_hdr_peak_nits);
+    const double headroom = std::max(REXCVAR_GET(present_hdr_headroom), 1.0);
+    hdr_constants.paper_white_scale = relative ? 1.0f : float(paper_white_nits / 80.0);
+    const double peak_over_white = relative ? headroom : peak_nits / paper_white_nits;
+    // SDR white in the scene goes this far from the paper white to the peak.
+    hdr_constants.highlight_scale = float(std::max(peak_over_white - 1.0, 0.0) *
+                                          std::clamp(REXCVAR_GET(present_hdr_highlights), 0.0, 1.0));
+    if (relative) {
+      // The headroom changes with brightness and ambient light: logged when it moves (not every frame).
+      static double logged_headroom = 0.0;
+      static uint32_t headroom_lines = 0;
+      if (std::abs(headroom - logged_headroom) >= 0.25 && headroom_lines < 200) {
+        logged_headroom = headroom;
+        ++headroom_lines;
+        REXLOG_INFO("VulkanPresenter: HDR headroom {:.2f}x the SDR white (highlights up to {:.2f}x)", headroom,
+                    1.0 + hdr_constants.highlight_scale);
+      }
+    }
+    // Linear SDR brightness where the expansion starts, and its curve (present_hdr_knee, present_hdr_curve).
+    hdr_constants.knee = float(std::clamp(REXCVAR_GET(present_hdr_knee), 0.0, 0.95));
+    // Full expansion at present_hdr_top rather than at SDR white, which FH2's lights never reach.
+    hdr_constants.knee_range_inv =
+        1.0f / std::max(float(std::clamp(REXCVAR_GET(present_hdr_top), 0.05, 1.0)) - hdr_constants.knee, 0.05f);
+    hdr_constants.curve = float(std::clamp(REXCVAR_GET(present_hdr_curve), 0.5, 4.0));
+    hdr_constants.gamma = float(REXCVAR_GET(present_hdr_gamma));
+    // Mostly the largest channel: a red brake light (luminance 0.21) expands nearly as a white one;
+    // deep colored surfaces stay below the knee.
+    hdr_constants.max_channel_weight = 0.75f;
+    hdr_constants.compare_x =
+        REXCVAR_GET(present_hdr_compare) ? float(paint_context_.swapchain_extent.width / 2) : -1.0f;
+    hdr_constants.pattern = uint32_t(std::clamp(REXCVAR_GET(present_hdr_test_pattern), 0, 3));
+    hdr_constants.pattern_value = relative ? float(headroom) : float(peak_nits / 80.0);
+    hdr_constants.output_flags = (hdr_output_pq.load(std::memory_order_relaxed) ? 1 : 0) |
+                                 (hdr_output_rotation.load(std::memory_order_relaxed) << 1);
+    hdr_constants.size[0] = float(paint_context_.swapchain_extent.width);
+    hdr_constants.size[1] = float(paint_context_.swapchain_extent.height);
+    dfn.vkCmdPushConstants(draw_command_buffer, hdr_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                           sizeof(hdr_rect_constants), sizeof(hdr_constants), &hdr_constants);
+    dfn.vkCmdDraw(draw_command_buffer, 4, 1, 0, 0);
+    dfn.vkCmdEndRenderPass(draw_command_buffer);
+  }
 
   dfn.vkEndCommandBuffer(draw_command_buffer);
   perfil = PintadoTramo(kTrozoGrabar, perfil);
@@ -3156,6 +3669,9 @@ bool VulkanPresenter::InitializeSurfaceIndependent() {
         guest_output_paint_push_constant_range_ffx.size = sizeof(FsrRcasConstants);
         break;
 #endif
+      case kGuestOutputPaintPipelineLayoutIndexHdr:
+        guest_output_paint_push_constant_range_ffx.size = sizeof(HdrOutputConstants);
+        break;
       default:
         assert_unhandled_case(GuestOutputPaintPipelineLayoutIndex(i));
         continue;
@@ -3378,8 +3894,207 @@ bool VulkanPresenter::InitializeSurfaceIndependent() {
   return InitializeCommonSurfaceIndependent();
 }
 
+bool VulkanPresenter::CreateHdrSwapchainImages(VkFormat swapchain_format) {
+  const VulkanDevice::Functions& dfn = vulkan_device_->functions();
+  const VkDevice device = vulkan_device_->device();
+  PaintContext& context = paint_context_;
+
+  // The last pass and its pipeline outlive connections with the same swapchain format.
+  assert_true(swapchain_format == PaintContext::kHdrFormat ||
+              swapchain_format == PaintContext::kHdrPqFormat);
+  if (context.hdr_render_pass != VK_NULL_HANDLE &&
+      context.hdr_render_pass_format != swapchain_format) {
+    context.submission_tracker.AwaitAllSubmissionsCompletion();
+    util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, context.hdr_pipeline);
+    util::DestroyAndNullHandle(dfn.vkDestroyRenderPass, device, context.hdr_render_pass);
+  }
+  if (context.hdr_render_pass == VK_NULL_HANDLE) {
+    VkAttachmentDescription attachment = {};
+    attachment.format = swapchain_format;
+    attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    // Every pixel is written.
+    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    VkAttachmentReference color_attachment = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription subpass = {};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &color_attachment;
+    VkSubpassDependency dependencies[2] = {};
+    // srcStageMask is the acquire semaphore's wait stage.
+    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[0].dstSubpass = 0;
+    dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencies[0].srcAccessMask = 0;
+    dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+    dependencies[1].srcSubpass = 0;
+    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependencies[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+    VkRenderPassCreateInfo render_pass_create_info = {};
+    render_pass_create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    render_pass_create_info.attachmentCount = 1;
+    render_pass_create_info.pAttachments = &attachment;
+    render_pass_create_info.subpassCount = 1;
+    render_pass_create_info.pSubpasses = &subpass;
+    render_pass_create_info.dependencyCount = uint32_t(rex::countof(dependencies));
+    render_pass_create_info.pDependencies = dependencies;
+    if (dfn.vkCreateRenderPass(device, &render_pass_create_info, nullptr,
+                               &context.hdr_render_pass) != VK_SUCCESS) {
+      REXLOG_ERROR("VulkanPresenter: Failed to create the HDR output render pass");
+      return false;
+    }
+    context.hdr_render_pass_format = swapchain_format;
+  }
+  auto create_shader_module = [&](const uint32_t* code, size_t size, VkShaderModule& module) {
+    if (module != VK_NULL_HANDLE) {
+      return true;
+    }
+    VkShaderModuleCreateInfo create_info = {};
+    create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    create_info.codeSize = size;
+    create_info.pCode = code;
+    if (dfn.vkCreateShaderModule(device, &create_info, nullptr, &module) != VK_SUCCESS) {
+      REXLOG_ERROR("VulkanPresenter: Failed to create an HDR output shader module");
+      return false;
+    }
+    return true;
+  };
+  if (!create_shader_module(shaders::hdr_output_ps, sizeof(shaders::hdr_output_ps), hdr_output_fs_) ||
+      !create_shader_module(shaders::hdr_ui_mask_ps, sizeof(shaders::hdr_ui_mask_ps),
+                            hdr_ui_mask_fs_)) {
+    return false;
+  }
+  if (context.hdr_pipeline == VK_NULL_HANDLE) {
+    context.hdr_pipeline = CreateGuestOutputPaintPipeline(
+        GuestOutputPaintEffect::kBilinear, context.hdr_render_pass, hdr_output_fs_,
+        guest_output_paint_pipeline_layouts_[kGuestOutputPaintPipelineLayoutIndexHdr]);
+    if (context.hdr_pipeline == VK_NULL_HANDLE) {
+      return false;
+    }
+  }
+  if (context.hdr_ui_mask_pipeline == VK_NULL_HANDLE) {
+    // Compatible with every swapchain_render_pass of an HDR swapchain: the stand-in format does not change.
+    context.hdr_ui_mask_pipeline = CreateGuestOutputPaintPipeline(
+        GuestOutputPaintEffect::kBilinear, context.swapchain_render_pass, hdr_ui_mask_fs_,
+        VK_NULL_HANDLE, VK_COLOR_COMPONENT_A_BIT);
+    if (context.hdr_ui_mask_pipeline == VK_NULL_HANDLE) {
+      return false;
+    }
+  }
+
+  const uint32_t image_count = uint32_t(context.swapchain_images.size());
+  // The sampler too, though immutable, as for guest_output_descriptor_pool.
+  VkDescriptorPoolSize pool_sizes[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, image_count},
+                                        {VK_DESCRIPTOR_TYPE_SAMPLER, image_count}};
+  VkDescriptorPoolCreateInfo pool_create_info = {};
+  pool_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  pool_create_info.maxSets = image_count;
+  pool_create_info.poolSizeCount = uint32_t(rex::countof(pool_sizes));
+  pool_create_info.pPoolSizes = pool_sizes;
+  if (dfn.vkCreateDescriptorPool(device, &pool_create_info, nullptr,
+                                 &context.hdr_descriptor_pool) != VK_SUCCESS) {
+    REXLOG_ERROR("VulkanPresenter: Failed to create the HDR output descriptor pool");
+    return false;
+  }
+
+  context.hdr_images.resize(image_count);
+  for (uint32_t i = 0; i < image_count; ++i) {
+    PaintContext::HdrImage& hdr_image = context.hdr_images[i];
+
+    VkImageCreateInfo image_create_info = {};
+    image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    // Rendered as UNORM like an SDR swapchain image, sampled as sRGB.
+    image_create_info.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+    image_create_info.imageType = VK_IMAGE_TYPE_2D;
+    image_create_info.format = PaintContext::kHdrStandInFormat;
+    image_create_info.extent = {context.swapchain_extent.width, context.swapchain_extent.height, 1};
+    image_create_info.mipLevels = 1;
+    image_create_info.arrayLayers = 1;
+    image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_create_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (!util::CreateDedicatedAllocationImage(vulkan_device_, image_create_info,
+                                              util::MemoryPurpose::kDeviceLocal, hdr_image.image,
+                                              hdr_image.memory)) {
+      REXLOG_ERROR("VulkanPresenter: Failed to create an HDR output stand-in image");
+      return false;
+    }
+
+    VkImageViewCreateInfo view_create_info = {};
+    view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view_create_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    view_create_info.image = hdr_image.image;
+    view_create_info.format = PaintContext::kHdrStandInSrgbFormat;
+    if (dfn.vkCreateImageView(device, &view_create_info, nullptr, &hdr_image.srgb_view) !=
+        VK_SUCCESS) {
+      REXLOG_ERROR("VulkanPresenter: Failed to create an HDR output stand-in view");
+      return false;
+    }
+    view_create_info.image = context.swapchain_images[i];
+    view_create_info.format = swapchain_format;
+    if (dfn.vkCreateImageView(device, &view_create_info, nullptr, &hdr_image.swapchain_view) !=
+        VK_SUCCESS) {
+      REXLOG_ERROR("VulkanPresenter: Failed to create an HDR swapchain image view");
+      return false;
+    }
+
+    VkFramebufferCreateInfo framebuffer_create_info = {};
+    framebuffer_create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebuffer_create_info.renderPass = context.hdr_render_pass;
+    framebuffer_create_info.attachmentCount = 1;
+    framebuffer_create_info.pAttachments = &hdr_image.swapchain_view;
+    // The swapchain's own size, rotated from the stand-in's when pre-rotated.
+    const VkExtent2D swapchain_image_extent = HdrSwapchainImageExtent(context.swapchain_extent);
+    framebuffer_create_info.width = swapchain_image_extent.width;
+    framebuffer_create_info.height = swapchain_image_extent.height;
+    framebuffer_create_info.layers = 1;
+    if (dfn.vkCreateFramebuffer(device, &framebuffer_create_info, nullptr,
+                                &hdr_image.swapchain_framebuffer) != VK_SUCCESS) {
+      REXLOG_ERROR("VulkanPresenter: Failed to create an HDR swapchain framebuffer");
+      return false;
+    }
+
+    VkDescriptorSetAllocateInfo set_allocate_info = {};
+    set_allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    set_allocate_info.descriptorPool = context.hdr_descriptor_pool;
+    set_allocate_info.descriptorSetCount = 1;
+    set_allocate_info.pSetLayouts = &guest_output_paint_image_descriptor_set_layout_;
+    if (dfn.vkAllocateDescriptorSets(device, &set_allocate_info, &hdr_image.descriptor_set) !=
+        VK_SUCCESS) {
+      REXLOG_ERROR("VulkanPresenter: Failed to allocate an HDR output descriptor set");
+      return false;
+    }
+    VkDescriptorImageInfo image_info = {VK_NULL_HANDLE, hdr_image.srgb_view,
+                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write = {};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = hdr_image.descriptor_set;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    write.pImageInfo = &image_info;
+    dfn.vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+  }
+  return true;
+}
+
 VkPipeline VulkanPresenter::CreateGuestOutputPaintPipeline(GuestOutputPaintEffect effect,
-                                                           VkRenderPass render_pass) {
+                                                           VkRenderPass render_pass,
+                                                           VkShaderModule fragment_shader,
+                                                           VkPipelineLayout layout,
+                                                           VkColorComponentFlags color_write_mask) {
   VkPipelineShaderStageCreateInfo stages[2] = {};
   for (uint32_t i = 0; i < 2; ++i) {
     VkPipelineShaderStageCreateInfo& stage = stages[i];
@@ -3388,7 +4103,8 @@ VkPipeline VulkanPresenter::CreateGuestOutputPaintPipeline(GuestOutputPaintEffec
     stage.pName = "main";
   }
   stages[0].module = guest_output_paint_vs_;
-  stages[1].module = guest_output_paint_fs_[size_t(effect)];
+  stages[1].module =
+      fragment_shader != VK_NULL_HANDLE ? fragment_shader : guest_output_paint_fs_[size_t(effect)];
   assert_true(stages[1].module != VK_NULL_HANDLE);
 
   VkPipelineVertexInputStateCreateInfo vertex_input_state = {};
@@ -3415,9 +4131,7 @@ VkPipeline VulkanPresenter::CreateGuestOutputPaintPipeline(GuestOutputPaintEffec
   multisample_state.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
   VkPipelineColorBlendAttachmentState color_blend_attachment_state = {};
-  color_blend_attachment_state.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
-                                                VK_COLOR_COMPONENT_G_BIT |
-                                                VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  color_blend_attachment_state.colorWriteMask = color_write_mask;
   VkPipelineColorBlendStateCreateInfo color_blend_state = {};
   color_blend_state.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
   color_blend_state.attachmentCount = 1;
@@ -3448,7 +4162,9 @@ VkPipeline VulkanPresenter::CreateGuestOutputPaintPipeline(GuestOutputPaintEffec
   pipeline_create_info.pColorBlendState = &color_blend_state;
   pipeline_create_info.pDynamicState = &dynamic_state;
   pipeline_create_info.layout =
-      guest_output_paint_pipeline_layouts_[GetGuestOutputPaintPipelineLayoutIndex(effect)];
+      layout != VK_NULL_HANDLE
+          ? layout
+          : guest_output_paint_pipeline_layouts_[GetGuestOutputPaintPipelineLayoutIndex(effect)];
   pipeline_create_info.renderPass = render_pass;
   pipeline_create_info.subpass = 0;
   pipeline_create_info.basePipelineHandle = VK_NULL_HANDLE;

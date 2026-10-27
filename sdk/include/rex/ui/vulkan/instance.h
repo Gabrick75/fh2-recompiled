@@ -95,6 +95,8 @@ class VulkanInstance {
   // supported (with the `ext_major_minor_` prefix rather than `ext_`).
   struct Extensions {
     bool ext_KHR_surface = false;  // #1
+    // The HDR swapchain color spaces (present_hdr).
+    bool ext_EXT_swapchain_colorspace = false;  // #105
 #ifdef VK_USE_PLATFORM_XCB_KHR
     bool ext_KHR_xcb_surface = false;  // #6
 #endif

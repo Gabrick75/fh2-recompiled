@@ -33,6 +33,9 @@ REXCVAR_DEFINE_INT32(fh2_captura_cada_s, 0, "FH2",
     .range(0, 3600);
 REXCVAR_DEFINE_INT32(fh2_captura_max, 20, "FH2", "Maximo de capturas por ejecucion")
     .range(1, 1000);
+REXCVAR_DEFINE_STRING(fh2_captura_dir, "", "FH2",
+                      "Folder for the PNG captures (empty = capturas/ next to the executable); on Android, e.g. "
+                      "/sdcard/jogos/fh2-capturas, which adb can read");
 REXCVAR_DEFINE_STRING(fh2_captura_memoria, "", "FH2",
                       "Debug: 'ENDERECO:N' logs, at each capture, N big-endian dwords of guest physical memory from "
                       "that hex address, as hex and as floats (to compare a resolve between the emulated and the "
@@ -134,7 +137,10 @@ std::vector<uint8_t> CodificarPng(const rex::ui::RawImage& imagen) {
 }
 
 void Bucle(std::function<rex::ui::Presenter*()> obtener_presentador, int cada_s, int maximo) {
-  const std::filesystem::path carpeta = rex::filesystem::GetExecutableFolder() / "capturas";
+  // fh2_captura_dir: on Android the executable folder is the app's private storage, out of adb's reach.
+  const std::filesystem::path carpeta = REXCVAR_GET(fh2_captura_dir).empty()
+                                            ? rex::filesystem::GetExecutableFolder() / "capturas"
+                                            : std::filesystem::path(REXCVAR_GET(fh2_captura_dir));
   const auto inicio = std::chrono::steady_clock::now();
   for (int n = 1; n <= maximo; ++n) {
     {

@@ -101,11 +101,19 @@ struct ImagenNativa {
   // whose clear is held back until the last strip (see Fh2BorrarAhora in nfsmw_nativo_destinos.cpp).
   uint32_t fh2_borrado_pendiente = 0;
   bool fh2_almacenamiento = false;  // created with STORAGE usage (the scaled resolve copy writes it)
+  // The usage a resolved texture was created with by ObtenerResuelta, 0 for any other image: only those go back to
+  // the recycling pool (fh2_nativo_reciclar_resueltas), keyed by size, format and this usage. It travels with the
+  // image if a resolve without copy swaps it with a render target.
+  VkImageUsageFlags fh2_uso = 0;
   // fh2_nativo_borrados_diferidos: a clear the game asked for and that has not been recorded yet. The next pass that
   // draws on this render target does it with loadOp = CLEAR (a tiled GPU then neither clears it in memory nor loads
   // it); anything else that touches the image first records it as a normal clear (ContextoDestinos).
   bool fh2_borrar = false;
   VkClearValue fh2_valor_borrar{};
+  // What that clear covers on the Xbox 360, in image pixels: the rectangle a partial resolve cleared (union of the
+  // held ones), or the whole image (fh2_borrar_entero). fh2_nativo_area_justa opens the pass over it.
+  bool fh2_borrar_entero = true;
+  VkRect2D fh2_rect_borrar{};
 #endif
   uint32_t resuelta_base = 0;  // where its content is while contenido_invalido
 #if defined(FH2_RECOMP)

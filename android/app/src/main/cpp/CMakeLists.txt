@@ -45,6 +45,7 @@ set(SDL_STATIC OFF CACHE BOOL "Use SDL's shared Android library" FORCE)
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../../../../../app" "fh2-app")
 target_sources(fh2 PRIVATE "${CMAKE_CURRENT_LIST_DIR}/android_touch.cpp"
                            "${CMAKE_CURRENT_LIST_DIR}/android_rendimiento.cpp"
+                           "${CMAKE_CURRENT_LIST_DIR}/android_hdr.cpp"
                            "${CMAKE_CURRENT_LIST_DIR}/android_vibration.cpp")
 
 if(TARGET SDL3-shared)

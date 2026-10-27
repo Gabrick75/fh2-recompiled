@@ -20,6 +20,8 @@ set(FH2_SOURCES
     # Guards on game functions (null checks the console never needed).
     src/fh2_correcoes.cpp
     src/fh2_desempenho.cpp
+    # One simulation step per frame shown: the vblank's step event held for the render thread (cvar fh2_ritmo_passos).
+    src/fh2_passos.cpp
     src/fh2_perfil.cpp
     src/fh2_censo.cpp
     # The game's Sleep and SwitchToThread per call site (cvar fh2_medir_esperas).

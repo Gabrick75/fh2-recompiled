@@ -184,6 +184,9 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(const bool with_surface,
   if (with_surface) {
     // #1.
     requested_extensions.emplace("VK_KHR_surface", &vulkan_instance->extensions_.ext_KHR_surface);
+    // #105, for the HDR swapchain color spaces (present_hdr).
+    requested_extensions.emplace("VK_EXT_swapchain_colorspace",
+                                 &vulkan_instance->extensions_.ext_EXT_swapchain_colorspace);
 #ifdef VK_USE_PLATFORM_XCB_KHR
     // #6.
     requested_extensions.emplace("VK_KHR_xcb_surface",

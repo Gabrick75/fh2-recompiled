@@ -5,8 +5,8 @@
 // frame, look half idle, and end up on a little core at a low clock. That is a lost frame each time.
 //
 // At startup, before the game creates its threads (they inherit the mask), every thread of the process is
-// limited to the cores whose top clock is at least 70 % of the fastest one. SoCs without a slow cluster
-// (Snapdragon 8 Elite: 4.32 and 3.53 GHz) keep every core.
+// limited to the fast cores (CoreSpeeds below). SoCs without a slow cluster (Snapdragon 8 Elite: 4.32 and 3.53 GHz)
+// keep every core.
 #include <dlfcn.h>
 #include <jni.h>
 #include <sched.h>
@@ -34,8 +34,8 @@
 #include <rex/logging.h>
 
 REXCVAR_DEFINE_BOOL(fh2_android_nucleos_grandes, true, "FH2",
-                    "Android: el juego solo usa los nucleos rapidos (reloj maximo de al menos el 70 % del mas "
-                    "rapido); false = los que decida el sistema")
+                    "Android: el juego solo usa los nucleos rapidos (capacidad de al menos el 60 % de la del mas "
+                    "rapido o, sin capacidad, reloj maximo de al menos el 70 %); false = los que decida el sistema")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 namespace {
@@ -46,7 +46,110 @@ long RelojMaximoKhz(int cpu) {
   return (f >> khz) ? khz : 0;
 }
 
+long Capacidad(int cpu) {
+  std::ifstream f("/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/cpu_capacity");
+  long capacidad = 0;
+  return (f >> capacidad) ? capacidad : 0;
+}
+
 }  // namespace
+
+// How fast each core is, and which ones count as fast. The kernel's cpu_capacity (0-1024, what the scheduler itself
+// uses) when every core has one, since the top clock misses the core type: on the Moto G9 Play (Snapdragon 662) the
+// Cortex-A53s reach 1.8 GHz against 2.0 for the A73s, 90 %, but their capacity is 572 against 1024, 56 %. A core is
+// fast at 60 % of the fastest one's capacity, or, without capacities, at 70 % of its top clock as before. The
+// startup log line gives the values ("juego en los nucleos ... (capacidad)"). The speed is the capacity, or the clock, with the clock breaking
+// ties between equal capacities.
+struct CoreSpeeds {
+  std::vector<long long> speed;  // comparable between cores; 0 = unknown
+  std::vector<bool> fast;
+  int fastest = -1;
+  bool by_capacity = false;
+  std::string describe;  // "572x4 1024x4" or "1804x4 2016x4 MHz", for the log
+};
+
+CoreSpeeds ReadCoreSpeeds() {
+  CoreSpeeds c;
+  const int total = int(sysconf(_SC_NPROCESSORS_CONF));
+  if (total <= 0 || total > CPU_SETSIZE) return c;
+  std::vector<long> capacity(static_cast<size_t>(total)), khz(static_cast<size_t>(total));
+  bool every_capacity = true;
+  for (int cpu = 0; cpu < total; ++cpu) {
+    capacity[size_t(cpu)] = Capacidad(cpu);
+    khz[size_t(cpu)] = RelojMaximoKhz(cpu);
+    every_capacity = every_capacity && capacity[size_t(cpu)] > 0;
+  }
+  c.by_capacity = every_capacity;
+  c.speed.resize(size_t(total));
+  c.fast.resize(size_t(total));
+  long long top = 0;
+  for (int cpu = 0; cpu < total; ++cpu) {
+    c.speed[size_t(cpu)] =
+        every_capacity ? (long long)capacity[size_t(cpu)] * 10000000LL + khz[size_t(cpu)] : khz[size_t(cpu)];
+    if (c.speed[size_t(cpu)] > top) {
+      top = c.speed[size_t(cpu)];
+      c.fastest = cpu;
+    }
+  }
+  if (c.fastest < 0) return c;
+  const long top_capacity = capacity[size_t(c.fastest)], top_khz = khz[size_t(c.fastest)];
+  for (int cpu = 0; cpu < total; ++cpu) {
+    c.fast[size_t(cpu)] = every_capacity ? capacity[size_t(cpu)] * 10 >= top_capacity * 6
+                                         : khz[size_t(cpu)] * 10 >= top_khz * 7;
+  }
+  // Runs of equal values, "572x4 1024x4".
+  for (int cpu = 0; cpu < total;) {
+    const long v = every_capacity ? capacity[size_t(cpu)] : khz[size_t(cpu)] / 1000;
+    int n = 0;
+    while (cpu < total && (every_capacity ? capacity[size_t(cpu)] : khz[size_t(cpu)] / 1000) == v) {
+      ++cpu;
+      ++n;
+    }
+    c.describe += (c.describe.empty() ? "" : " ") + std::to_string(v) + "x" + std::to_string(n);
+  }
+  c.describe += every_capacity ? " (capacidad)" : " MHz";
+  return c;
+}
+
+// The fewest cores the game's own threads (the three busiest XThreads, XMA, audio, the vertex copy thread) may be
+// confined to. With the capacities, phones with two big cores and six small ones (Snapdragon 765G, Helio G99) got
+// "juego en los nucleos 6,7" and the 'auto' rules "GPU anillo=7;*=6": every thread but the ring on one core, CPU
+// 12-16 % busy and the ring idle ~50 ms per frame waiting for the game (usuario-24/25 logs of v0.4.2; 0.9 ms on
+// v0.4.0). With fewer fast cores than this the game keeps the small ones too.
+constexpr int kMinGameCores = 3;
+
+// The cores for every thread but the reserved ones (the ring's, jogo-rapido's): the other fast cores, or every
+// other core when those are fewer than kMinGameCores. Empty when nothing is left.
+std::vector<int> OtherCores(const CoreSpeeds& nucleos, int reserved_a, int reserved_b) {
+  std::vector<int> fast, every;
+  for (int cpu = 0; cpu < int(nucleos.fast.size()); ++cpu) {
+    if (cpu == reserved_a || cpu == reserved_b) continue;
+    every.push_back(cpu);
+    if (nucleos.fast[size_t(cpu)]) fast.push_back(cpu);
+  }
+  return int(fast.size()) >= kMinGameCores ? fast : every;
+}
+
+// "3+5+6", the rules' syntax.
+std::string JoinCores(const std::vector<int>& cores) {
+  std::string text;
+  for (const int cpu : cores) text += (text.empty() ? "" : "+") + std::to_string(cpu);
+  return text;
+}
+
+// The native ring thread's tid (app/src/nativo/nfsmw_nativo_sistema.cpp); 0 before it starts.
+extern std::atomic<int> g_fh2_nativo_anillo_tid;
+
+// Whether a thread named like the native ring ("GPU anillo...") is the ring itself. The threads the ring creates
+// inherit its name (Linux copies the creator's comm): on the Moto G9 Play with Turnip three threads were called
+// "GPU anillo nati" and all of them were pinned to the ring's core, where the ring was busy 98 % of the time but
+// ran only ~65 %. Those are told apart by the tid the ring publishes when it starts.
+bool IsNativeRingTid(pid_t tid) {
+  const int ring = g_fh2_nativo_anillo_tid.load(std::memory_order_acquire);
+  return ring <= 0 || tid == pid_t(ring);
+}
+
+bool NamedLikeNativeRing(const std::string& name) { return name.rfind("GPU anillo", 0) == 0; }
 
 extern "C" void fh2_android_nucleos_grandes_aplicar() {
   if (!REXCVAR_GET(fh2_android_nucleos_grandes)) {
@@ -56,13 +159,8 @@ extern "C" void fh2_android_nucleos_grandes_aplicar() {
   if (total <= 1 || total > CPU_SETSIZE) {
     return;
   }
-  std::vector<long> relojes(size_t(total), 0);
-  long maximo = 0;
-  for (int cpu = 0; cpu < total; ++cpu) {
-    relojes[size_t(cpu)] = RelojMaximoKhz(cpu);
-    maximo = std::max(maximo, relojes[size_t(cpu)]);
-  }
-  if (maximo <= 0) {
+  const CoreSpeeds nucleos = ReadCoreSpeeds();
+  if (nucleos.fastest < 0) {
     REXLOG_INFO("[android] no se pueden leer los relojes de los nucleos: afinidad sin cambios");
     return;
   }
@@ -71,14 +169,20 @@ extern "C" void fh2_android_nucleos_grandes_aplicar() {
   int elegidos = 0;
   std::string lista;
   for (int cpu = 0; cpu < total; ++cpu) {
-    if (relojes[size_t(cpu)] * 10 >= maximo * 7) {
+    if (nucleos.fast[size_t(cpu)]) {
       CPU_SET(cpu, &mascara);
       ++elegidos;
       lista += (lista.empty() ? "" : ",") + std::to_string(cpu);
     }
   }
-  if (elegidos == total || elegidos < 2) {
-    REXLOG_INFO("[android] {} nucleos sin grupo lento: afinidad sin cambios", total);
+  if (elegidos == total) {
+    REXLOG_INFO("[android] {} nucleos sin grupo lento ({}): afinidad sin cambios", total, nucleos.describe);
+    return;
+  }
+  // The ring takes one of them ('auto' rules), so the game needs kMinGameCores more.
+  if (elegidos < kMinGameCores + 1) {
+    REXLOG_INFO("[android] solo {} nucleos rapidos de {} ({}): el juego usa todos", elegidos, total,
+                nucleos.describe);
     return;
   }
   // Every thread that already exists (the SDL thread, the UI thread, the logger); the ones created later
@@ -91,8 +195,8 @@ extern "C" void fh2_android_nucleos_grandes_aplicar() {
       ++hilos;
     }
   }
-  REXLOG_INFO("[android] juego en los nucleos {} de {} (reloj >= 70 % de {} MHz); {} hilos movidos", lista,
-              total, maximo / 1000, hilos);
+  REXLOG_INFO("[android] juego en los nucleos {} de {} ({}); {} hilos movidos", lista, total, nucleos.describe,
+              hilos);
 }
 
 // On-screen FPS counter (GameActivity.showFpsCounter): the GPU plugin publishes the game's FPS and frame time
@@ -267,6 +371,8 @@ void AffinityLoop(std::vector<AffinityRule> rules) {
       std::getline(comm, name);
       for (const auto& rule : rules) {
         if (name.compare(0, rule.prefix.size(), rule.prefix) != 0) continue;
+        // A driver thread with the ring's inherited name goes on to the next rule ("*").
+        if (!rule.prefix.empty() && NamedLikeNativeRing(rule.prefix) && !IsNativeRingTid(tid)) continue;
         cpu_set_t current;
         if (sched_getaffinity(tid, sizeof(current), &current) == 0 && !CPU_EQUAL(&current, &rule.cores)) {
           sched_setaffinity(tid, sizeof(rule.cores), &rule.cores);
@@ -286,31 +392,21 @@ void AffinityLoop(std::vector<AffinityRule> rules) {
 
 }  // namespace
 
-// 'auto': the command processor (the bottleneck) of either renderer alone on the core with the highest top clock, every other thread
-// on the remaining cores whose top clock is at least 70 % of it. Measured on the S23 Ultra (Snapdragon 8 Gen 2, one
+// 'auto': the command processor (the bottleneck) of either renderer alone on the fastest core, every other thread
+// on the remaining fast cores (CoreSpeeds). Measured on the S23 Ultra (Snapdragon 8 Gen 2, one
 // 3.36 GHz X3 at cpu7 and four 2.8 GHz cores): event menu 18.5 -> 21.5 fps (+16 %). Nothing when all the cores run
 // at the same top clock.
 std::string AutoAffinityRules() {
-  const int total = int(sysconf(_SC_NPROCESSORS_CONF));
-  int fastest = -1;
-  long fastest_khz = 0;
-  std::vector<long> khz(size_t(std::max(total, 0)), 0);
-  for (int cpu = 0; cpu < total; ++cpu) {
-    khz[size_t(cpu)] = RelojMaximoKhz(cpu);
-    if (khz[size_t(cpu)] > fastest_khz) {
-      fastest_khz = khz[size_t(cpu)];
-      fastest = cpu;
-    }
-  }
-  std::string others;
+  const CoreSpeeds nucleos = ReadCoreSpeeds();
+  const int total = int(nucleos.speed.size());
+  const int fastest = nucleos.fastest;
   bool any_slower = false;
-  for (int cpu = 0; cpu < total; ++cpu) {
-    if (khz[size_t(cpu)] < fastest_khz) any_slower = true;
-    if (cpu != fastest && khz[size_t(cpu)] * 10 >= fastest_khz * 7) {
-      others += (others.empty() ? "" : "+") + std::to_string(cpu);
-    }
+  for (int cpu = 0; cpu < total && fastest >= 0; ++cpu) {
+    if (nucleos.speed[size_t(cpu)] < nucleos.speed[size_t(fastest)]) any_slower = true;
   }
-  if (fastest < 0 || !any_slower || others.empty()) return "";
+  if (fastest < 0 || !any_slower) return "";
+  const std::string others = JoinCores(OtherCores(nucleos, fastest, -1));
+  if (others.empty()) return "";
   // The command processor is "GPU Commands" with the emulated GPU and "GPU anillo nativo" (the ring thread,
   // app/src/nativo/nfsmw_nativo_sistema.cpp) with the native renderer. Before the second rule the native mode left
   // the fastest core idle and put its ring thread with the game's threads on the other four.
@@ -441,7 +537,7 @@ void AdpfThreadLoop() {
     for (const auto& [tid, info] : now) {
       const auto b = before.find(tid);
       const unsigned long long used = b == before.end() ? 0 : info.second - b->second.second;
-      if (info.first.rfind("GPU anillo", 0) == 0 || info.first.rfind("GPU Commands", 0) == 0) {
+      if ((NamedLikeNativeRing(info.first) && IsNativeRingTid(tid)) || info.first.rfind("GPU Commands", 0) == 0) {
         chosen.push_back(tid);
       } else if (info.first.rfind("XThread", 0) == 0 && used > 0) {
         game.emplace_back(used, tid);
@@ -546,8 +642,8 @@ bool IsAudioThread(const std::string& name) {
          name.rfind("XMA Decoder", 0) == 0;
 }
 
-bool IsRingThread(const std::string& name) {
-  return name.rfind("GPU Commands", 0) == 0 || name.rfind("GPU anillo", 0) == 0 ||
+bool IsRingThread(pid_t tid, const std::string& name) {
+  return name.rfind("GPU Commands", 0) == 0 || (NamedLikeNativeRing(name) && IsNativeRingTid(tid)) ||
          name.rfind("GPU VSync", 0) == 0;
 }
 
@@ -640,7 +736,7 @@ void Loop(int fastest, cpu_set_t mask_fastest, cpu_set_t mask_ring, cpu_set_t ma
         SetMask(tid, mask_audio);
         continue;
       }
-      SetMask(tid, IsRingThread(name) ? mask_ring : mask_rest);
+      SetMask(tid, IsRingThread(tid, name) ? mask_ring : mask_rest);
     }
   }
 }
@@ -648,28 +744,19 @@ void Loop(int fastest, cpu_set_t mask_fastest, cpu_set_t mask_ring, cpu_set_t ma
 bool Iniciar() {
   const int total = int(sysconf(_SC_NPROCESSORS_CONF));
   if (total <= 1 || total > CPU_SETSIZE) return false;
-  int fastest = -1;
-  long fastest_khz = 0;
-  std::vector<long> khz(size_t(std::max(total, 0)), 0);
-  for (int cpu = 0; cpu < total; ++cpu) {
-    khz[size_t(cpu)] = RelojMaximoKhz(cpu);
-    if (khz[size_t(cpu)] > fastest_khz) {
-      fastest_khz = khz[size_t(cpu)];
-      fastest = cpu;
-    }
-  }
+  const CoreSpeeds nucleos = ReadCoreSpeeds();
+  const int fastest = nucleos.fastest;
   // The ring gets its own big core (the highest-numbered other fast core); the rest share the remaining fast
-  // cores. On the Moto G9 Play every core is within 70 % of the fastest, so the "big" set is all the others.
+  // cores.
   int ring = -1;
   cpu_set_t mask_fastest, mask_ring, mask_rest;
   CPU_ZERO(&mask_fastest);
   CPU_ZERO(&mask_ring);
   CPU_ZERO(&mask_rest);
   bool any_slower = false;
-  std::string resto;
-  for (int cpu = 0; cpu < total; ++cpu) {
-    if (khz[size_t(cpu)] < fastest_khz) any_slower = true;
-    if (cpu != fastest && khz[size_t(cpu)] * 10 >= fastest_khz * 7) {
+  for (int cpu = 0; cpu < total && fastest >= 0; ++cpu) {
+    if (nucleos.speed[size_t(cpu)] < nucleos.speed[size_t(fastest)]) any_slower = true;
+    if (cpu != fastest && nucleos.fast[size_t(cpu)]) {
       if (cpu > ring) ring = cpu;
     }
   }
@@ -679,13 +766,10 @@ bool Iniciar() {
   }
   CPU_SET(fastest, &mask_fastest);
   CPU_SET(ring, &mask_ring);
-  for (int cpu = 0; cpu < total; ++cpu) {
-    if (cpu != fastest && cpu != ring && khz[size_t(cpu)] * 10 >= fastest_khz * 7) {
-      CPU_SET(cpu, &mask_rest);
-      resto += (resto.empty() ? "" : "+") + std::to_string(cpu);
-    }
-  }
-  if (resto.empty()) {  // only two fast cores: the rest shares the ring's core
+  const std::vector<int> rest = OtherCores(nucleos, fastest, ring);
+  for (const int cpu : rest) CPU_SET(cpu, &mask_rest);
+  std::string resto = JoinCores(rest);
+  if (resto.empty()) {  // only two cores: the rest shares the ring's core
     mask_rest = mask_ring;
     resto = std::to_string(ring);
   }

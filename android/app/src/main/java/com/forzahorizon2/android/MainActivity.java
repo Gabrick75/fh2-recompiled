@@ -945,7 +945,11 @@ public final class MainActivity extends AppCompatActivity {
                     ui.toggleRow(tr(R.string.deferred_scene_copy),
                             tr(R.string.experimental_the_copy_of_the_finished),
                             GameOptions.flag(this, GameOptions.LAZY_COMPOSITE),
-                            v -> GameOptions.flag(this, GameOptions.LAZY_COMPOSITE, v)));
+                            v -> GameOptions.flag(this, GameOptions.LAZY_COMPOSITE, v)),
+                    ui.toggleRow(tr(R.string.step_pacing),
+                            tr(R.string.step_pacing_description),
+                            GameOptions.flag(this, GameOptions.STEP_PACING),
+                            v -> GameOptions.flag(this, GameOptions.STEP_PACING, v)));
             Menu.refreshDividers(performance);
             rendererOptions.addView(performance);
         } else {
@@ -1234,6 +1238,9 @@ public final class MainActivity extends AppCompatActivity {
     // ---- Display, performance, sound -----------------------------------------------------------------------
 
     private ScrollView displayPage() {
+        boolean hdrSupported = GameOptions.hdrCapabilities(this) != null;
+        // Relative HDR (Android 15+): the white follows the brightness slider, so there is no white to choose.
+        boolean hdrRelative = hdrSupported && GameOptions.hdrRelative(this);
         return pageScroll(ui.pageTitle(pageName(DISPLAY),
                         tr(R.string.the_final_image_and_what_shows)),
                 ui.header(tr(R.string.image)),
@@ -1249,6 +1256,29 @@ public final class MainActivity extends AppCompatActivity {
                                 tr(R.string.a_frame_that_misses_the_vsync),
                                 GameOptions.flag(this, GameOptions.ADAPTIVE_VBLANK),
                                 v -> GameOptions.flag(this, GameOptions.ADAPTIVE_VBLANK, v))),
+                // Only where the display reports HDR10 (GameOptions.hdrCapabilities).
+                hdrSupported ? ui.header(tr(R.string.hdr)) : null,
+                hdrSupported ? ui.group(ui.toggleRow(tr(R.string.hdr_output),
+                                tr(hdrRelative ? R.string.the_screen_s_hdr_mode_the_white
+                                        : R.string.the_screen_s_hdr_mode_with),
+                                GameOptions.flag(this, GameOptions.HDR),
+                                v -> GameOptions.flag(this, GameOptions.HDR, v)),
+                        hdrRelative ? null : ui.choiceRow(GameOptions.HDR_PAPER_WHITE, tr(R.string.hdr_white),
+                                tr(R.string.how_bright_white_menus_and_the),
+                                GameOptions.HDR_PAPER_WHITES, GameOptions.HDR_PAPER_WHITES),
+                        ui.choiceRow(GameOptions.HDR_HIGHLIGHTS, tr(R.string.hdr_highlights),
+                                tr(R.string.how_far_the_scene_s_brightest),
+                                new String[] {tr(R.string.off_masculine), tr(R.string.low), tr(R.string.medium),
+                                        tr(R.string.high)},
+                                GameOptions.HDR_HIGHLIGHT_LEVELS),
+                        // HDR10's declared peak; the relative mode takes the display's own headroom instead.
+                        hdrRelative ? null : ui.choiceRow(GameOptions.HDR_PEAK, tr(R.string.hdr_peak),
+                                tr(R.string.how_bright_the_highlights_may_get),
+                                new String[] {tr(R.string.hdr_peak_auto),
+                                        tr(R.string.hdr_peak_reported) + " (" +
+                                                Math.round(GameOptions.hdrCapabilities(this)[0]) + ")",
+                                        "1500"},
+                                GameOptions.HDR_PEAKS)) : null,
                 ui.header(tr(R.string.overlay)),
                 ui.group(ui.toggleRow(tr(R.string.show_fps),
                                 tr(R.string.a_counter_in_the_corner_frames),
@@ -1326,6 +1356,10 @@ public final class MainActivity extends AppCompatActivity {
                 tr(R.string.instead_of_the_ring_gives_the),
                 GameOptions.flag(this, GameOptions.JOGO_RAPIDO),
                 v -> GameOptions.flag(this, GameOptions.JOGO_RAPIDO, v)));
+        rows.add(ui.toggleRow(tr(R.string.present_thread),
+                tr(R.string.present_thread_desc),
+                GameOptions.flag(this, GameOptions.PRESENT_THREAD),
+                v -> GameOptions.flag(this, GameOptions.PRESENT_THREAD, v)));
         if (nativeRenderer) {
             rows.add(ui.toggleRow(tr(R.string.vertex_cache_across_frames),
                     tr(R.string.reuses_the_vertices_the_game_has),
@@ -1347,6 +1381,14 @@ public final class MainActivity extends AppCompatActivity {
                     tr(R.string.draws_the_reflection_mips_level_by_level),
                     GameOptions.flag(this, GameOptions.REFLECTION_MIPS),
                     v -> GameOptions.flag(this, GameOptions.REFLECTION_MIPS, v)));
+            rows.add(ui.toggleRow(tr(R.string.reflection_stagger),
+                    tr(R.string.reflection_stagger_description),
+                    GameOptions.flag(this, GameOptions.REFLECTION_STAGGER),
+                    v -> GameOptions.flag(this, GameOptions.REFLECTION_STAGGER, v)));
+            rows.add(ui.toggleRow(tr(R.string.tight_pass_area),
+                    tr(R.string.tight_pass_area_description),
+                    GameOptions.flag(this, GameOptions.TIGHT_AREA),
+                    v -> GameOptions.flag(this, GameOptions.TIGHT_AREA, v)));
         }
         if (GameOptions.PERFORMANCE_HINTS_IN_MENU) {
             rows.add(ui.toggleRow(tr(R.string.performance_hints_adpf),

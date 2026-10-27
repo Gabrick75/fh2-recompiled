@@ -62,6 +62,9 @@
 #if defined(__aarch64__)
 #include <arm_neon.h>
 #endif
+#if defined(__linux__)
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -228,6 +231,11 @@ extern std::atomic<uint64_t> g_nfsmw_fotogramas_juego;
 
 #if defined(FH2_RECOMP)
 bool Fh2UmaFaixaAtiva();  // app/src/fh2_desempenho.cpp
+
+// Kernel tid of the ring thread, 0 until it starts. Threads the ring creates (the Vulkan driver's own) inherit its
+// name "GPU anillo nativo", so the Android core pinning (android/app/src/main/cpp/android_rendimiento.cpp) tells
+// the ring apart by this tid, not by the name.
+std::atomic<int> g_fh2_nativo_anillo_tid{0};
 #endif
 
 namespace nfsmw::nativo {
@@ -450,7 +458,10 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_lecturas_diferidas, true, "FH2",
 // of one draw each, about half the GPU frame on tilers. Each level only samples the same face's previous level (2D
 // fetch), so the ring holds the chain and plays it back level by level with the six faces side by side in one target
 // six times wider (window offset = face x pitch), then the six resolves: 8 passes. Same shader, inputs and pixels.
-REXCVAR_DEFINE_BOOL(fh2_nativo_mips_reflejo_juntos, false, "FH2",
+// On by default since 2026-10-26: on the PC (RADV) the 52 one-draw passes per frame drop to 4 and the per-face path
+// was the one that differed from the emulated renderer (dark chrome and black rims on the car's lights and trim, the
+// joined path and the emulated one both bright); on Mali the user logs put those passes at 8-30 ms per frame.
+REXCVAR_DEFINE_BOOL(fh2_nativo_mips_reflejo_juntos, true, "FH2",
                     "Native renderer: draw the reflection cube's mip levels with the six faces in one pass per level "
                     "(48 passes -> 8); the image does not change")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
@@ -1813,6 +1824,9 @@ class SistemaGraficoNativo final : public rex::system::IGraphicsSystem {
   int BucleAnillo() {
 #if defined(FH2_RECOMP)
     hilo_anillo_id_ = std::this_thread::get_id();
+#if defined(__linux__)
+    g_fh2_nativo_anillo_tid.store(int(gettid()), std::memory_order_release);
+#endif
     fh2_lecturas_diferidas_ = REXCVAR_GET(fh2_nativo_lecturas_diferidas);
     nfsmw::perfil::t_es_anillo = true;
     if (REXCVAR_GET(fh2_nativo_perfil_anillo) || rex::cvar::GetFlagByName("fh2_nativo_medir_gpu") == "true") {

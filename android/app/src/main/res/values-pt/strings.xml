@@ -64,6 +64,8 @@
     <string name="creates_the_small_render_targets_reflect">Desenha as imagens pequenas do jogo, como os reflexos, só no tamanho de que precisam, em vez do tamanho da tela inteira: menos trabalho para a GPU. Quando precisa, volta sozinho ao tamanho cheio.</string>
     <string name="decode_audio_in_the_background">Decodificar áudio em segundo plano</string>
     <string name="defaults_restored">Padrões restaurados.</string>
+    <string name="step_pacing">Movimento suave</string>
+    <string name="step_pacing_description">Cada quadro mostrado avança o jogo exatamente um passo, em vez de 0 ou 2 quando o FPS fica abaixo de 30. Desligue para comparar.</string>
     <string name="deferred_scene_copy">Cópia adiada da cena</string>
     <string name="delete">Apagar</string>
     <string name="delete_2">Apagar %1$s?</string>
@@ -134,13 +136,23 @@
     <string name="gpu_driver">Driver da GPU</string>
     <string name="gpu_turbo">Turbo da GPU</string>
     <string name="graphics">Gráficos</string>
+    <string name="hdr">HDR</string>
+    <string name="hdr_highlights">Realces</string>
+    <string name="hdr_output">Saída HDR10</string>
+    <string name="hdr_peak">Pico de brilho</string>
+    <string name="hdr_peak_auto">Auto</string>
+    <string name="hdr_peak_reported">Informado</string>
+    <string name="hdr_white">Brilho do branco</string>
     <string name="hidden">OCULTO</string>
     <string name="hide_the_controls_when_a_gamepad">Ocultar os controles ao usar um controle físico</string>
     <string name="high">Altos</string>
     <string name="high_2">Alta</string>
     <string name="high_smooths_more_edges_the_faint">Alta suaviza mais bordas, inclusive as fracas, e deixa a imagem um pouco mais suave.</string>
     <string name="home">Início</string>
+    <string name="how_bright_the_highlights_may_get">Até quantos nits os realces podem chegar. Muitos celulares informam menos do que a tela mostra: Auto usa pelo menos 1000.</string>
+    <string name="how_bright_white_menus_and_the">Quão claros ficam os menus e o HUD brancos, em nits. Com HDR ligado, o brilho do Android não muda o jogo: ajuste aqui.</string>
     <string name="how_far_objects_cast_shadows_nearly">Até onde os objetos projetam sombra: é aí que está quase todo o custo delas. Longe é como o jogo.</string>
+    <string name="how_far_the_scene_s_brightest">Quanto as luzes mais fortes da cena (sol, faróis, reflexos) passam do branco, até o pico da tela. O HUD fica no branco. Só no renderizador nativo.</string>
     <string name="how_much_of_the_xbox_360" formatted="false">Quanto da resolução original do Xbox 360 o jogo desenha, em passos de 12,5 %. Abaixo de 100 % a imagem fica menos nítida e a GPU trabalha bem menos.</string>
     <string name="how_much_of_the_xbox_360_2" formatted="false">Quanto da resolução original do Xbox 360 o jogo desenha, com os efeitos e o HUD. Abaixo de 100 % a imagem fica menos nítida e a GPU trabalha bem menos.</string>
     <string name="how_often_the_shadow_maps_are">A cada quanto os mapas de sombras são redesenhados. A cada 2 quadros custa menos e quase não se nota.</string>
@@ -303,6 +315,8 @@
     <string name="the_processor_and_the_gpu_driver">O processador e o driver da GPU.</string>
     <string name="the_report_is_no_longer_there">O relatório não está mais disponível. Gere outro.</string>
     <string name="the_save_from_replaces_the_current">O save de %1$s substitui o atual. O atual continua no backup automático da última vez que o jogo abriu.</string>
+    <string name="the_screen_s_hdr_mode_the_white">O modo HDR da tela. O branco segue o brilho do Android, e os realces vão até o pico que a tela permite no momento. Desligado por padrão.</string>
+    <string name="the_screen_s_hdr_mode_with">O modo HDR da tela, com a imagem do jogo no branco escolhido abaixo e os realces acima dele. Desligado por padrão.</string>
     <string name="the_zip_has_no_driver_so">o zip não tem nenhuma .so de driver</string>
     <string name="there_is_no_app_to_save">Não há um app para salvar arquivos.</string>
     <string name="there_is_no_save_yet">ainda não há save</string>
@@ -312,6 +326,11 @@
     <string name="this_menu_and_the_touch_controls">Este menu e o painel dos controles de toque.</string>
     <string name="this_phone_s_gpu_lacks_a">⚠ A GPU deste aparelho não tem um recurso que o renderizador emulado exige: com ele o jogo não abre. Use o renderizador nativo.</string>
     <string name="tilt_sensitivity">Sensibilidade da inclinação</string>
+    <string name="steer_with_arrows">Direção com duas setas no lugar do analógico</string>
+    <string name="arrow_steering_strength">Força da direção nas setas</string>
+    <string name="two_arrows_on_the_left_instead">Duas setas à esquerda da tela no lugar do analógico, como em outros jogos de corrida. Segurar uma vira o volante aos poucos.</string>
+    <string name="how_far_the_arrows_turn_the_wheel">Quanto as setas viram o volante, no máximo.</string>
+    <string name="touch_controls">Controles de toque</string>
     <string name="to_jogos">Para jogos/</string>
     <string name="to_use_internal_storage_allow_the">Para achar o jogo, o app precisa de acesso aos seus arquivos: toque em Usar a ISO do jogo ou em Escolher pasta do jogo, abaixo, e o Android vai pedir a permissão.</string>
     <string name="turned_off_it_breaks_the_game">Desligada, quebra o jogo: só a faixa de baixo da tela aparece, com faixas preta e cinza em cima.</string>
@@ -359,8 +378,14 @@
     <string name="world_shadows_description">Até que distância as sombras são desenhadas. Desligada: sem sombras, no renderizador nativo. Abaixo de 1x, o renderizador nativo não desenha as sombras de árvores e arbustos (mais rápido).</string>
     <string name="writes_every_repetition_of_the_messages">Grava todas as repetições das mensagens que se repetem várias vezes por segundo (texturas do renderizador, funções não implementadas). Desligado, cada uma aparece só as 20 primeiras vezes, e o log guarda mais tempo de jogo. Só para investigar.</string>
     <string name="writes_to_the_log_how_long">Grava no log quanto tempo a GPU gasta em cada parte do quadro. Só para investigar: deixa o jogo mais lento, porque cada medição faz a GPU esperar.</string>
+    <string name="tight_pass_area">Passadas só onde o jogo desenha</string>
+    <string name="tight_pass_area_description">Cada passada carrega e grava só o retângulo que os desenhos usam, não a imagem inteira de 1280x720: as passadas pequenas do brilho deixam de mover a imagem toda pela memória. Desligue para comparar.</string>
     <string name="reflection_mips_in_one_pass">Mips do reflexo num passe por nível</string>
     <string name="draws_the_reflection_mips_level_by_level">Desenha as versões menores dos reflexos todas juntas, em vez de uma por uma. A imagem não muda; alivia a GPU.</string>
     <string name="extra_game_options">Opções extras do jogo</string>
     <string name="extra_game_options_description">Para testes: opções do jogo como --nome=valor, separadas por espaço. Vão depois das do launcher, então valem mais. Deixe vazio para jogar normalmente.</string>
+    <string name="reflection_stagger">Reflexos atualizados em etapas</string>
+    <string name="reflection_stagger_description">Os reflexos do carro são redesenhados um terço por vez, a imagem inteira a cada 3 quadros, em vez de inteira a cada quadro: bem menos trabalho para a GPU. Podem atrasar um pouco em mudanças rápidas.</string>
+    <string name="present_thread">Apresentar numa thread própria (instável)</string>
+    <string name="present_thread_desc">Instável: pode deixar o movimento menos suave e não ganhou FPS nos testes. A imagem é enviada para a tela por uma thread separada, e o jogo começa o próximo quadro sem esperar por ela. Deixe desligado, a não ser para testar.</string>
 </resources>

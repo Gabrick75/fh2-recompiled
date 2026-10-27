@@ -2,6 +2,8 @@ package com.forzahorizon2.android;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.hardware.display.DisplayManager;
+import android.view.Display;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -25,6 +27,26 @@ final class GameOptions {
     static final String SHOW_FPS = "show_fps";
     static final String SHOW_USAGE = "show_usage";            // GPU, CPU and RAM use under the FPS (UsageMonitor)
     static final String PRESENT_MODE = "present_mode";        // "fifo" (vsync) or "mailbox"
+    static final String PRESENT_THREAD = "present_thread";    // present_hilo_propio, off by default (unstable)
+    // present_hdr: HDR10 output, offered only where the display reports HDR10 (hdrCapabilities)
+    static final String HDR = "hdr";
+    static final String HDR_PAPER_WHITE = "hdr_paper_white";  // present_hdr_paper_white_nits: the HUD's and menus' white
+    static final String[] HDR_PAPER_WHITES = {"100", "150", "200", "250", "300", "400"};
+    // present_hdr_highlights: how far the scene's white goes from the paper white to the display's peak (the HUD stays)
+    static final String HDR_HIGHLIGHTS = "hdr_highlights";
+    static final String[] HDR_HIGHLIGHT_LEVELS = {"0", "0.25", "0.5", "1"};  // Pinyon Shift's OFF, LOW, MEDIUM, HIGH
+    /*
+     * The peak the HDR10 output declares and expands to: "auto" (the display's reported peak, at least
+     * HDR_PEAK_AUTO_MIN), "reported" or a number of nits. The S23 Ultra reports 450 nits but its panel shows more: on
+     * 2026-10-25 a declared 1000 made the highlights visibly stronger.
+     */
+    static final String HDR_PEAK = "hdr_peak";
+    static final String[] HDR_PEAKS = {"auto", "reported", "1500"};
+    static final float HDR_PEAK_AUTO_MIN = 1000f;
+    // Relative HDR: the headroom the game's surface asks for, as peak / SDR white. Android gives at most what the
+    // display can at its current brightness (the presenter follows that, GameActivity.startRelativeHdr); 8 lets a
+    // panel like the S23 Ultra's (about 1750 nits at its HDR peak) reach it from an ordinary indoor brightness.
+    static final float HDR_DESIRED_HEADROOM = 8f;
     // Graphics
     static final String RENDERER = "renderer";                // "emulated" (Xenos) or "native" (nfsmw_renderizador)
     static final String RENDER_SCALE = "render_scale";        // gpu_escala_render: percent of 1280x720
@@ -74,8 +96,12 @@ final class GameOptions {
     static final String INDEX_CACHE = "index_cache";
     static final String VERTEX_NO_WAIT = "vertex_no_wait";  // fh2_nativo_vertices_sin_espera (native), on by default
     static final String EXACT_TARGETS = "exact_targets";  // fh2_nativo_destinos_exactos (native), on by default
-    // fh2_nativo_mips_reflejo_juntos (native), off by default until the phone A/B
+    // fh2_nativo_mips_reflejo_juntos (native), on by default (2026-10-26: 48 passes fewer, matches the emulated image)
     static final String REFLECTION_MIPS = "reflection_mips";
+    static final String TIGHT_AREA = "tight_area";  // fh2_nativo_area_justa (native), on by default
+    // fh2_reflexo_faces: the car reflection cube redrawn 2 faces a frame instead of 6 (both renderers), on by default
+    // (2026-10-26, S23 A/B in one session: +5 % fps, no visible difference)
+    static final String REFLECTION_STAGGER = "reflection_stagger";
     // Diagnostics (About page)
     static final String GPU_MEASUREMENTS = "gpu_measurements";  // fh2_nativo_medir_gpu: GPU times in the logs
     static final String VERBOSE_LOG = "verbose_log";  // log_detalhado: every repeated message (stubs, textures)
@@ -85,6 +111,7 @@ final class GameOptions {
     static final String RESOLVE_SHORTCUT = "resolve_shortcut";  // gpu_atalho_resolve
     static final String ASYNC_SHADERS = "async_shaders";      // async_shader_compilation (emulated)
     static final String LAZY_COMPOSITE = "lazy_composite";    // nfsmw_nativo_compuesta_perezosa (native)
+    static final String STEP_PACING = "step_pacing";          // fh2_ritmo_passos: one game step per frame, on
     static final String DRIVER = "driver";                    // imported driver name, "" = system; not loaded yet
     static final String TURBO = "turbo";                      // not applied yet
     // Sound
@@ -121,6 +148,9 @@ final class GameOptions {
             case RESOLUTION: return RES_NATIVE;
             case RENDERER: return "native";
             case PRESENT_MODE: return "fifo";
+            case HDR_PAPER_WHITE: return "200";  // Pinyon Shift's default
+            case HDR_HIGHLIGHTS: return "0.5";
+            case HDR_PEAK: return "auto";
             case RENDER_SCALE: return "100";
             case FPS: return "30";  // the Xbox 360's
             // Off: the GPU cost of the game's MSAA 4x nearly halves the frame rate on a phone (event menu on the
@@ -195,7 +225,8 @@ final class GameOptions {
     static boolean flag(Context context, String key) {
         boolean byDefault = PIN_THREADS.equals(key) || PERFORMANCE_HINTS.equals(key) || ONE_PASS.equals(key) ||
                 ADAPTIVE_VBLANK.equals(key) || RESOLVE_SHORTCUT.equals(key) || VERTEX_NO_WAIT.equals(key) ||
-                EXACT_TARGETS.equals(key) || VIBRATION_PHONE.equals(key) ||
+                EXACT_TARGETS.equals(key) || VIBRATION_PHONE.equals(key) || TIGHT_AREA.equals(key) ||
+                REFLECTION_MIPS.equals(key) || STEP_PACING.equals(key) || REFLECTION_STAGGER.equals(key) ||
                 ((VERTEX_CACHE.equals(key) || INDEX_CACHE.equals(key)) && !crossFrameCachesOffByDefault(context));
         return prefs(context).getBoolean(key, byDefault);
     }
@@ -214,8 +245,8 @@ final class GameOptions {
     // hidden ones too, but the imported GPU driver.
     private static final String[] RESTORABLE = {RENDERER, RENDER_SCALE, FPS, ANTI_ALIASING, MSAA_SAMPLES, FXAA_QUALITY,
             SCALING, SHARPNESS, FSR_MODE, ANISOTROPIC, SHADOWS, SHADOW_DISTANCE, CAR_REFLECTIONS, SHADOW_MAP_SCALE,
-            WORLD_GRASS, WORLD_OBJECTS, WORLD_REFLECTIONS, WORLD_SHADOWS, WORLD_CROWD, FOLIAGE_COVERAGE, ONE_PASS, RESOLVE_SHORTCUT, ASYNC_SHADERS, LAZY_COMPOSITE, PIN_THREADS, JOGO_RAPIDO, PERFORMANCE_HINTS,
-            VERTEX_CACHE, INDEX_CACHE, VERTEX_NO_WAIT, EXACT_TARGETS, REFLECTION_MIPS, TURBO};
+            WORLD_GRASS, WORLD_OBJECTS, WORLD_REFLECTIONS, WORLD_SHADOWS, WORLD_CROWD, FOLIAGE_COVERAGE, ONE_PASS, RESOLVE_SHORTCUT, ASYNC_SHADERS, LAZY_COMPOSITE, STEP_PACING, PIN_THREADS, JOGO_RAPIDO, PRESENT_THREAD, PERFORMANCE_HINTS,
+            VERTEX_CACHE, INDEX_CACHE, VERTEX_NO_WAIT, EXACT_TARGETS, REFLECTION_MIPS, TIGHT_AREA, REFLECTION_STAGGER, TURBO};
 
     /** The Graphics and Performance options back to their defaults (defaultOf, flag): the stored values go. */
     static void restoreDefaults(Context context) {
@@ -235,6 +266,24 @@ final class GameOptions {
 
     static void stretch(Context context, boolean value) {
         context.getSharedPreferences("fh2_controls", Context.MODE_PRIVATE).edit().putBoolean("stretch", value).apply();
+    }
+
+    // The steering arrows also live with the touch controls; the launcher sets them before the game reads them.
+    static boolean steeringArrows(Context context) {
+        return context.getSharedPreferences("fh2_controls", Context.MODE_PRIVATE).getBoolean("steering_arrows", false);
+    }
+
+    static void steeringArrows(Context context, boolean value) {
+        context.getSharedPreferences("fh2_controls", Context.MODE_PRIVATE).edit()
+                .putBoolean("steering_arrows", value).apply();
+    }
+
+    static float arrowLock(Context context) {
+        return context.getSharedPreferences("fh2_controls", Context.MODE_PRIVATE).getFloat("arrow_lock", 1f);
+    }
+
+    static void arrowLock(Context context, float value) {
+        context.getSharedPreferences("fh2_controls", Context.MODE_PRIVATE).edit().putFloat("arrow_lock", value).apply();
     }
 
     /** Width x height of the presented buffer, or {0, 0} for the view's own size. */
@@ -322,6 +371,74 @@ final class GameOptions {
             case "5": return "16";
             default: return "0";
         }
+    }
+
+    /**
+     * The default display's HDR10 levels as Android reports them, {peak, frame average, minimum} in nits (0 when
+     * unknown), or null when it does not report HDR10. The presenter takes them as the HDR10 metadata, so the panel
+     * shows the levels as they are instead of tone-mapping them from an assumed master.
+     */
+    static float[] hdrCapabilities(Context context) {
+        DisplayManager displays = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+        Display display = displays != null ? displays.getDisplay(Display.DEFAULT_DISPLAY) : null;
+        Display.HdrCapabilities caps = display != null ? display.getHdrCapabilities() : null;
+        if (caps == null) return null;
+        boolean hdr10 = false;
+        for (int type : caps.getSupportedHdrTypes()) {
+            hdr10 |= type == Display.HdrCapabilities.HDR_TYPE_HDR10;
+        }
+        if (!hdr10) return null;
+        return new float[] {Math.max(0f, caps.getDesiredMaxLuminance()),
+                Math.max(0f, caps.getDesiredMaxAverageLuminance()), Math.max(0f, caps.getDesiredMinLuminance())};
+    }
+
+    /**
+     * Relative HDR (Android 15 and later, where the display reports its HDR/SDR ratio): the game's white is the
+     * screen's own at the brightness the player chose, and the highlights reach the display's current peak, so the
+     * white brightness option is not needed. Elsewhere HDR10 with that option.
+     */
+    @android.annotation.TargetApi(35)
+    static boolean hdrRelative(Context context) {
+        if (android.os.Build.VERSION.SDK_INT < 35 || hdrCapabilities(context) == null) return false;
+        DisplayManager displays = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+        Display display = displays != null ? displays.getDisplay(Display.DEFAULT_DISPLAY) : null;
+        return display != null && display.isHdrSdrRatioAvailable();
+    }
+
+    /** The default display's current HDR/SDR ratio (1 when unknown): where the highlights start, before it changes. */
+    @android.annotation.TargetApi(34)
+    static float hdrSdrRatio(Context context) {
+        if (android.os.Build.VERSION.SDK_INT < 34) return 1f;
+        DisplayManager displays = (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+        Display display = displays != null ? displays.getDisplay(Display.DEFAULT_DISPLAY) : null;
+        return display != null && display.isHdrSdrRatioAvailable() ? Math.max(1f, display.getHdrSdrRatio()) : 1f;
+    }
+
+    /** The paper white in nits, one of HDR_PAPER_WHITES (the default when the stored one is not). */
+    static String hdrPaperWhite(Context context) {
+        String value = get(context, HDR_PAPER_WHITE);
+        for (String nits : HDR_PAPER_WHITES) {
+            if (nits.equals(value)) return nits;
+        }
+        return defaultOf(HDR_PAPER_WHITE);
+    }
+
+    /** The peak to declare in nits (HDR_PEAK) from the display's reported one. */
+    static float hdrPeakNits(Context context, float reported) {
+        switch (get(context, HDR_PEAK)) {
+            case "reported": return reported;
+            case "1500": return 1500f;
+            default: return Math.max(reported, HDR_PEAK_AUTO_MIN);  // auto
+        }
+    }
+
+    /** The highlight level, one of HDR_HIGHLIGHT_LEVELS (the default when the stored one is not). */
+    static String hdrHighlights(Context context) {
+        String value = get(context, HDR_HIGHLIGHTS);
+        for (String level : HDR_HIGHLIGHT_LEVELS) {
+            if (level.equals(value)) return level;
+        }
+        return defaultOf(HDR_HIGHLIGHTS);
     }
 
     static boolean nativeRenderer(Context context) {
@@ -463,6 +580,9 @@ final class GameOptions {
         GpuDrivers.arguments(context, args);  // the chosen Vulkan driver, or the system's
         // The FPS limit is the guest vblank rate (fpsLimit).
         args.add("--video_mode_refresh_rate=" + vblankRate(context));
+        args.add("--fh2_ritmo_passos=" + flag(context, STEP_PACING));
+        // The game's EnvMapFrequencyScale capped (fh2_desempenho.cpp): the whole cube over 3 frames instead of every frame.
+        args.add("--fh2_reflexo_faces=" + (flag(context, REFLECTION_STAGGER) ? 2 : 6));
         // World detail: the game's TrackSettings.xml rewritten at start (fh2_mundo.cpp), both renderers; grass is the
         // native renderer's (the vegetation's fade distances in its draws).
         args.add("--fh2_mundo_grama=" + worldFactor(context, WORLD_GRASS));
@@ -505,6 +625,7 @@ final class GameOptions {
             args.add("--fh2_nativo_vertices_sin_espera=" + flag(context, VERTEX_NO_WAIT));
             args.add("--fh2_nativo_destinos_exactos=" + flag(context, EXACT_TARGETS));
             args.add("--fh2_nativo_mips_reflejo_juntos=" + flag(context, REFLECTION_MIPS));
+            args.add("--fh2_nativo_area_justa=" + flag(context, TIGHT_AREA));
             // Only does something with MSAA: soft but grainy foliage edges instead of the alpha test's hard cut.
             args.add("--fh2_nativo_msaa_a2c=" + flag(context, FOLIAGE_COVERAGE));
         }
@@ -548,6 +669,13 @@ final class GameOptions {
         // whole core and GPU time taken from the game (event menu on the S23 Ultra: 7.0 fps MAILBOX, 11.0 FIFO).
         args.add("--vulkan_allow_present_mode_mailbox=" + "mailbox".equals(get(context, PRESENT_MODE)));
         args.add("--vulkan_allow_present_mode_immediate=false");
+        // Off by default and marked unstable in the menu. Presenting on its own thread is meant to keep the
+        // thread that feeds the GPU recording while the present waits, but measured on 2026-10-26 (S23 and Moto,
+        // stopped cars, same scene, on then off) it changed nothing: S23 20.6 vs 21.3 fps with frames over 50 ms
+        // 47.9 % vs 35.6 %, Moto 20.6 vs 19.9 fps, and ~20 ms inside the present either way (the FIFO wait of a
+        // GPU-bound frame). The Switch measurement (presenter.cpp) also found more frame-time variance with it.
+        // Read at start (kRequiresRestart).
+        args.add("--present_hilo_propio=" + flag(context, PRESENT_THREAD));
         // The view gives the aspect ratio (16:9 or stretched, GameActivity.layoutSurface) and the presenter
         // fills the whole buffer. The scaling effect (bilinear, CAS sharpening or FSR 1.0) needs
         // REX_HAS_FIDELITYFX_SDK on Android (sdk/src/ui/CMakeLists.txt).
@@ -568,6 +696,26 @@ final class GameOptions {
         args.add("--present_safe_area_x=100");
         args.add("--present_safe_area_y=100");
         args.addAll(extraArguments(get(context, EXTRA_ARGS)));
+        // HDR10 output (vulkan_presenter.cpp, from Pinyon Shift): the game's SDR image with white at the paper white.
+        // The display's levels go with it, so the SDK needs no JNI to read them.
+        float[] hdr = hdrCapabilities(context);
+        if (hdr != null && flag(context, HDR)) {
+            args.add("--present_hdr=true");
+            args.add("--present_hdr_paper_white_nits=" + hdrPaperWhite(context));
+            // Native renderer only: it marks the HUD (nfsmw_nativo_destinos.cpp); the emulated GPU's output stays opaque.
+            args.add("--present_hdr_highlights=" + hdrHighlights(context));
+            args.add("--present_hdr_display_hdr10=true");
+            // The declared peak (HDR_PEAK) and, when it is raised, a frame average in the same proportion.
+            float peak = hdrPeakNits(context, hdr[0]);
+            args.add("--present_hdr_display_max_nits=" + peak);
+            args.add("--present_hdr_display_max_average_nits=" + (hdr[0] > 0f ? hdr[1] * peak / hdr[0] : peak / 2f));
+            args.add("--present_hdr_display_min_nits=" + hdr[2]);
+            if (hdrRelative(context)) {
+                // The white follows the brightness slider and the peak the display's ratio (updated while running).
+                args.add("--present_hdr_relative=true");
+                args.add("--present_hdr_headroom=" + hdrSdrRatio(context));
+            }
+        }
         return args;
     }
 }
