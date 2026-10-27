@@ -27,7 +27,7 @@ final class GameOptions {
     static final String SHOW_FPS = "show_fps";
     static final String SHOW_USAGE = "show_usage";            // GPU, CPU and RAM use under the FPS (UsageMonitor)
     static final String PRESENT_MODE = "present_mode";        // "fifo" (vsync) or "mailbox"
-    static final String PRESENT_THREAD = "present_thread";    // present_hilo_propio, off by default
+    static final String PRESENT_THREAD = "present_thread";    // present_hilo_propio, on by default
     // present_hdr: HDR10 output, offered only where the display reports HDR10 (hdrCapabilities)
     static final String HDR = "hdr";
     static final String HDR_PAPER_WHITE = "hdr_paper_white";  // present_hdr_paper_white_nits: the HUD's and menus' white
@@ -215,7 +215,7 @@ final class GameOptions {
                 ADAPTIVE_VBLANK.equals(key) || RESOLVE_SHORTCUT.equals(key) || VERTEX_CACHE.equals(key) ||
                 INDEX_CACHE.equals(key) || VERTEX_NO_WAIT.equals(key) || EXACT_TARGETS.equals(key) ||
                 VIBRATION_PHONE.equals(key) || TIGHT_AREA.equals(key) || REFLECTION_MIPS.equals(key) ||
-                STEP_PACING.equals(key) || REFLECTION_STAGGER.equals(key);
+                STEP_PACING.equals(key) || REFLECTION_STAGGER.equals(key) || PRESENT_THREAD.equals(key);
         return prefs(context).getBoolean(key, byDefault);
     }
 
@@ -223,7 +223,7 @@ final class GameOptions {
     // hidden ones too, but the imported GPU driver.
     private static final String[] RESTORABLE = {RENDERER, RENDER_SCALE, FPS, ANTI_ALIASING, MSAA_SAMPLES, FXAA_QUALITY,
             SCALING, SHARPNESS, FSR_MODE, ANISOTROPIC, SHADOWS, SHADOW_DISTANCE, CAR_REFLECTIONS, SHADOW_MAP_SCALE,
-            WORLD_GRASS, WORLD_OBJECTS, WORLD_REFLECTIONS, WORLD_SHADOWS, WORLD_CROWD, FOLIAGE_COVERAGE, ONE_PASS, RESOLVE_SHORTCUT, ASYNC_SHADERS, LAZY_COMPOSITE, STEP_PACING, PIN_THREADS, JOGO_RAPIDO, PERFORMANCE_HINTS,
+            WORLD_GRASS, WORLD_OBJECTS, WORLD_REFLECTIONS, WORLD_SHADOWS, WORLD_CROWD, FOLIAGE_COVERAGE, ONE_PASS, RESOLVE_SHORTCUT, ASYNC_SHADERS, LAZY_COMPOSITE, STEP_PACING, PIN_THREADS, JOGO_RAPIDO, PRESENT_THREAD, PERFORMANCE_HINTS,
             VERTEX_CACHE, INDEX_CACHE, VERTEX_NO_WAIT, EXACT_TARGETS, REFLECTION_MIPS, TIGHT_AREA, REFLECTION_STAGGER, TURBO};
 
     /** The Graphics and Performance options back to their defaults (defaultOf, flag): the stored values go. */
@@ -603,9 +603,11 @@ final class GameOptions {
         // whole core and GPU time taken from the game (event menu on the S23 Ultra: 7.0 fps MAILBOX, 11.0 FIFO).
         args.add("--vulkan_allow_present_mode_mailbox=" + "mailbox".equals(get(context, PRESENT_MODE)));
         args.add("--vulkan_allow_present_mode_immediate=false");
-        // Off by default: on most phones the present does not hold the game's GPU thread (0-5 ms). Where it
-        // does (usuario-23, Mali-G57: ~31 ms per frame with the GPU idle meanwhile), its own thread lets the
-        // next frame be recorded while the GPU works. Read at start (kRequiresRestart).
+        // On by default (user's choice, 2026-10-26; Android A/B still to be done): presenting on its own thread
+        // keeps the thread that feeds the GPU recording the next frame while the present waits. On most phones
+        // the present takes 0-5 ms; on usuario-23's Mali-G57 it held that thread ~31 ms per frame with the GPU
+        // idle meanwhile. The Switch measurement (presenter.cpp) found more frame-time variance with it.
+        // Read at start (kRequiresRestart).
         args.add("--present_hilo_propio=" + flag(context, PRESENT_THREAD));
         // The view gives the aspect ratio (16:9 or stretched, GameActivity.layoutSurface) and the presenter
         // fills the whole buffer. The scaling effect (bilinear, CAS sharpening or FSR 1.0) needs

@@ -1232,11 +1232,7 @@ public final class MainActivity extends AppCompatActivity {
                         ui.toggleRow(tr(R.string.adaptive_vblank),
                                 tr(R.string.a_frame_that_misses_the_vsync),
                                 GameOptions.flag(this, GameOptions.ADAPTIVE_VBLANK),
-                                v -> GameOptions.flag(this, GameOptions.ADAPTIVE_VBLANK, v)),
-                        ui.toggleRow(tr(R.string.present_thread),
-                                tr(R.string.present_thread_desc),
-                                GameOptions.flag(this, GameOptions.PRESENT_THREAD),
-                                v -> GameOptions.flag(this, GameOptions.PRESENT_THREAD, v))),
+                                v -> GameOptions.flag(this, GameOptions.ADAPTIVE_VBLANK, v))),
                 // Only where the display reports HDR10 (GameOptions.hdrCapabilities).
                 hdrSupported ? ui.header(tr(R.string.hdr)) : null,
                 hdrSupported ? ui.group(ui.toggleRow(tr(R.string.hdr_output),
@@ -1326,6 +1322,10 @@ public final class MainActivity extends AppCompatActivity {
                 tr(R.string.instead_of_the_ring_gives_the),
                 GameOptions.flag(this, GameOptions.JOGO_RAPIDO),
                 v -> GameOptions.flag(this, GameOptions.JOGO_RAPIDO, v)));
+        rows.add(ui.toggleRow(tr(R.string.present_thread),
+                tr(R.string.present_thread_desc),
+                GameOptions.flag(this, GameOptions.PRESENT_THREAD),
+                v -> GameOptions.flag(this, GameOptions.PRESENT_THREAD, v)));
         if (nativeRenderer) {
             rows.add(ui.toggleRow(tr(R.string.vertex_cache_across_frames),
                     tr(R.string.reuses_the_vertices_the_game_has),
