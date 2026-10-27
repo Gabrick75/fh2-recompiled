@@ -1604,12 +1604,44 @@ public final class MainActivity extends AppCompatActivity {
         vibrationBox.addView(vibrationToggle);
         vibrationBox.addView(vibrationModeRow);
 
+        // Touch controls: the two steering arrows, and how far they turn, 40 to 100 % in 1 % steps (shown only
+        // with the arrows on).
+        LinearLayout lockBox = ui.column();
+        TextView lockPercent = ui.text("", 22, Menu.PRIMARY, true);
+        lockBox.addView(lockPercent);
+        int lock = Math.max(40, Math.min(100, Math.round(GameOptions.arrowLock(this) * 100)));
+        lockPercent.setText(lock + " %");
+        Slider lockSlider = ui.slider(40, 100, 1, lock);
+        LinearLayout.LayoutParams lockLp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lockLp.topMargin = dp(2);
+        lockBox.addView(lockSlider, lockLp);
+        lockSlider.addOnChangeListener((s, value, fromUser) -> {
+            if (!fromUser) return;
+            GameOptions.arrowLock(this, Math.round(value) / 100f);
+            lockPercent.setText(Math.round(value) + " %");
+        });
+        LinearLayout lockRow = ui.stackedRow(tr(R.string.arrow_steering_strength),
+                tr(R.string.how_far_the_arrows_turn_the_wheel), lockBox);
+        lockRow.setVisibility(GameOptions.steeringArrows(this) ? View.VISIBLE : View.GONE);
+        LinearLayout touchBox = ui.group(
+                ui.toggleRow(tr(R.string.steer_with_arrows),
+                        tr(R.string.two_arrows_on_the_left_instead),
+                        GameOptions.steeringArrows(this),
+                        v -> {
+                            GameOptions.steeringArrows(this, v);
+                            lockRow.setVisibility(v ? View.VISIBLE : View.GONE);
+                        }),
+                lockRow);
+
         return pageScroll(ui.pageTitle(pageName(SOUND), null),
                 ui.header(tr(R.string.volume)),
                 volumeBox,
                 volumeFooter,
                 ui.header(tr(R.string.vibration)),
-                vibrationBox);
+                vibrationBox,
+                ui.header(tr(R.string.touch_controls)),
+                touchBox);
     }
 
     // ---- Achievements: the game's, unlocked ones in the app's magenta, locked ones grey with a lock ------------
