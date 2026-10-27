@@ -27,7 +27,7 @@ final class GameOptions {
     static final String SHOW_FPS = "show_fps";
     static final String SHOW_USAGE = "show_usage";            // GPU, CPU and RAM use under the FPS (UsageMonitor)
     static final String PRESENT_MODE = "present_mode";        // "fifo" (vsync) or "mailbox"
-    static final String PRESENT_THREAD = "present_thread";    // present_hilo_propio, on by default
+    static final String PRESENT_THREAD = "present_thread";    // present_hilo_propio, off by default (unstable)
     // present_hdr: HDR10 output, offered only where the display reports HDR10 (hdrCapabilities)
     static final String HDR = "hdr";
     static final String HDR_PAPER_WHITE = "hdr_paper_white";  // present_hdr_paper_white_nits: the HUD's and menus' white
@@ -215,7 +215,7 @@ final class GameOptions {
                 ADAPTIVE_VBLANK.equals(key) || RESOLVE_SHORTCUT.equals(key) || VERTEX_CACHE.equals(key) ||
                 INDEX_CACHE.equals(key) || VERTEX_NO_WAIT.equals(key) || EXACT_TARGETS.equals(key) ||
                 VIBRATION_PHONE.equals(key) || TIGHT_AREA.equals(key) || REFLECTION_MIPS.equals(key) ||
-                STEP_PACING.equals(key) || REFLECTION_STAGGER.equals(key) || PRESENT_THREAD.equals(key);
+                STEP_PACING.equals(key) || REFLECTION_STAGGER.equals(key);
         return prefs(context).getBoolean(key, byDefault);
     }
 
@@ -603,10 +603,11 @@ final class GameOptions {
         // whole core and GPU time taken from the game (event menu on the S23 Ultra: 7.0 fps MAILBOX, 11.0 FIFO).
         args.add("--vulkan_allow_present_mode_mailbox=" + "mailbox".equals(get(context, PRESENT_MODE)));
         args.add("--vulkan_allow_present_mode_immediate=false");
-        // On by default (user's choice, 2026-10-26; Android A/B still to be done): presenting on its own thread
-        // keeps the thread that feeds the GPU recording the next frame while the present waits. On most phones
-        // the present takes 0-5 ms; on usuario-23's Mali-G57 it held that thread ~31 ms per frame with the GPU
-        // idle meanwhile. The Switch measurement (presenter.cpp) found more frame-time variance with it.
+        // Off by default and marked unstable in the menu. Presenting on its own thread is meant to keep the
+        // thread that feeds the GPU recording while the present waits, but measured on 2026-10-26 (S23 and Moto,
+        // stopped cars, same scene, on then off) it changed nothing: S23 20.6 vs 21.3 fps with frames over 50 ms
+        // 47.9 % vs 35.6 %, Moto 20.6 vs 19.9 fps, and ~20 ms inside the present either way (the FIFO wait of a
+        // GPU-bound frame). The Switch measurement (presenter.cpp) also found more frame-time variance with it.
         // Read at start (kRequiresRestart).
         args.add("--present_hilo_propio=" + flag(context, PRESENT_THREAD));
         // The view gives the aspect ratio (16:9 or stretched, GameActivity.layoutSurface) and the presenter
