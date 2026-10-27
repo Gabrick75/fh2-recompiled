@@ -112,6 +112,18 @@ REXCVAR_DEFINE_DOUBLE(present_hdr_curve, 1.5, "UI/Presenter",
     .range(0.5, 4.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+/*
+ * Where the expansion is complete. FH2's tone mapping stops its lights short of white: in a night capture on the
+ * S23 Ultra (2026-10-25) reversing lights were (239, 235, 234), taillights (235, 35, 35), lit windows (217, 209, 125):
+ * linear 0.67-0.86, never 1.0, which only the HUD's white text reaches (and the HUD mask keeps that out). With the
+ * expansion complete at 0.85 the reversing lights reach the peak and taillights and windows about 63 % of it.
+ */
+REXCVAR_DEFINE_DOUBLE(present_hdr_top, 0.85, "UI/Presenter",
+                      "Linear SDR brightness where the HDR highlight expansion reaches the peak (above "
+                      "present_hdr_knee, up to 1 = SDR white)")
+    .range(0.05, 1.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_DOUBLE(present_hdr_gamma, 2.2, "UI/Presenter",
                       "Decode the SDR image for an HDR swapchain with this gamma, as an SDR display does; 0 "
                       "decodes piecewise sRGB, whose linear toe lifts the blacks")
@@ -3339,7 +3351,9 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
     }
     // Linear SDR brightness where the expansion starts, and its curve (present_hdr_knee, present_hdr_curve).
     hdr_constants.knee = float(std::clamp(REXCVAR_GET(present_hdr_knee), 0.0, 0.95));
-    hdr_constants.knee_range_inv = 1.0f / (1.0f - hdr_constants.knee);
+    // Full expansion at present_hdr_top rather than at SDR white, which FH2's lights never reach.
+    hdr_constants.knee_range_inv =
+        1.0f / std::max(float(std::clamp(REXCVAR_GET(present_hdr_top), 0.05, 1.0)) - hdr_constants.knee, 0.05f);
     hdr_constants.curve = float(std::clamp(REXCVAR_GET(present_hdr_curve), 0.5, 4.0));
     hdr_constants.gamma = float(REXCVAR_GET(present_hdr_gamma));
     // Mostly the largest channel: a red brake light (luminance 0.21) expands nearly as a white one;
