@@ -111,6 +111,32 @@ CoreSpeeds ReadCoreSpeeds() {
   return c;
 }
 
+// The fewest cores the game's own threads (the three busiest XThreads, XMA, audio, the vertex copy thread) may be
+// confined to. With the capacities, phones with two big cores and six small ones (Snapdragon 765G, Helio G99) got
+// "juego en los nucleos 6,7" and the 'auto' rules "GPU anillo=7;*=6": every thread but the ring on one core, CPU
+// 12-16 % busy and the ring idle ~50 ms per frame waiting for the game (usuario-24/25 logs of v0.4.2; 0.9 ms on
+// v0.4.0). With fewer fast cores than this the game keeps the small ones too.
+constexpr int kMinGameCores = 3;
+
+// The cores for every thread but the reserved ones (the ring's, jogo-rapido's): the other fast cores, or every
+// other core when those are fewer than kMinGameCores. Empty when nothing is left.
+std::vector<int> OtherCores(const CoreSpeeds& nucleos, int reserved_a, int reserved_b) {
+  std::vector<int> fast, every;
+  for (int cpu = 0; cpu < int(nucleos.fast.size()); ++cpu) {
+    if (cpu == reserved_a || cpu == reserved_b) continue;
+    every.push_back(cpu);
+    if (nucleos.fast[size_t(cpu)]) fast.push_back(cpu);
+  }
+  return int(fast.size()) >= kMinGameCores ? fast : every;
+}
+
+// "3+5+6", the rules' syntax.
+std::string JoinCores(const std::vector<int>& cores) {
+  std::string text;
+  for (const int cpu : cores) text += (text.empty() ? "" : "+") + std::to_string(cpu);
+  return text;
+}
+
 // The native ring thread's tid (app/src/nativo/nfsmw_nativo_sistema.cpp); 0 before it starts.
 extern std::atomic<int> g_fh2_nativo_anillo_tid;
 
@@ -149,8 +175,14 @@ extern "C" void fh2_android_nucleos_grandes_aplicar() {
       lista += (lista.empty() ? "" : ",") + std::to_string(cpu);
     }
   }
-  if (elegidos == total || elegidos < 2) {
+  if (elegidos == total) {
     REXLOG_INFO("[android] {} nucleos sin grupo lento ({}): afinidad sin cambios", total, nucleos.describe);
+    return;
+  }
+  // The ring takes one of them ('auto' rules), so the game needs kMinGameCores more.
+  if (elegidos < kMinGameCores + 1) {
+    REXLOG_INFO("[android] solo {} nucleos rapidos de {} ({}): el juego usa todos", elegidos, total,
+                nucleos.describe);
     return;
   }
   // Every thread that already exists (the SDL thread, the UI thread, the logger); the ones created later
@@ -320,15 +352,13 @@ std::string AutoAffinityRules() {
   const CoreSpeeds nucleos = ReadCoreSpeeds();
   const int total = int(nucleos.speed.size());
   const int fastest = nucleos.fastest;
-  std::string others;
   bool any_slower = false;
   for (int cpu = 0; cpu < total && fastest >= 0; ++cpu) {
     if (nucleos.speed[size_t(cpu)] < nucleos.speed[size_t(fastest)]) any_slower = true;
-    if (cpu != fastest && nucleos.fast[size_t(cpu)]) {
-      others += (others.empty() ? "" : "+") + std::to_string(cpu);
-    }
   }
-  if (fastest < 0 || !any_slower || others.empty()) return "";
+  if (fastest < 0 || !any_slower) return "";
+  const std::string others = JoinCores(OtherCores(nucleos, fastest, -1));
+  if (others.empty()) return "";
   // The command processor is "GPU Commands" with the emulated GPU and "GPU anillo nativo" (the ring thread,
   // app/src/nativo/nfsmw_nativo_sistema.cpp) with the native renderer. Before the second rule the native mode left
   // the fastest core idle and put its ring thread with the game's threads on the other four.
@@ -676,7 +706,6 @@ bool Iniciar() {
   CPU_ZERO(&mask_ring);
   CPU_ZERO(&mask_rest);
   bool any_slower = false;
-  std::string resto;
   for (int cpu = 0; cpu < total && fastest >= 0; ++cpu) {
     if (nucleos.speed[size_t(cpu)] < nucleos.speed[size_t(fastest)]) any_slower = true;
     if (cpu != fastest && nucleos.fast[size_t(cpu)]) {
@@ -689,13 +718,10 @@ bool Iniciar() {
   }
   CPU_SET(fastest, &mask_fastest);
   CPU_SET(ring, &mask_ring);
-  for (int cpu = 0; cpu < total; ++cpu) {
-    if (cpu != fastest && cpu != ring && nucleos.fast[size_t(cpu)]) {
-      CPU_SET(cpu, &mask_rest);
-      resto += (resto.empty() ? "" : "+") + std::to_string(cpu);
-    }
-  }
-  if (resto.empty()) {  // only two fast cores: the rest shares the ring's core
+  const std::vector<int> rest = OtherCores(nucleos, fastest, ring);
+  for (const int cpu : rest) CPU_SET(cpu, &mask_rest);
+  std::string resto = JoinCores(rest);
+  if (resto.empty()) {  // only two cores: the rest shares the ring's core
     mask_rest = mask_ring;
     resto = std::to_string(ring);
   }
