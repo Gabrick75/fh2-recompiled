@@ -2006,7 +2006,8 @@ void Presenter::PaintFromPaintThread() {
     } else if (!steady) {
       paint(false);
     }
-    // (painted without steady: the implementation had no previous frame and painted the real one.)
+    // (Steady but nothing in the middle: the implementation had no previous frame and painted the real one
+    // itself.)
     if (++frame_gen_log_counter_ % 600 == 0) {
       REXLOG_INFO("[presentador] frame gen: intervalo medio entre fotogramas del juego {:.2f} ms",
                   frame_gen_interval_ms_);
