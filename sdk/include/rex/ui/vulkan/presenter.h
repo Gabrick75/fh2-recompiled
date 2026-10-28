@@ -688,6 +688,9 @@ class VulkanPresenter final : public Presenter {
   void FrameGenRecordHistory(VkCommandBuffer command_buffer, VkDescriptorSet guest_output_set,
                              uint64_t sequence);
   bool IsFrameGenAvailable() const override;
+  // For CaptureGuestOutput: the frame in the middle when present_frame_gen_capturar_intermedio asks for it
+  // and one has been made, else null.
+  std::shared_ptr<GuestOutputImage> FrameGenCaptureImage() const;
 
   FrameGen frame_gen_;
 

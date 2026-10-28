@@ -1020,6 +1020,10 @@ bool VulkanPresenter::CaptureGuestOutput(RawImage& image_out) {
     // Incremented the reference count of the guest output image - safe to leave
     // the consumer critical section now.
   }
+  // present_frame_gen_capturar_intermedio: the last frame in the middle instead (debugging).
+  if (std::shared_ptr<GuestOutputImage> intermediate = FrameGenCaptureImage()) {
+    guest_output_image = std::move(intermediate);
+  }
   if (!guest_output_image) {
     return false;
   }

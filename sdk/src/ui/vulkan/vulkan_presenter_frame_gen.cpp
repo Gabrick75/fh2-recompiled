@@ -37,6 +37,16 @@
 
 REXCVAR_DECLARE(bool, present_frame_gen);  // defined in presenter.cpp
 
+/*
+ * Debugging: the captures (fh2_captura_cada_s, the native renderer's) save the last frame in the middle
+ * instead of the real one, to look at what the search and the interpolation made. The capture thread
+ * reads the image while the presenter thread may be drawing the next one into it: a capture can mix two
+ * frames in the middle, which is fine for looking at them and is why this is not for players.
+ */
+REXCVAR_DEFINE_BOOL(present_frame_gen_capturar_intermedio, false, "UI/Presenter",
+                    "Depuracion de present_frame_gen: las capturas guardan el ultimo fotograma intermedio "
+                    "en vez del real");
+
 namespace rex {
 namespace ui {
 namespace vulkan {
@@ -90,6 +100,13 @@ uint32_t LevelSize(uint32_t guest_size, uint32_t level) {
 
 bool VulkanPresenter::IsFrameGenAvailable() const {
   return REXCVAR_GET(present_frame_gen) && !frame_gen_.failed;
+}
+
+std::shared_ptr<VulkanPresenter::GuestOutputImage> VulkanPresenter::FrameGenCaptureImage() const {
+  if (!REXCVAR_GET(present_frame_gen_capturar_intermedio) || !frame_gen_.intermediates) {
+    return nullptr;
+  }
+  return frame_gen_.output;
 }
 
 bool VulkanPresenter::FrameGenInitialize() {
