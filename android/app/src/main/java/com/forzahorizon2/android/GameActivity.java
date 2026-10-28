@@ -255,6 +255,8 @@ public final class GameActivity extends SDLActivity
         int fps = Integer.parseInt(GameOptions.get(this, GameOptions.FPS));
         if (fps <= 0) {
             fps = 240;  // "Unlimited": the fastest mode the panel has.
+        } else if (GameOptions.flag(this, GameOptions.FRAME_GEN)) {
+            fps *= 2;  // present_frame_gen shows a frame between every two the game makes
         }
         Log.i(TAG, "useWholeScreen: fpsLimit=" + fps);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {

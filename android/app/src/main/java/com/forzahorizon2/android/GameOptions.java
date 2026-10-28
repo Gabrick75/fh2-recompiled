@@ -28,6 +28,7 @@ final class GameOptions {
     static final String SHOW_USAGE = "show_usage";            // GPU, CPU and RAM use under the FPS (UsageMonitor)
     static final String PRESENT_MODE = "present_mode";        // "fifo" (vsync) or "mailbox"
     static final String PRESENT_THREAD = "present_thread";    // present_hilo_propio, off by default (unstable)
+    static final String FRAME_GEN = "frame_gen";              // present_frame_gen: a frame between every two, off
     // present_hdr: HDR10 output, offered only where the display reports HDR10 (hdrCapabilities)
     static final String HDR = "hdr";
     static final String HDR_PAPER_WHITE = "hdr_paper_white";  // present_hdr_paper_white_nits: the HUD's and menus' white
@@ -232,7 +233,7 @@ final class GameOptions {
     // hidden ones too, but the imported GPU driver.
     private static final String[] RESTORABLE = {RENDERER, RENDER_SCALE, FPS, ANTI_ALIASING, MSAA_SAMPLES, FXAA_QUALITY,
             SCALING, SHARPNESS, FSR_MODE, ANISOTROPIC, SHADOWS, SHADOW_DISTANCE, CAR_REFLECTIONS, SHADOW_MAP_SCALE,
-            WORLD_GRASS, WORLD_OBJECTS, WORLD_REFLECTIONS, WORLD_SHADOWS, WORLD_CROWD, FOLIAGE_COVERAGE, ONE_PASS, RESOLVE_SHORTCUT, ASYNC_SHADERS, LAZY_COMPOSITE, STEP_PACING, PIN_THREADS, JOGO_RAPIDO, PRESENT_THREAD, PERFORMANCE_HINTS,
+            WORLD_GRASS, WORLD_OBJECTS, WORLD_REFLECTIONS, WORLD_SHADOWS, WORLD_CROWD, FOLIAGE_COVERAGE, ONE_PASS, RESOLVE_SHORTCUT, ASYNC_SHADERS, LAZY_COMPOSITE, STEP_PACING, PIN_THREADS, JOGO_RAPIDO, PRESENT_THREAD, FRAME_GEN, PERFORMANCE_HINTS,
             VERTEX_CACHE, INDEX_CACHE, VERTEX_NO_WAIT, EXACT_TARGETS, REFLECTION_MIPS, TIGHT_AREA, REFLECTION_STAGGER, TURBO};
 
     /** The Graphics and Performance options back to their defaults (defaultOf, flag): the stored values go. */
@@ -646,6 +647,9 @@ final class GameOptions {
         // GPU-bound frame). The Switch measurement (presenter.cpp) also found more frame-time variance with it.
         // Read at start (kRequiresRestart).
         args.add("--present_hilo_propio=" + flag(context, PRESENT_THREAD));
+        // A frame in the middle of every two (sdk/src/ui/vulkan/vulkan_presenter_frame_gen.cpp); it starts the
+        // presenter's own thread by itself. GameActivity asks the panel for twice the FPS limit. Read at start.
+        args.add("--present_frame_gen=" + flag(context, FRAME_GEN));
         // The view gives the aspect ratio (16:9 or stretched, GameActivity.layoutSurface) and the presenter
         // fills the whole buffer. The scaling effect (bilinear, CAS sharpening or FSR 1.0) needs
         // REX_HAS_FIDELITYFX_SDK on Android (sdk/src/ui/CMakeLists.txt).

@@ -918,7 +918,7 @@ public final class MainActivity extends AppCompatActivity {
                     // B19: in 3 tiles the native renderer only shows the bottom one (black and grey bands above).
                     tr(R.string.turned_off_it_breaks_the_game));
             onePass.setVisibility(View.GONE);  // off breaks the native renderer: kept on, out of the player's way
-            LinearLayout performance = ui.group(fpsLimitRow(), onePass,
+            LinearLayout performance = ui.group(fpsLimitRow(), frameGenRow(), onePass,
                     ui.toggleRow(tr(R.string.deferred_scene_copy),
                             tr(R.string.experimental_the_copy_of_the_finished),
                             GameOptions.flag(this, GameOptions.LAZY_COMPOSITE),
@@ -960,6 +960,7 @@ public final class MainActivity extends AppCompatActivity {
             rendererOptions.addView(ui.header(tr(R.string.emulated_performance)));
             rendererOptions.addView(ui.group(
                     fpsLimitRow(),
+                    frameGenRow(),
                     onePassRow(tr(R.string.the_game_draws_the_scene_in)),
                     ui.toggleRow(tr(R.string.direct_copies_to_textures),
                             tr(R.string.experimental_when_the_game_copies_an),
@@ -1005,6 +1006,13 @@ public final class MainActivity extends AppCompatActivity {
                 tr(R.string.the_game_s_cap_30_is),
                 new String[] {"30", "60", "90", "120", tr(R.string.free)},
                 new String[] {"30", "60", "90", "120", "0"});
+    }
+
+    // present_frame_gen: a frame in the middle of every two the game makes. Both renderers (it works on the images).
+    private LinearLayout frameGenRow() {
+        return ui.toggleRow(tr(R.string.frame_gen), tr(R.string.frame_gen_description),
+                GameOptions.flag(this, GameOptions.FRAME_GEN),
+                v -> GameOptions.flag(this, GameOptions.FRAME_GEN, v));
     }
 
     /** The native renderer's shadow map size: 0 (no shadows) to 100 % of the game's 1600x1600, in 5 % steps. */

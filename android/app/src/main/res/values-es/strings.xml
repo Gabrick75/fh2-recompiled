@@ -376,4 +376,6 @@
     <string name="reflection_stagger_description">Los reflejos del coche se redibujan un tercio cada vez, la imagen entera cada 3 fotogramas, en lugar de entera en cada fotograma: mucho menos trabajo para la GPU. Pueden ir un poco atrasados en cambios rápidos.</string>
     <string name="present_thread">Presentar en un hilo propio (inestable)</string>
     <string name="present_thread_desc">Inestable: puede hacer el movimiento menos fluido y no ganó FPS en las pruebas. La imagen se envía a la pantalla desde un hilo aparte, y el juego empieza el siguiente cuadro sin esperarla. Déjalo desactivado salvo para probar.</string>
+    <string name="frame_gen">Generación de cuadros</string>
+    <string name="frame_gen_description">Dibuja un cuadro entre cada dos que hace el juego, y los 30 FPS llegan a la pantalla como 60. Mejor con el límite de FPS en 30: la pantalla pasa a por lo menos el doble del límite. Gasta GPU y muestra cada cuadro real cerca de medio cuadro después.</string>
 </resources>
