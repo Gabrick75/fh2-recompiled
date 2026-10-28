@@ -732,6 +732,8 @@ VulkanPresenter::~VulkanPresenter() {
   // and the vkQueuePresentKHR semaphore wait).
   // This will await completion of all paint submissions also.
   paint_context_.DestroySwapchainAndVulkanSurface();
+  // present_frame_gen's objects, now that no paint is in flight.
+  FrameGenShutdown();
 
   // Await completion of the usage of everything before destroying anything
   // (paint submission completion already awaited).
@@ -2755,7 +2757,8 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
       size_t guest_output_image_paint_ref_new_index = SIZE_MAX;
       // Try to find the existing reference to the same image, or an already
       // released (or a taken, but never actually used) slot.
-      for (size_t i = 0; i < paint_context_.guest_output_image_paint_refs.size(); ++i) {
+      // The mailbox images' slots only (present_frame_gen's frame in the middle has its own).
+      for (size_t i = 0; i < kGuestOutputMailboxSize; ++i) {
         const std::pair<uint64_t, std::shared_ptr<GuestOutputImage>>& guest_output_image_paint_ref =
             paint_context_.guest_output_image_paint_refs[i];
         if (guest_output_image_paint_ref.second == guest_output_image) {
@@ -2772,7 +2775,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
         if (guest_output_image_paint_ref_new_index == SIZE_MAX) {
           // Replace the earliest used reference.
           guest_output_image_paint_ref_new_index = 0;
-          for (size_t i = 1; i < paint_context_.guest_output_image_paint_refs.size(); ++i) {
+          for (size_t i = 1; i < kGuestOutputMailboxSize; ++i) {
             if (paint_context_.guest_output_image_paint_refs[i].first <
                 paint_context_.guest_output_image_paint_refs[guest_output_image_paint_ref_new_index]
                     .first) {
@@ -2813,6 +2816,35 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
         dfn.vkUpdateDescriptorSets(device, 1, &guest_output_image_descriptor_write, 0, nullptr);
       }
       perfil = PintadoTramo(kTrozoGrabarDescriptor, perfil);
+
+      /*
+       * present_frame_gen (vulkan_presenter_frame_gen.cpp). The paint the presenter thread asks for as
+       * the frame in the middle draws it and paints it in place of the guest output; any other paint of
+       * a new guest frame keeps that frame as the next one's history.
+       */
+      if (IsFrameGenAvailable() &&
+          FrameGenEnsureSize(draw_command_buffer, guest_output_image->extent().width,
+                             guest_output_image->extent().height)) {
+        const VkDescriptorSet guest_output_set =
+            paint_context_.guest_output_descriptor_sets
+                [PaintContext::kGuestOutputDescriptorSetGuestOutput0Sampled +
+                 guest_output_image_paint_ref_index];
+        if (paint_intermediate_ &&
+            FrameGenRecordIntermediate(draw_command_buffer, guest_output_set,
+                                       guest_output_properties.sequence)) {
+          // The passes just recorded read the real frame: this submission keeps it referenced.
+          paint_context_.guest_output_image_paint_refs[guest_output_image_paint_ref_index].first =
+              current_paint_submission_index;
+          guest_output_image = frame_gen_.output;
+          guest_output_image_paint_ref_index = PaintContext::kGuestOutputPaintRefFrameGen;
+          paint_context_.guest_output_image_paint_refs[guest_output_image_paint_ref_index] =
+              std::make_pair(uint64_t(0), frame_gen_.output);
+          intermediate_painted_ = true;
+        } else {
+          FrameGenRecordHistory(draw_command_buffer, guest_output_set,
+                                guest_output_properties.sequence);
+        }
+      }
 
       // Make sure intermediate textures of the needed size are available, and
       // unneeded intermediate textures are destroyed.

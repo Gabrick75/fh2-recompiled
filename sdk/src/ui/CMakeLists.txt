@@ -53,6 +53,7 @@ set(REXUI_VULKAN_SOURCES
     vulkan/vulkan_instance.cpp
     vulkan/vulkan_mem_alloc.cpp
     vulkan/vulkan_presenter.cpp
+    vulkan/vulkan_presenter_frame_gen.cpp
     vulkan/vulkan_provider.cpp
     vulkan/vulkan_submission_tracker.cpp
     vulkan/vulkan_upload_buffer_pool.cpp
