@@ -240,6 +240,17 @@ extern "C" JNIEXPORT jfloat JNICALL Java_com_forzahorizon2_android_GameActivity_
   return value ? value->load(std::memory_order_relaxed) : -1.0f;
 }
 
+// Images presented to the screen since the start (sdk/src/ui/presenter.cpp): with present_frame_gen twice the
+// game's frames. GameActivity turns it into a rate over its own interval.
+namespace rex::ui {
+extern std::atomic<uint64_t> g_presented_frames;
+}  // namespace rex::ui
+
+extern "C" JNIEXPORT jlong JNICALL Java_com_forzahorizon2_android_GameActivity_nativePresentedFrames(JNIEnv*,
+                                                                                                    jclass) {
+  return jlong(rex::ui::g_presented_frames.load(std::memory_order_relaxed));
+}
+
 // GPU nanoseconds of the native renderer's measured submissions, accumulated (fh2_nativo_medir_gpu_uso or
 // fh2_nativo_medir_gpu); -1 without timestamps. UsageMonitor turns it into "GPU %" where no kernel file is readable.
 extern std::atomic<int64_t> g_fh2_nativo_gpu_ns;

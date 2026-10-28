@@ -70,6 +70,10 @@ namespace ui {
 class Presenter;
 class Window;
 
+// Images presented to the surface since the start, real and present_frame_gen's alike, for the frame rate the
+// screen shows (the Android overlay reads it; the game's own rate counts its Swaps).
+extern std::atomic<uint64_t> g_presented_frames;
+
 class UIDrawContext {
  public:
   UIDrawContext(const UIDrawContext& context) = delete;

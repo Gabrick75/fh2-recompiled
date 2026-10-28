@@ -67,6 +67,8 @@ public final class GameActivity extends SDLActivity
     private Sensor gravity;
 
     private static native float nativeFps();
+    // Images presented to the screen since the start (present_frame_gen: twice the game's frames).
+    private static native long nativePresentedFrames();
     private static native float nativeFrameMs();
     // Relative HDR (android_hdr.cpp): the display's current HDR/SDR ratio, for the presenter's highlights.
     private static native void nativeSetHdrHeadroom(float ratio);
@@ -506,8 +508,10 @@ public final class GameActivity extends SDLActivity
     private void startUsageMonitor(TextView usageLabel) {
         UsageMonitor monitor = new UsageMonitor(this);
         String usageLog = sessionLogBase() + "_uso.log";
+        boolean frameGen = GameOptions.flag(this, GameOptions.FRAME_GEN);
         Thread reader = new Thread(() -> {
             int tick = 0;
+            ScreenRate screenRate = new ScreenRate();
             while (!isFinishing() && !isDestroyed()) {
                 String text = monitor.sample();
                 monitor.sampleClocks();  // the clocks and their caps go to the log only, not the overlay
@@ -521,9 +525,13 @@ public final class GameActivity extends SDLActivity
                     } catch (UnsatisfiedLinkError e) {
                         fps = -1;
                     }
+                    // With frame generation, the rate the screen shows next to the game's.
+                    float screen = frameGen ? screenRate.sample() : -1;
                     String line = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT)
                             .format(new java.util.Date()) +
-                            String.format(java.util.Locale.ROOT, "  %.1f fps  ", fps) + text +
+                            String.format(java.util.Locale.ROOT, "  %.1f fps  ", fps) +
+                            (screen >= 0 ? String.format(java.util.Locale.ROOT, "tela %.1f fps  ", screen) : "") +
+                            text +
                             monitor.clocksLine() + "\n";
                     try (java.io.FileWriter writer = new java.io.FileWriter(usageLog, true)) {
                         writer.write(line);
@@ -564,8 +572,31 @@ public final class GameActivity extends SDLActivity
         return sessionLogBase;
     }
 
+    // Images presented per second since the previous sample, from nativePresentedFrames; -1 on the first sample.
+    private static final class ScreenRate {
+        private long frames = -1;
+        private long nanos;
+
+        float sample() {
+            long nowFrames;
+            try {
+                nowFrames = nativePresentedFrames();
+            } catch (UnsatisfiedLinkError e) {
+                return -1;
+            }
+            long now = System.nanoTime();
+            float rate = frames < 0 || now == nanos ? -1 : (nowFrames - frames) * 1e9f / (now - nanos);
+            frames = nowFrames;
+            nanos = now;
+            return rate;
+        }
+    }
+
     // A corner label with the game's FPS and frame time, every half second (NFSMW-Recompiled-Mobile's counter).
+    // With frame generation, also the rate the screen shows ("30 fps -> 60").
     private void showFpsCounter(LinearLayout overlay) {
+        boolean frameGen = GameOptions.flag(this, GameOptions.FRAME_GEN);
+        ScreenRate screenRate = new ScreenRate();
         fpsLabel = overlayLabel("-- fps");
         overlay.addView(fpsLabel, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -583,7 +614,10 @@ public final class GameActivity extends SDLActivity
                 } catch (UnsatisfiedLinkError e) {
                     fps = ms = -1;
                 }
-                String text = fps < 0 ? "-- fps" : String.format(java.util.Locale.ROOT, "%.0f fps  %.1f ms", fps, ms);
+                float screen = frameGen ? screenRate.sample() : -1;
+                String text = fps < 0 ? "-- fps"
+                        : screen >= 0 ? String.format(java.util.Locale.ROOT, "%.0f fps \u2192 %.0f  %.1f ms", fps, screen, ms)
+                        : String.format(java.util.Locale.ROOT, "%.0f fps  %.1f ms", fps, ms);
                 if (!text.equals(last)) {
                     fpsLabel.setText(text);
                     last = text;
