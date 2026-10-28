@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -277,8 +278,35 @@ bool VulkanPresenter::FrameGenInitialize() {
     }
   }
 
+  // Timestamps, where the paint queue has them (not needed to work).
+  {
+    const VulkanInstance::Functions& ifn = vulkan_device_->vulkan_instance()->functions();
+    uint32_t family_count = 0;
+    ifn.vkGetPhysicalDeviceQueueFamilyProperties(vulkan_device_->physical_device(), &family_count,
+                                                 nullptr);
+    std::vector<VkQueueFamilyProperties> families(family_count);
+    ifn.vkGetPhysicalDeviceQueueFamilyProperties(vulkan_device_->physical_device(), &family_count,
+                                                 families.data());
+    VkPhysicalDeviceProperties properties = {};
+    ifn.vkGetPhysicalDeviceProperties(vulkan_device_->physical_device(), &properties);
+    const uint32_t family = vulkan_device_->queue_family_graphics_compute();
+    if (family < family_count && families[family].timestampValidBits &&
+        properties.limits.timestampPeriod > 0.0f) {
+      VkQueryPoolCreateInfo pool_info = {};
+      pool_info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+      pool_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+      pool_info.queryCount = 2 * FrameGen::kTimestampSlots;
+      if (dfn.vkCreateQueryPool(device, &pool_info, nullptr, &fg.timestamps) != VK_SUCCESS) {
+        fg.timestamps = VK_NULL_HANDLE;
+      }
+      fg.timestamp_period_ns = properties.limits.timestampPeriod;
+    }
+  }
+
   fg.initialized = true;
-  REXLOG_INFO("[presentador] frame gen: listo (un fotograma intermedio entre cada dos del juego)");
+  REXLOG_INFO("[presentador] frame gen: listo (un fotograma intermedio entre cada dos del juego; tiempo de "
+              "GPU {})",
+              fg.timestamps != VK_NULL_HANDLE ? "medido" : "sin medir: la cola no tiene marcas de tiempo");
   return true;
 }
 
@@ -318,6 +346,10 @@ void VulkanPresenter::FrameGenShutdown() {
   const VkDevice device = vulkan_device_->device();
   FrameGen& fg = frame_gen_;
   FrameGenDestroyTargets();
+  util::DestroyAndNullHandle(dfn.vkDestroyQueryPool, device, fg.timestamps);
+  for (bool& written : fg.timestamp_written) {
+    written = false;
+  }
   util::DestroyAndNullHandle(dfn.vkDestroyDescriptorPool, device, fg.descriptor_pool);
   util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, fg.copy_pipeline);
   util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, fg.interpolate_pipeline);
@@ -590,6 +622,23 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
     }
     return false;
   }
+  // The GPU time of the frame in the middle kTimestampSlots ago, and this one's first timestamp.
+  const uint32_t slot = fg.timestamp_slot;
+  if (fg.timestamps != VK_NULL_HANDLE) {
+    fg.timestamp_slot = (slot + 1) % FrameGen::kTimestampSlots;
+    if (fg.timestamp_written[slot]) {
+      uint64_t ticks[2];
+      if (dfn.vkGetQueryPoolResults(vulkan_device_->device(), fg.timestamps, slot * 2, 2, sizeof(ticks),
+                                    ticks, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
+          ticks[1] >= ticks[0]) {
+        fg.gpu_ms_sum += double(ticks[1] - ticks[0]) * fg.timestamp_period_ns / 1e6;
+        ++fg.gpu_ms_count;
+      }
+    }
+    dfn.vkCmdResetQueryPool(command_buffer, fg.timestamps, slot * 2, 2);
+    dfn.vkCmdWriteTimestamp(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, fg.timestamps, slot * 2);
+  }
+
   const uint32_t current = previous ^ 1;
   if (fg.luma_sequence[current] != sequence) {
     FrameGenRecordLuma(command_buffer, guest_output_set, current);
@@ -624,9 +673,20 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
   FrameGenPass(dfn, command_buffer, fg.color_pass, fg.output_framebuffer, fg.width, fg.height,
                fg.interpolate_pipeline, fg.pipeline_layout, guest_output_set, fg.interpolate_set,
                &constants, sizeof(constants));
-  if (++fg.intermediates % 1800 == 0) {
-    REXLOG_INFO("[presentador] frame gen: {} fotogramas intermedios, {} sin fotograma anterior",
-                fg.intermediates, fg.skipped);
+  if (fg.timestamps != VK_NULL_HANDLE) {
+    dfn.vkCmdWriteTimestamp(command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, fg.timestamps,
+                            slot * 2 + 1);
+    fg.timestamp_written[slot] = true;
+  }
+  // Every ~30 s at 60 on the screen.
+  if (++fg.intermediates % 900 == 0) {
+    REXLOG_INFO(
+        "[presentador] frame gen: {} fotogramas intermedios, {} sin fotograma anterior; GPU {:.2f} ms "
+        "por intermedio ({} medidos)",
+        fg.intermediates, fg.skipped, fg.gpu_ms_count ? fg.gpu_ms_sum / double(fg.gpu_ms_count) : 0.0,
+        fg.gpu_ms_count);
+    fg.gpu_ms_sum = 0.0;
+    fg.gpu_ms_count = 0;
   }
   return true;
 }

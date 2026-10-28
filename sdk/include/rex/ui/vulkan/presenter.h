@@ -669,6 +669,17 @@ class VulkanPresenter final : public Presenter {
     // For the log.
     uint64_t intermediates = 0;
     uint64_t skipped = 0;
+    // GPU time of each frame in the middle, from the pyramid to the interpolation: two timestamps per slot,
+    // a slot read back kTimestampSlots frames in the middle later (by then its paint has completed:
+    // PaintAndPresentImpl awaits all but the last kSubmissionCount paints). No pool where the queue has no
+    // timestamps.
+    static constexpr uint32_t kTimestampSlots = 4;
+    VkQueryPool timestamps = VK_NULL_HANDLE;
+    float timestamp_period_ns = 0.0f;
+    uint32_t timestamp_slot = 0;
+    bool timestamp_written[kTimestampSlots] = {};
+    double gpu_ms_sum = 0.0;
+    uint64_t gpu_ms_count = 0;
   };
 
   bool FrameGenInitialize();

@@ -6,7 +6,8 @@
 // Symmetric block matching, the kind TVs use for frame rate conversion: the vector d belongs to the frame
 // in the middle, whose block came from p - d in the previous frame and goes to p + d in the current one.
 // So every pixel of the frame in between has a vector and there are no holes to fill. The block is 4x4
-// texels of the level (64x64 guest pixels at 1/16, 16x16 at 1/4).
+// texels of the level (64x64 guest pixels at 1/16, 16x16 at 1/4): from one texel before this one to two
+// after, the nearest a block of even size gets to being centered.
 //
 // The coarsest level searches every whole texel within the range. The finer ones take the vectors of the
 // level above at this texel and its four neighbors, plus zero (the HUD and the sky), keep the best and
@@ -30,15 +31,29 @@ layout(set = 1, binding = 4) uniform sampler nearest_sampler;
 layout(location = 0) out vec2 vector_out;
 
 // The sum of absolute differences of the block, in texels of this level, plus a small price per texel of
-// length, so a flat area (the sky, the road) keeps the shortest vector.
+// length, so a flat area (the sky, the road) keeps the shortest vector. A whole-texel vector keeps the block
+// on texel corners, so each 2x2 of it is one gather (8 reads instead of 32); the half-texel steps of the
+// last refinement filter instead.
 float Cost(vec2 uv, vec2 d) {
   vec2 o = d * constants.level_texel;
   float sad = 0.0;
-  for (int y = 0; y < 4; ++y) {
-    for (int x = 0; x < 4; ++x) {
-      vec2 t = (vec2(x, y) - 1.5) * constants.level_texel;
-      sad += abs(textureLod(sampler2D(previous_luma, linear_sampler), uv + t - o, 0.0).r -
-                 textureLod(sampler2D(current_luma, linear_sampler), uv + t + o, 0.0).r);
+  if (all(equal(d, floor(d)))) {
+    for (int y = 0; y < 2; ++y) {
+      for (int x = 0; x < 2; ++x) {
+        // The corners in the middle of texels -1 and 0, and of 1 and 2.
+        vec2 corner = uv + (vec2(x, y) * 2.0 - 0.5) * constants.level_texel;
+        vec4 difference = abs(textureGather(sampler2D(previous_luma, nearest_sampler), corner - o, 0) -
+                              textureGather(sampler2D(current_luma, nearest_sampler), corner + o, 0));
+        sad += difference.x + difference.y + difference.z + difference.w;
+      }
+    }
+  } else {
+    for (int y = 0; y < 4; ++y) {
+      for (int x = 0; x < 4; ++x) {
+        vec2 t = (vec2(x, y) - 1.0) * constants.level_texel;
+        sad += abs(textureLod(sampler2D(previous_luma, linear_sampler), uv + t - o, 0.0).r -
+                   textureLod(sampler2D(current_luma, linear_sampler), uv + t + o, 0.0).r);
+      }
     }
   }
   // A block that would come from outside the frame matches the clamped edge by chance.
