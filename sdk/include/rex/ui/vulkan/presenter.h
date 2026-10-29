@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -688,6 +689,17 @@ class VulkanPresenter final : public Presenter {
     bool timestamp_written[kTimestampSlots] = {};
     double gpu_ms_sum = 0.0;
     uint64_t gpu_ms_count = 0;
+
+    // present_frame_gen_volcar_cada_s: the previous frame, the one in the middle and the current one of the
+    // same paint, copied to `dump_memory` and written out once that paint has completed.
+    VkBuffer dump_buffer = VK_NULL_HANDLE;
+    VkDeviceMemory dump_memory = VK_NULL_HANDLE;
+    uint32_t dump_width = 0;
+    uint32_t dump_height = 0;
+    bool dump_pending = false;
+    uint64_t dump_submission = 0;
+    uint32_t dumps = 0;
+    std::chrono::steady_clock::time_point last_dump{};
   };
 
   bool FrameGenInitialize();
@@ -702,7 +714,10 @@ class VulkanPresenter final : public Presenter {
   // The frame between the history and the guest output `sequence`, into frame_gen_.output. False
   // (and nothing recorded) if there is no previous frame to start from.
   bool FrameGenRecordIntermediate(VkCommandBuffer command_buffer, VkDescriptorSet guest_output_set,
-                                  uint64_t sequence);
+                                  VkImage guest_output_image, uint64_t sequence);
+  // present_frame_gen_volcar_cada_s: records the copies of the three frames when one is due, and writes
+  // out the previous one once its paint has completed.
+  void FrameGenDump(VkCommandBuffer command_buffer, VkImage guest_output_image);
   // Keeps the guest output `sequence` as the history (and its pyramid), once per guest frame.
   void FrameGenRecordHistory(VkCommandBuffer command_buffer, VkDescriptorSet guest_output_set,
                              uint64_t sequence);

@@ -27,7 +27,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <rex/cvar.h>
@@ -53,6 +55,18 @@ REXCVAR_DEFINE_INT32(present_frame_gen_depurar, 0, "UI/Presenter",
                      "Depuracion de present_frame_gen: 0 normal, 1 el fotograma real en lugar del intermedio "
                      "(mismo ritmo, sin interpolar), 2 solo los intermedios")
     .range(0, 2);
+
+/*
+ * Debugging: every this many seconds, the previous frame, the one in the middle and the current one of the
+ * same paint, copied in its command buffer (so the three belong together), as PPM files in
+ * present_frame_gen_volcar_dir. Up to 20 per run. They are what the search and the interpolation can be
+ * tuned against on a PC.
+ */
+REXCVAR_DEFINE_INT32(present_frame_gen_volcar_cada_s, 0, "UI/Presenter",
+                     "Depuracion de present_frame_gen: cada cuantos segundos guardar el fotograma anterior, el "
+                     "intermedio y el actual (0 = nunca)");
+REXCVAR_DEFINE_STRING(present_frame_gen_volcar_dir, "", "UI/Presenter",
+                      "Depuracion de present_frame_gen: carpeta de los volcados (vacia = la del ejecutable)");
 
 REXCVAR_DEFINE_BOOL(present_frame_gen_capturar_intermedio, false, "UI/Presenter",
                     "Depuracion de present_frame_gen: las capturas guardan el ultimo fotograma intermedio "
@@ -356,6 +370,9 @@ void VulkanPresenter::FrameGenDestroyTargets() {
   destroy(fg.smoothed);
   util::DestroyAndNullHandle(dfn.vkDestroyFramebuffer, device, fg.output_framebuffer);
   fg.output.reset();
+  util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device, fg.dump_buffer);
+  util::DestroyAndNullHandle(dfn.vkFreeMemory, device, fg.dump_memory);
+  fg.dump_pending = false;
   paint_context_.guest_output_image_paint_refs[PaintContext::kGuestOutputPaintRefFrameGen] = {};
   fg.width = 0;
   fg.height = 0;
@@ -410,7 +427,7 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
 
   const auto create_target = [&](FrameGenTarget& target, uint32_t target_width,
                                  uint32_t target_height, VkFormat format,
-                                 VkRenderPass render_pass) {
+                                 VkRenderPass render_pass, VkImageUsageFlags extra_usage = 0) {
     VkImageCreateInfo image_info = {};
     image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     image_info.imageType = VK_IMAGE_TYPE_2D;
@@ -420,7 +437,7 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
     image_info.arrayLayers = 1;
     image_info.samples = VK_SAMPLE_COUNT_1_BIT;
     image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | extra_usage;
     image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (!util::CreateDedicatedAllocationImage(vulkan_device_, image_info,
@@ -453,7 +470,9 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
     target.height = target_height;
     return true;
   };
-  bool created = create_target(fg.history, width, height, kGuestOutputFormat, fg.color_pass);
+  // (Transfer source for present_frame_gen_volcar_cada_s.)
+  bool created = create_target(fg.history, width, height, kGuestOutputFormat, fg.color_pass,
+                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
   for (uint32_t level = 0; created && level < kFrameGenLevels; ++level) {
     const uint32_t level_width = LevelSize(width, level), level_height = LevelSize(height, level);
     created = create_target(fg.luma[0][level], level_width, level_height, kLumaFormat,
@@ -634,7 +653,7 @@ void VulkanPresenter::FrameGenRecordLuma(VkCommandBuffer command_buffer,
 
 bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
                                                  VkDescriptorSet guest_output_set,
-                                                 uint64_t sequence) {
+                                                 VkImage guest_output_image, uint64_t sequence) {
   const VulkanDevice::Functions& dfn = vulkan_device_->functions();
   FrameGen& fg = frame_gen_;
   // The previous frame: the history, and the pyramid made from it.
@@ -712,6 +731,7 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
                fg.interpolate_pipeline, fg.pipeline_layout, guest_output_set, fg.interpolate_set,
                &constants, sizeof(constants));
   fg.output_sequence = sequence;
+  FrameGenDump(command_buffer, guest_output_image);
   if (fg.timestamps != VK_NULL_HANDLE) {
     dfn.vkCmdWriteTimestamp(command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, fg.timestamps,
                             slot * 2 + 1);
@@ -728,6 +748,119 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
     fg.gpu_ms_count = 0;
   }
   return true;
+}
+
+void VulkanPresenter::FrameGenDump(VkCommandBuffer command_buffer, VkImage guest_output_image) {
+  const VulkanDevice::Functions& dfn = vulkan_device_->functions();
+  const VkDevice device = vulkan_device_->device();
+  FrameGen& fg = frame_gen_;
+  constexpr uint32_t kMaxDumps = 20;
+
+  // The previous dump, once its paint has completed.
+  if (fg.dump_pending &&
+      paint_context_.submission_tracker.UpdateAndGetCompletedSubmission() >= fg.dump_submission) {
+    fg.dump_pending = false;
+    void* mapping = nullptr;
+    if (dfn.vkMapMemory(device, fg.dump_memory, 0, VK_WHOLE_SIZE, 0, &mapping) == VK_SUCCESS) {
+      const std::string dir = REXCVAR_GET(present_frame_gen_volcar_dir);
+      const size_t pixels = size_t(fg.dump_width) * fg.dump_height;
+      static const char* const kNames[3] = {"anterior", "intermedio", "actual"};
+      for (uint32_t i = 0; i < 3; ++i) {
+        char name[64];
+        std::snprintf(name, sizeof(name), "fg_%02u_%s.ppm", fg.dumps, kNames[i]);
+        const std::string path = dir.empty() ? std::string(name) : dir + "/" + name;
+        if (FILE* file = std::fopen(path.c_str(), "wb")) {
+          std::fprintf(file, "P6\n%u %u\n255\n", fg.dump_width, fg.dump_height);
+          const uint32_t* source = static_cast<const uint32_t*>(mapping) + pixels * i;
+          std::vector<uint8_t> row(size_t(fg.dump_width) * 3);
+          for (uint32_t y = 0; y < fg.dump_height; ++y) {
+            for (uint32_t x = 0; x < fg.dump_width; ++x) {
+              const uint32_t rgba = Packed10bpcRGBTo8bpcBytes(source[size_t(y) * fg.dump_width + x]);
+              row[x * 3 + 0] = uint8_t(rgba);
+              row[x * 3 + 1] = uint8_t(rgba >> 8);
+              row[x * 3 + 2] = uint8_t(rgba >> 16);
+            }
+            std::fwrite(row.data(), 1, row.size(), file);
+          }
+          std::fclose(file);
+        } else {
+          REXLOG_WARN("[presentador] frame gen: no se pudo escribir {}", path);
+        }
+      }
+      dfn.vkUnmapMemory(device, fg.dump_memory);
+      REXLOG_INFO("[presentador] frame gen: volcado {} (anterior, intermedio y actual)", fg.dumps);
+      ++fg.dumps;
+    }
+  }
+
+  // A new one, when due.
+  const int32_t every_s = REXCVAR_GET(present_frame_gen_volcar_cada_s);
+  const auto now = std::chrono::steady_clock::now();
+  if (every_s <= 0 || fg.dump_pending || fg.dumps >= kMaxDumps ||
+      (fg.last_dump != std::chrono::steady_clock::time_point{} &&
+       now - fg.last_dump < std::chrono::seconds(every_s))) {
+    return;
+  }
+  if (fg.dump_buffer == VK_NULL_HANDLE &&
+      !util::CreateDedicatedAllocationBuffer(vulkan_device_, VkDeviceSize(fg.width) * fg.height * 4 * 3,
+                                             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                             util::MemoryPurpose::kReadback, fg.dump_buffer,
+                                             fg.dump_memory)) {
+    REXLOG_WARN("[presentador] frame gen: sin memoria para los volcados");
+    fg.dumps = kMaxDumps;
+    return;
+  }
+  fg.last_dump = now;
+  fg.dump_width = fg.width;
+  fg.dump_height = fg.height;
+  const VkImage images[3] = {fg.history.image, fg.output->image(), guest_output_image};
+  VkImageMemoryBarrier barriers[3];
+  for (uint32_t i = 0; i < 3; ++i) {
+    VkImageMemoryBarrier& barrier = barriers[i];
+    barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = images[i];
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  }
+  dfn.vkCmdPipelineBarrier(command_buffer,
+                           VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 3, barriers);
+  for (uint32_t i = 0; i < 3; ++i) {
+    VkBufferImageCopy region = {};
+    region.bufferOffset = VkDeviceSize(fg.width) * fg.height * 4 * i;
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {fg.width, fg.height, 1};
+    dfn.vkCmdCopyImageToBuffer(command_buffer, images[i], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               fg.dump_buffer, 1, &region);
+  }
+  // Back for the effects (fragment, compute for a temporal upscaler), and the copies for the host.
+  for (VkImageMemoryBarrier& barrier : barriers) {
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  }
+  VkBufferMemoryBarrier buffer_barrier = {};
+  buffer_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+  buffer_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  buffer_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+  buffer_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  buffer_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  buffer_barrier.buffer = fg.dump_buffer;
+  buffer_barrier.size = VK_WHOLE_SIZE;
+  dfn.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                               VK_PIPELINE_STAGE_HOST_BIT,
+                           0, 0, nullptr, 1, &buffer_barrier, 3, barriers);
+  fg.dump_pending = true;
+  fg.dump_submission = paint_context_.submission_tracker.GetCurrentSubmission();
 }
 
 void VulkanPresenter::FrameGenRecordHistory(VkCommandBuffer command_buffer,

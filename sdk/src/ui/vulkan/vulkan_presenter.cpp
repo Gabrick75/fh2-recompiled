@@ -2850,7 +2850,8 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
           // present_frame_gen_depurar 1: the same pace, the real frame in place of the one in the middle.
           intermediate_painted_ = true;
         } else if (paint_intermediate_ &&
-                   FrameGenRecordIntermediate(draw_command_buffer, guest_output_set, sequence)) {
+                   FrameGenRecordIntermediate(draw_command_buffer, guest_output_set,
+                                              guest_output_image->image(), sequence)) {
           paint_frame_in_the_middle();
           intermediate_painted_ = true;
         } else {
