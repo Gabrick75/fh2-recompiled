@@ -44,6 +44,16 @@ REXCVAR_DECLARE(bool, present_frame_gen);  // defined in presenter.cpp
  * reads the image while the presenter thread may be drawing the next one into it: a capture can mix two
  * frames in the middle, which is fine for looking at them and is why this is not for players.
  */
+/*
+ * Debugging, to tell a pacing fault from an interpolation fault: 1 presents the real frame where the one in
+ * the middle would go (the same pace, nothing interpolated); 2 presents the frame in the middle in place of
+ * the real one too (only interpolated frames, at the game's rate).
+ */
+REXCVAR_DEFINE_INT32(present_frame_gen_depurar, 0, "UI/Presenter",
+                     "Depuracion de present_frame_gen: 0 normal, 1 el fotograma real en lugar del intermedio "
+                     "(mismo ritmo, sin interpolar), 2 solo los intermedios")
+    .range(0, 2);
+
 REXCVAR_DEFINE_BOOL(present_frame_gen_capturar_intermedio, false, "UI/Presenter",
                     "Depuracion de present_frame_gen: las capturas guardan el ultimo fotograma intermedio "
                     "en vez del real");
@@ -109,6 +119,8 @@ std::shared_ptr<VulkanPresenter::GuestOutputImage> VulkanPresenter::FrameGenCapt
   }
   return frame_gen_.output;
 }
+
+int32_t VulkanPresenter::FrameGenDebugMode() const { return REXCVAR_GET(present_frame_gen_depurar); }
 
 bool VulkanPresenter::FrameGenInitialize() {
   if (frame_gen_.initialized || frame_gen_.failed) {
@@ -339,6 +351,7 @@ void VulkanPresenter::FrameGenDestroyTargets() {
   fg.luma_sequence[0] = 0;
   fg.luma_sequence[1] = 0;
   fg.history_sequence = 0;
+  fg.output_sequence = 0;
 }
 
 void VulkanPresenter::FrameGenShutdown() {
@@ -673,6 +686,7 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
   FrameGenPass(dfn, command_buffer, fg.color_pass, fg.output_framebuffer, fg.width, fg.height,
                fg.interpolate_pipeline, fg.pipeline_layout, guest_output_set, fg.interpolate_set,
                &constants, sizeof(constants));
+  fg.output_sequence = sequence;
   if (fg.timestamps != VK_NULL_HANDLE) {
     dfn.vkCmdWriteTimestamp(command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, fg.timestamps,
                             slot * 2 + 1);

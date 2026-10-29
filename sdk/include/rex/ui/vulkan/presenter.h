@@ -665,6 +665,8 @@ class VulkanPresenter final : public Presenter {
     // The guest output (GuestOutputProperties::sequence) each pyramid and the history hold, 0 = none.
     uint64_t luma_sequence[2] = {};
     uint64_t history_sequence = 0;
+    // The guest output whose frame in the middle (before it) `output` holds.
+    uint64_t output_sequence = 0;
 
     // For the log.
     uint64_t intermediates = 0;
@@ -702,6 +704,9 @@ class VulkanPresenter final : public Presenter {
   // For CaptureGuestOutput: the frame in the middle when present_frame_gen_capturar_intermedio asks for it
   // and one has been made, else null.
   std::shared_ptr<GuestOutputImage> FrameGenCaptureImage() const;
+  // present_frame_gen_depurar: 0 normal, 1 the real frame in place of the one in the middle (same pace), 2 the
+  // one in the middle in place of the real one too.
+  int32_t FrameGenDebugMode() const;
 
   FrameGen frame_gen_;
 

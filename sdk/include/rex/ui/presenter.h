@@ -1079,6 +1079,22 @@ class Presenter {
   std::chrono::steady_clock::time_point frame_gen_last_arrival_{};
   double frame_gen_interval_ms_ = 1000.0 / 30.0;
   uint64_t frame_gen_log_counter_ = 0;
+  // The pace that came out (PaintFromPaintThread), for the log: [0] middle -> real, [1] real -> next middle.
+  struct FrameGenPace {
+    double sum = 0.0;
+    double min = 1e9;
+    double max = 0.0;
+    uint64_t count = 0;
+    void Add(double ms) {
+      sum += ms;
+      min = std::min(min, ms);
+      max = std::max(max, ms);
+      ++count;
+    }
+    double Mean() const { return count ? sum / double(count) : 0.0; }
+  };
+  FrameGenPace frame_gen_pace_[2];
+  std::chrono::steady_clock::time_point frame_gen_last_real_done_{};
   // Modifiable only by the UI thread, can be read by the thread that's
   // painting.
   uint32_t surface_width_in_paint_connection_ = 0;

@@ -2833,20 +2833,32 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
             paint_context_.guest_output_descriptor_sets
                 [PaintContext::kGuestOutputDescriptorSetGuestOutput0Sampled +
                  guest_output_image_paint_ref_index];
-        if (paint_intermediate_ &&
-            FrameGenRecordIntermediate(draw_command_buffer, guest_output_set,
-                                       guest_output_properties.sequence)) {
-          // The passes just recorded read the real frame: this submission keeps it referenced.
+        const uint64_t sequence = guest_output_properties.sequence;
+        // Paints the frame in the middle in place of the guest output.
+        const auto paint_frame_in_the_middle = [&]() {
+          // The passes recorded in this paint read the real frame: this submission keeps it referenced.
           paint_context_.guest_output_image_paint_refs[guest_output_image_paint_ref_index].first =
               current_paint_submission_index;
           guest_output_image = frame_gen_.output;
           guest_output_image_paint_ref_index = PaintContext::kGuestOutputPaintRefFrameGen;
           paint_context_.guest_output_image_paint_refs[guest_output_image_paint_ref_index] =
               std::make_pair(uint64_t(0), frame_gen_.output);
+        };
+        const int32_t debug_mode = FrameGenDebugMode();
+        if (paint_intermediate_ && debug_mode == 1 && frame_gen_.history_sequence &&
+            frame_gen_.history_sequence < sequence) {
+          // present_frame_gen_depurar 1: the same pace, the real frame in place of the one in the middle.
+          intermediate_painted_ = true;
+        } else if (paint_intermediate_ &&
+                   FrameGenRecordIntermediate(draw_command_buffer, guest_output_set, sequence)) {
+          paint_frame_in_the_middle();
           intermediate_painted_ = true;
         } else {
-          FrameGenRecordHistory(draw_command_buffer, guest_output_set,
-                                guest_output_properties.sequence);
+          FrameGenRecordHistory(draw_command_buffer, guest_output_set, sequence);
+          // present_frame_gen_depurar 2: the frame in the middle in place of the real one too.
+          if (debug_mode == 2 && frame_gen_.output_sequence == sequence) {
+            paint_frame_in_the_middle();
+          }
         }
       }
 

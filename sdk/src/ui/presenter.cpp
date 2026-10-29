@@ -1998,19 +1998,34 @@ void Presenter::PaintFromPaintThread() {
     }
     const bool steady = since_last_ms < 100.0 && since_last_ms < frame_gen_interval_ms_ * 2.5;
     if (steady && paint(true)) {
+      const auto intermediate_done = std::chrono::steady_clock::now();
       const double wait_ms = frame_gen_interval_ms_ * 0.5 - REXCVAR_GET(present_frame_gen_margen_ms);
       if (wait_ms > 0.0) {
         std::this_thread::sleep_until(arrival + std::chrono::microseconds(int64_t(wait_ms * 1000.0)));
       }
       paint(false);
+      // The pace as it came out, between the ends of the presents (each may wait for its vblank): from the
+      // frame in the middle to the real one, and from the real one to the next frame in the middle.
+      const auto real_done = std::chrono::steady_clock::now();
+      frame_gen_pace_[0].Add(std::chrono::duration<double, std::milli>(real_done - intermediate_done).count());
+      if (frame_gen_last_real_done_ != std::chrono::steady_clock::time_point{}) {
+        frame_gen_pace_[1].Add(
+            std::chrono::duration<double, std::milli>(intermediate_done - frame_gen_last_real_done_).count());
+      }
+      frame_gen_last_real_done_ = real_done;
     } else if (!steady) {
       paint(false);
     }
     // (Steady but nothing in the middle: the implementation had no previous frame and painted the real one
     // itself.)
     if (++frame_gen_log_counter_ % 600 == 0) {
-      REXLOG_INFO("[presentador] frame gen: intervalo medio entre fotogramas del juego {:.2f} ms",
-                  frame_gen_interval_ms_);
+      REXLOG_INFO(
+          "[presentador] frame gen: intervalo medio entre fotogramas del juego {:.2f} ms; intermedio -> real "
+          "{:.1f} ms ({:.1f}-{:.1f}), real -> intermedio {:.1f} ms ({:.1f}-{:.1f}), {} pares",
+          frame_gen_interval_ms_, frame_gen_pace_[0].Mean(), frame_gen_pace_[0].min, frame_gen_pace_[0].max,
+          frame_gen_pace_[1].Mean(), frame_gen_pace_[1].min, frame_gen_pace_[1].max, frame_gen_pace_[0].count);
+      frame_gen_pace_[0] = {};
+      frame_gen_pace_[1] = {};
     }
     return;
   }
