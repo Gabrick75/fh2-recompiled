@@ -5,10 +5,11 @@
 //
 // Each pixel picks its vector among six: the field interpolated here, the four nearest vectors of the
 // field as they are (an object's edge must not get the average of the object and the background) and zero
-// (the HUD, which does not move, matches it exactly). The one whose two ends look most alike wins. The
-// color is the average of both ends; where even the best vector does not match (something appears or
-// disappears between the frames), the current frame's end, which at worst repeats the current frame in
-// that spot instead of a ghost of both.
+// (the HUD, which does not move, matches it exactly). The smooth field wins unless another candidate's two
+// ends look clearly more alike: picking per pixel on a near tie is what made surfaces shimmer. The color is
+// the average of both ends. Where even the best vector does not match (something appears or disappears, or
+// the motion was too fast for the search), the current frame as it is, not warped: at worst that spot
+// repeats a frame, where a wrong vector would tear and bend it.
 
 layout(push_constant) uniform FrameGenInterpolateConstants {
   // After the rectangle constants of the vertex shader.
@@ -56,11 +57,13 @@ void main() {
       textureLod(sampler2D(vectors, nearest_sampler), (base + vec2(1.0, 1.0)) * vector_texel, 0.0).rg,
       vec2(0.0));
   vec2 best = vec2(0.0);
-  float best_mismatch = 1e9;
+  float best_score = 1e9, best_mismatch = 1e9;
   for (int i = 0; i < 6; ++i) {
-    // The smooth field is a little preferred: it does not shimmer from one pixel to the next.
-    float m = Mismatch(uv, candidates[i]) * (i == 0 ? 0.9 : 1.0);
-    if (m < best_mismatch) {
+    float m = Mismatch(uv, candidates[i]);
+    // The smooth field is preferred: it does not shimmer from one pixel to the next.
+    float score = m * (i == 0 ? 0.7 : 1.0);
+    if (score < best_score) {
+      best_score = score;
       best_mismatch = m;
       best = candidates[i];
     }
@@ -70,7 +73,7 @@ void main() {
   vec4 a = Previous(previous_inside ? uv - o : uv);
   vec4 b = Current(current_inside ? uv + o : uv);
   vec4 middle = previous_inside && current_inside ? (a + b) * 0.5 : (current_inside ? b : a);
-  vec4 color = mix(middle, b, smoothstep(0.06, 0.2, best_mismatch));
+  vec4 color = mix(middle, Current(uv), smoothstep(0.05, 0.15, best_mismatch));
   // The HUD coverage (present_hdr's mask) of either frame.
   color.a = max(a.a, b.a);
   color_out = color;

@@ -12,17 +12,17 @@
  *
  * Only the two images are used, the way the frame generation that phones offer for any game works: no
  * depth and no motion vectors from the game, so this works with both renderers. Per guest frame:
- *   1. Its luma at 1/4, 1/8 and 1/16 (one pyramid per frame, two kept).
- *   2. One vector per texel of 1/16, searching every whole texel within kSearchRange; then at 1/8 and at
+ *   1. Its luma at 1/4, 1/8, 1/16 and 1/32 (one pyramid per frame, two kept).
+ *   2. One vector per texel of 1/32, searching every whole texel within kSearchRange; then at 1/16, 1/8 and
  *      1/4, the five nearest vectors of the level above plus zero, refined one step around the best.
  *      The search is symmetric (frame_gen_search.ps.glsl), so the vectors belong to the frame in the
- *      middle and it has no holes.
- *   3. Per guest pixel, the best of six vectors (frame_gen_interpolate.ps.glsl) and the average of its
- *      two ends.
+ *      middle and it has no holes. A 3x3 vector median of the last level drops the outliers
+ *      (frame_gen_median.ps.glsl).
+ *   3. Per guest pixel, the best of six vectors (frame_gen_interpolate.ps.glsl), the smooth field first,
+ *      and the average of its two ends; the current frame unwarped where nothing matches.
  * The real frame is then kept as the history (a copy: the mailbox reuses its images).
  *
- * Cost, per guest pixel: ~1.3 taps for the pyramid, ~40 for the frame in the middle; the searches add
- * ~5,400 taps per texel at 1/16 and ~450 at 1/8 and 1/4, which over a guest pixel is ~21 + 7 + 28.
+ * Measured on the S23 (Adreno 740, 1280x720, three levels): 1.5-2.2 ms of GPU per frame in the middle.
  */
 
 #include <algorithm>
@@ -67,6 +67,7 @@ namespace shaders {
 #include "../shaders/vulkan_spirv/frame_gen_copy_ps.h"
 #include "../shaders/vulkan_spirv/frame_gen_interpolate_ps.h"
 #include "../shaders/vulkan_spirv/frame_gen_luma_ps.h"
+#include "../shaders/vulkan_spirv/frame_gen_median_ps.h"
 #include "../shaders/vulkan_spirv/frame_gen_search_ps.h"
 }  // namespace shaders
 
@@ -85,6 +86,9 @@ struct SearchConstants {
   float refine_step;
   int32_t search_range;
 };
+struct MedianConstants {
+  float vector_texel[2];
+};
 struct InterpolateConstants {
   float guest_texel[2];
   float vector_size[2];
@@ -97,11 +101,11 @@ static_assert(sizeof(InterpolateConstants) <= kFragmentConstantsSize);
 constexpr VkFormat kLumaFormat = VK_FORMAT_R8_UNORM;
 constexpr VkFormat kVectorFormat = VK_FORMAT_R16G16_SFLOAT;
 
-// Texels of 1/16 searched each way: +-96 guest pixels for each half of the motion, so up to 192 pixels
-// between two frames.
+// Texels of 1/32 searched each way: +-192 guest pixels for each half of the motion, so up to 384 pixels
+// between two frames (the roadside at full speed moved past the 192 of a search at 1/16).
 constexpr int32_t kSearchRange = 6;
 
-// The levels' sizes: 1/4, 1/8 and 1/16 of the guest output, rounded up.
+// The levels' sizes: 1/4, 1/8, 1/16 and 1/32 of the guest output, rounded up.
 uint32_t LevelSize(uint32_t guest_size, uint32_t level) {
   const uint32_t shift = 2 + level;
   return std::max(uint32_t(1), (guest_size + (uint32_t(1) << shift) - 1) >> shift);
@@ -242,7 +246,9 @@ bool VulkanPresenter::FrameGenInitialize() {
                      fg.search_fs) ||
       !create_shader(shaders::frame_gen_interpolate_ps, sizeof(shaders::frame_gen_interpolate_ps),
                      fg.interpolate_fs) ||
-      !create_shader(shaders::frame_gen_copy_ps, sizeof(shaders::frame_gen_copy_ps), fg.copy_fs)) {
+      !create_shader(shaders::frame_gen_copy_ps, sizeof(shaders::frame_gen_copy_ps), fg.copy_fs) ||
+      !create_shader(shaders::frame_gen_median_ps, sizeof(shaders::frame_gen_median_ps),
+                     fg.median_fs)) {
     return fail("los shaders");
   }
   // The effects' vertex shader (a rectangle from push constants) with these fragment shaders.
@@ -254,12 +260,15 @@ bool VulkanPresenter::FrameGenInitialize() {
       GuestOutputPaintEffect::kBilinear, fg.color_pass, fg.interpolate_fs, fg.pipeline_layout);
   fg.copy_pipeline = CreateGuestOutputPaintPipeline(GuestOutputPaintEffect::kBilinear, fg.color_pass,
                                                     fg.copy_fs, fg.pipeline_layout);
+  fg.median_pipeline = CreateGuestOutputPaintPipeline(
+      GuestOutputPaintEffect::kBilinear, fg.vector_pass, fg.median_fs, fg.pipeline_layout);
   if (fg.luma_pipeline == VK_NULL_HANDLE || fg.search_pipeline == VK_NULL_HANDLE ||
+      fg.median_pipeline == VK_NULL_HANDLE ||
       fg.interpolate_pipeline == VK_NULL_HANDLE || fg.copy_pipeline == VK_NULL_HANDLE) {
     return fail("las tuberias");
   }
 
-  constexpr uint32_t kSetCount = 2 * kFrameGenLevels * 2 + 1;
+  constexpr uint32_t kSetCount = 2 * kFrameGenLevels * 2 + 2;
   VkDescriptorPoolSize pool_sizes[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kSetCount * 3},
                                         {VK_DESCRIPTOR_TYPE_SAMPLER, kSetCount * 2}};
   VkDescriptorPoolCreateInfo pool_info = {};
@@ -279,6 +288,7 @@ bool VulkanPresenter::FrameGenInitialize() {
     }
   }
   sets[set_index++] = &fg.interpolate_set;
+  sets[set_index++] = &fg.median_set;
   for (VkDescriptorSet* set : sets) {
     VkDescriptorSetAllocateInfo allocate_info = {};
     allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -343,6 +353,7 @@ void VulkanPresenter::FrameGenDestroyTargets() {
   for (FrameGenTarget& level : fg.vectors) {
     destroy(level);
   }
+  destroy(fg.smoothed);
   util::DestroyAndNullHandle(dfn.vkDestroyFramebuffer, device, fg.output_framebuffer);
   fg.output.reset();
   paint_context_.guest_output_image_paint_refs[PaintContext::kGuestOutputPaintRefFrameGen] = {};
@@ -364,10 +375,12 @@ void VulkanPresenter::FrameGenShutdown() {
     written = false;
   }
   util::DestroyAndNullHandle(dfn.vkDestroyDescriptorPool, device, fg.descriptor_pool);
+  util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, fg.median_pipeline);
   util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, fg.copy_pipeline);
   util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, fg.interpolate_pipeline);
   util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, fg.search_pipeline);
   util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, fg.luma_pipeline);
+  util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device, fg.median_fs);
   util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device, fg.copy_fs);
   util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device, fg.interpolate_fs);
   util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device, fg.search_fs);
@@ -450,6 +463,8 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
               create_target(fg.vectors[level], level_width, level_height, kVectorFormat,
                             fg.vector_pass);
   }
+  created = created && create_target(fg.smoothed, LevelSize(width, 0), LevelSize(height, 0),
+                                     kVectorFormat, fg.vector_pass);
   if (created) {
     std::unique_ptr<GuestOutputImage> output = GuestOutputImage::Create(vulkan_device_, width, height);
     created = output != nullptr;
@@ -504,7 +519,8 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
                 level + 1 < kFrameGenLevels ? fg.vectors[level + 1] : current);
     }
   }
-  write_set(fg.interpolate_set, fg.history, fg.history, fg.vectors[0]);
+  write_set(fg.median_set, fg.vectors[0], fg.vectors[0], fg.vectors[0]);
+  write_set(fg.interpolate_set, fg.history, fg.history, fg.smoothed);
   // The frame in the middle as a guest output image for the effects, in its own reference slot.
   VkDescriptorImageInfo output_info = {VK_NULL_HANDLE, fg.output->view(),
                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -521,7 +537,7 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
 
   // Every new image to the layout the descriptors say, so a binding a pass does not read is valid from
   // the first frame.
-  VkImageMemoryBarrier barriers[1 + 3 * kFrameGenLevels + 1];
+  VkImageMemoryBarrier barriers[1 + 3 * kFrameGenLevels + 2];
   uint32_t barrier_count = 0;
   const auto add_barrier = [&](VkImage image) {
     VkImageMemoryBarrier& barrier = barriers[barrier_count++];
@@ -541,6 +557,7 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
     add_barrier(fg.luma[1][level].image);
     add_barrier(fg.vectors[level].image);
   }
+  add_barrier(fg.smoothed.image);
   add_barrier(fg.output->image());
   dfn.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
@@ -678,11 +695,19 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
                  fg.search_sets[current][level], &constants, sizeof(constants));
   }
 
+  // The vector median of the finest level.
+  MedianConstants median_constants;
+  median_constants.vector_texel[0] = 1.0f / float(fg.smoothed.width);
+  median_constants.vector_texel[1] = 1.0f / float(fg.smoothed.height);
+  FrameGenPass(dfn, command_buffer, fg.vector_pass, fg.smoothed.framebuffer, fg.smoothed.width,
+               fg.smoothed.height, fg.median_pipeline, fg.pipeline_layout, guest_output_set,
+               fg.median_set, &median_constants, sizeof(median_constants));
+
   InterpolateConstants constants;
   constants.guest_texel[0] = 1.0f / float(fg.width);
   constants.guest_texel[1] = 1.0f / float(fg.height);
-  constants.vector_size[0] = float(fg.vectors[0].width);
-  constants.vector_size[1] = float(fg.vectors[0].height);
+  constants.vector_size[0] = float(fg.smoothed.width);
+  constants.vector_size[1] = float(fg.smoothed.height);
   FrameGenPass(dfn, command_buffer, fg.color_pass, fg.output_framebuffer, fg.width, fg.height,
                fg.interpolate_pipeline, fg.pipeline_layout, guest_output_set, fg.interpolate_set,
                &constants, sizeof(constants));

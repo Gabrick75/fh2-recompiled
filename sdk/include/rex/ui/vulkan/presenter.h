@@ -610,9 +610,10 @@ class VulkanPresenter final : public Presenter {
    *
    * Everything is recorded into the paint command buffer, as fragment passes into formats every device
    * can render to and filter (the guest output's 10:10:10:2 is not a storage format everywhere):
-   *   - a luma pyramid of each frame at 1/4, 1/8 and 1/16 of the guest output (two, the previous
+   *   - a luma pyramid of each frame at 1/4, 1/8, 1/16 and 1/32 of the guest output (two, the previous
    *     frame's and the current one's);
-   *   - a symmetric block search: every texel at 1/16, then refined at 1/8 and 1/4;
+   *   - a symmetric block search: every texel at 1/32, then refined at 1/16, 1/8 and 1/4, and a 3x3
+   *     vector median of the last level;
    *   - the frame in the middle at the guest output's size, into `output`;
    *   - after the real frame is painted, a copy of it into `history`, because the mailbox reuses its
    *     images.
@@ -626,8 +627,8 @@ class VulkanPresenter final : public Presenter {
     uint32_t width = 0;
     uint32_t height = 0;
   };
-  // 1/4, 1/8 and 1/16 of the guest output.
-  static constexpr uint32_t kFrameGenLevels = 3;
+  // 1/4, 1/8, 1/16 and 1/32 of the guest output.
+  static constexpr uint32_t kFrameGenLevels = 4;
   struct FrameGen {
     bool initialized = false;
     bool failed = false;
@@ -641,10 +642,12 @@ class VulkanPresenter final : public Presenter {
     VkShaderModule search_fs = VK_NULL_HANDLE;
     VkShaderModule interpolate_fs = VK_NULL_HANDLE;
     VkShaderModule copy_fs = VK_NULL_HANDLE;
+    VkShaderModule median_fs = VK_NULL_HANDLE;
     VkPipeline luma_pipeline = VK_NULL_HANDLE;
     VkPipeline search_pipeline = VK_NULL_HANDLE;
     VkPipeline interpolate_pipeline = VK_NULL_HANDLE;
     VkPipeline copy_pipeline = VK_NULL_HANDLE;
+    VkPipeline median_pipeline = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
 
     // The guest output size the targets below are for; 0 before the first frame.
@@ -654,6 +657,8 @@ class VulkanPresenter final : public Presenter {
     FrameGenTarget luma[2][kFrameGenLevels];
     // The vectors of each level, in guest pixels.
     FrameGenTarget vectors[kFrameGenLevels];
+    // The finest vectors after the 3x3 vector median, which the interpolation reads.
+    FrameGenTarget smoothed;
     std::shared_ptr<GuestOutputImage> output;
     VkFramebuffer output_framebuffer = VK_NULL_HANDLE;
     // [pyramid][level]: the level above as the source (level 0 reads the guest output from set 0).
@@ -661,6 +666,7 @@ class VulkanPresenter final : public Presenter {
     // [current pyramid][level]: both pyramids' level and the vectors of the level above.
     VkDescriptorSet search_sets[2][kFrameGenLevels] = {};
     VkDescriptorSet interpolate_set = VK_NULL_HANDLE;
+    VkDescriptorSet median_set = VK_NULL_HANDLE;
 
     // The guest output (GuestOutputProperties::sequence) each pyramid and the history hold, 0 = none.
     uint64_t luma_sequence[2] = {};
