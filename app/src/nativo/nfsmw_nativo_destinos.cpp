@@ -31,6 +31,7 @@
 #endif
 #include "nfsmw_esperas_tiron.h"
 #include "nfsmw_nativo_shaders.h"  // Samplers of the PS (nfsmw_nativo_diag_lectores_s)
+#include "nfsmw_shader_library.h"  // Shader::huella (present_frame_gen's velocity pass)
 #include "nfsmw_nativo_sincronizacion.h"
 #include "nfsmw_gpu_compatibilidad.h"
 #include "nfsmw_reflejo_demanda.h"  // road reflection only when it is read
@@ -1683,7 +1684,8 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if (!fh2_velocidad_activa_ || !p.registros) {
       return;
     }
-    const bool velocidad = p.ps && p.ps->huella == kFh2HuellaVelocidad;
+    // The library container's fingerprint (EntradaShader::huella is the microcode's, another hash).
+    const bool velocidad = p.ps && p.ps->shader && p.ps->shader->huella == kFh2HuellaVelocidad;
     if (fh2_velocidad_pendiente_ && !velocidad) {
       Fh2CopiarVelocidad();
     }
