@@ -108,6 +108,12 @@ void main() {
   vec4 a = Previous(previous_inside ? uv - o : uv);
   vec4 b = Current(current_inside ? uv + o : uv);
   vec4 middle = previous_inside && current_inside ? (a + b) * 0.5 : (current_inside ? b : a);
+  // A thin object (leaves, a pole, a sign's edge) whose vector is the background's: the three-tap mismatch can
+  // pass on the background around it, but its own two ends differ, and their average is the object half see-
+  // through, flickering against the solid real frames. Then the current frame's end alone: at worst slightly
+  // out of place, but whole.
+  vec3 ends = abs(a.rgb - b.rgb);
+  middle = mix(middle, b, smoothstep(0.12, 0.3, max(ends.r, max(ends.g, ends.b))));
   vec4 color = mix(middle, Current(uv), smoothstep(0.05, 0.15, best_mismatch));
   // The HUD: the guest output's alpha is its mask with FH2's native renderer (present_hdr's, which it also writes
   // for present_frame_gen; opaque elsewhere, so a frame without it is shown as it is). Where either frame has HUD,
