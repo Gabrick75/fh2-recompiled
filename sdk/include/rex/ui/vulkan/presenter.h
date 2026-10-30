@@ -96,6 +96,24 @@ class VulkanPresenter final : public Presenter {
   static constexpr VkImageLayout kGuestOutputInternalLayout =
       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+  /*
+   * present_frame_gen: the game's own motion for a guest frame, when the refresher has it (FH2's velocity pass,
+   * nfsmw_nativo_destinos.cpp). The image is in GENERAL layout and written on queue 0 before the refresh's
+   * work, so a later paint can sample it; the refresher keeps it alive for a few frames.
+   */
+  struct FrameGenMotion {
+    VkImage image = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    // Changes whenever `image` is a new image (descriptors are rewritten on a change).
+    uint64_t version = 0;
+    // The game's motionBlurParams1 that frame, to undo the blur curve the velocity is stored with.
+    float params[4] = {};
+    bool valid() const { return view != VK_NULL_HANDLE; }
+  };
+
   // The callback must use the graphics and compute queue 0 of the device.
   class VulkanGuestOutputRefreshContext final : public GuestOutputRefreshContext {
    public:
@@ -115,12 +133,16 @@ class VulkanPresenter final : public Presenter {
     uint64_t image_version() const { return image_version_; }
     // Whether a proper barrier must be done to acquire the image.
     bool image_ever_written_previously() const { return image_ever_written_previously_; }
+    // present_frame_gen: the game's motion for this frame, if the refresher has it.
+    void SetFrameGenMotion(const FrameGenMotion& motion) { motion_ = motion; }
+    const FrameGenMotion& frame_gen_motion() const { return motion_; }
 
    private:
     VkImage image_;
     VkImageView image_view_;
     uint64_t image_version_;
     bool image_ever_written_previously_;
+    FrameGenMotion motion_;
   };
 
   static std::unique_ptr<VulkanPresenter> Create(HostGpuLossCallback host_gpu_loss_callback,
@@ -246,6 +268,8 @@ class VulkanPresenter final : public Presenter {
     // whether the image has previously been written. If an image is active
     // after a refresh, it can be assumed that this is true.
     bool ever_successfully_refreshed = false;
+    // present_frame_gen: the game's motion the last refresh attached (VulkanGuestOutputRefreshContext).
+    FrameGenMotion motion;
 
     void SetToNewImage(const std::shared_ptr<GuestOutputImage>& new_image, uint64_t new_version) {
       image = new_image;
@@ -696,6 +720,11 @@ class VulkanPresenter final : public Presenter {
     VkDeviceMemory dump_memory = VK_NULL_HANDLE;
     uint32_t dump_width = 0;
     uint32_t dump_height = 0;
+    // The game's velocity copied with the three frames (4 bytes per texel), if the frame had it.
+    uint32_t dump_motion_width = 0;
+    uint32_t dump_motion_height = 0;
+    VkFormat dump_motion_format = VK_FORMAT_UNDEFINED;
+    float dump_motion_params[4] = {};
     bool dump_pending = false;
     uint64_t dump_submission = 0;
     uint32_t dumps = 0;
@@ -714,10 +743,12 @@ class VulkanPresenter final : public Presenter {
   // The frame between the history and the guest output `sequence`, into frame_gen_.output. False
   // (and nothing recorded) if there is no previous frame to start from.
   bool FrameGenRecordIntermediate(VkCommandBuffer command_buffer, VkDescriptorSet guest_output_set,
-                                  VkImage guest_output_image, uint64_t sequence);
+                                  VkImage guest_output_image, const FrameGenMotion& motion,
+                                  uint64_t sequence);
   // present_frame_gen_volcar_cada_s: records the copies of the three frames when one is due, and writes
   // out the previous one once its paint has completed.
-  void FrameGenDump(VkCommandBuffer command_buffer, VkImage guest_output_image);
+  void FrameGenDump(VkCommandBuffer command_buffer, VkImage guest_output_image,
+                    const FrameGenMotion& motion);
   // Keeps the guest output `sequence` as the history (and its pyramid), once per guest frame.
   void FrameGenRecordHistory(VkCommandBuffer command_buffer, VkDescriptorSet guest_output_set,
                              uint64_t sequence);

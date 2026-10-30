@@ -653,7 +653,8 @@ void VulkanPresenter::FrameGenRecordLuma(VkCommandBuffer command_buffer,
 
 bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
                                                  VkDescriptorSet guest_output_set,
-                                                 VkImage guest_output_image, uint64_t sequence) {
+                                                 VkImage guest_output_image,
+                                                 const FrameGenMotion& motion, uint64_t sequence) {
   const VulkanDevice::Functions& dfn = vulkan_device_->functions();
   FrameGen& fg = frame_gen_;
   // The previous frame: the history, and the pyramid made from it.
@@ -731,7 +732,7 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
                fg.interpolate_pipeline, fg.pipeline_layout, guest_output_set, fg.interpolate_set,
                &constants, sizeof(constants));
   fg.output_sequence = sequence;
-  FrameGenDump(command_buffer, guest_output_image);
+  FrameGenDump(command_buffer, guest_output_image, motion);
   if (fg.timestamps != VK_NULL_HANDLE) {
     dfn.vkCmdWriteTimestamp(command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, fg.timestamps,
                             slot * 2 + 1);
@@ -750,7 +751,8 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
   return true;
 }
 
-void VulkanPresenter::FrameGenDump(VkCommandBuffer command_buffer, VkImage guest_output_image) {
+void VulkanPresenter::FrameGenDump(VkCommandBuffer command_buffer, VkImage guest_output_image,
+                                   const FrameGenMotion& motion) {
   const VulkanDevice::Functions& dfn = vulkan_device_->functions();
   const VkDevice device = vulkan_device_->device();
   FrameGen& fg = frame_gen_;
@@ -787,8 +789,24 @@ void VulkanPresenter::FrameGenDump(VkCommandBuffer command_buffer, VkImage guest
           REXLOG_WARN("[presentador] frame gen: no se pudo escribir {}", path);
         }
       }
+      // The game's velocity as it is: a small header (size, VkFormat, motionBlurParams1), then 4 bytes per texel.
+      if (fg.dump_motion_width) {
+        char name[64];
+        std::snprintf(name, sizeof(name), "fg_%02u_velocidad.bin", fg.dumps);
+        const std::string path = dir.empty() ? std::string(name) : dir + "/" + name;
+        if (FILE* file = std::fopen(path.c_str(), "wb")) {
+          const uint32_t header[3] = {fg.dump_motion_width, fg.dump_motion_height,
+                                      uint32_t(fg.dump_motion_format)};
+          std::fwrite(header, sizeof(header), 1, file);
+          std::fwrite(fg.dump_motion_params, sizeof(fg.dump_motion_params), 1, file);
+          std::fwrite(static_cast<const uint8_t*>(mapping) + pixels * 4 * 3, 4,
+                      size_t(fg.dump_motion_width) * fg.dump_motion_height, file);
+          std::fclose(file);
+        }
+      }
       dfn.vkUnmapMemory(device, fg.dump_memory);
-      REXLOG_INFO("[presentador] frame gen: volcado {} (anterior, intermedio y actual)", fg.dumps);
+      REXLOG_INFO("[presentador] frame gen: volcado {} (anterior, intermedio y actual{})", fg.dumps,
+                  fg.dump_motion_width ? ", con la velocidad del juego" : "");
       ++fg.dumps;
     }
   }
@@ -802,7 +820,7 @@ void VulkanPresenter::FrameGenDump(VkCommandBuffer command_buffer, VkImage guest
     return;
   }
   if (fg.dump_buffer == VK_NULL_HANDLE &&
-      !util::CreateDedicatedAllocationBuffer(vulkan_device_, VkDeviceSize(fg.width) * fg.height * 4 * 3,
+      !util::CreateDedicatedAllocationBuffer(vulkan_device_, VkDeviceSize(fg.width) * fg.height * 4 * 4,
                                              VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                              util::MemoryPurpose::kReadback, fg.dump_buffer,
                                              fg.dump_memory)) {
@@ -813,6 +831,20 @@ void VulkanPresenter::FrameGenDump(VkCommandBuffer command_buffer, VkImage guest
   fg.last_dump = now;
   fg.dump_width = fg.width;
   fg.dump_height = fg.height;
+  // The velocity too, when it fits the space of a fourth guest-sized image and has 4 bytes per texel.
+  const bool with_motion = motion.valid() && uint64_t(motion.width) * motion.height <= uint64_t(fg.width) * fg.height &&
+                           (motion.format == VK_FORMAT_R8G8B8A8_UNORM || motion.format == VK_FORMAT_B8G8R8A8_UNORM ||
+                            motion.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32);
+  fg.dump_motion_width = with_motion ? motion.width : 0;
+  fg.dump_motion_height = with_motion ? motion.height : 0;
+  fg.dump_motion_format = motion.format;
+  for (uint32_t i = 0; i < 4; ++i) {
+    fg.dump_motion_params[i] = motion.params[i];
+  }
+  if (motion.valid() && !with_motion) {
+    REXLOG_WARN("[presentador] frame gen: la velocidad del juego ({}x{}, VkFormat {}) no entra en el volcado",
+                motion.width, motion.height, uint32_t(motion.format));
+  }
   const VkImage images[3] = {fg.history.image, fg.output->image(), guest_output_image};
   VkImageMemoryBarrier barriers[3];
   for (uint32_t i = 0; i < 3; ++i) {
@@ -839,6 +871,22 @@ void VulkanPresenter::FrameGenDump(VkCommandBuffer command_buffer, VkImage guest
     region.imageExtent = {fg.width, fg.height, 1};
     dfn.vkCmdCopyImageToBuffer(command_buffer, images[i], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                fg.dump_buffer, 1, &region);
+  }
+  if (with_motion) {
+    // In GENERAL, written by the refresher's earlier work on this queue.
+    VkMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    dfn.vkCmdPipelineBarrier(command_buffer,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+    VkBufferImageCopy region = {};
+    region.bufferOffset = VkDeviceSize(fg.width) * fg.height * 4 * 3;
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {motion.width, motion.height, 1};
+    dfn.vkCmdCopyImageToBuffer(command_buffer, motion.image, VK_IMAGE_LAYOUT_GENERAL, fg.dump_buffer, 1,
+                               &region);
   }
   // Back for the effects (fragment, compute for a temporal upscaler), and the copies for the host.
   for (VkImageMemoryBarrier& barrier : barriers) {

@@ -1817,6 +1817,7 @@ bool VulkanPresenter::RefreshGuestOutputImpl(
   if (refresher_succeeded) {
     image_instance.ever_successfully_refreshed = true;
   }
+  image_instance.motion = context.frame_gen_motion();
   // Even if the refresher has returned false, it still might have submitted
   // some commands referencing the image. It's better to put an excessive
   // signal and wait slightly longer, for nothing important, while shutting down
@@ -2731,6 +2732,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
   GuestOutputProperties guest_output_properties;
   GuestOutputPaintConfig guest_output_paint_config;
   std::shared_ptr<GuestOutputImage> guest_output_image;
+  FrameGenMotion guest_output_motion;  // present_frame_gen
   {
     uint32_t guest_output_mailbox_index;
     std::unique_lock<std::mutex> guest_output_consumer_lock(ConsumeGuestOutput(
@@ -2738,6 +2740,7 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
     if (guest_output_mailbox_index != UINT32_MAX) {
       assert_true(guest_output_images_[guest_output_mailbox_index].ever_successfully_refreshed);
       guest_output_image = guest_output_images_[guest_output_mailbox_index].image;
+      guest_output_motion = guest_output_images_[guest_output_mailbox_index].motion;
     }
     // Incremented the reference count of the guest output image - safe to leave
     // the consumer critical section now as everything here either will be using
@@ -2851,7 +2854,8 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
           intermediate_painted_ = true;
         } else if (paint_intermediate_ &&
                    FrameGenRecordIntermediate(draw_command_buffer, guest_output_set,
-                                              guest_output_image->image(), sequence)) {
+                                              guest_output_image->image(), guest_output_motion,
+                                              sequence)) {
           paint_frame_in_the_middle();
           intermediate_painted_ = true;
         } else {

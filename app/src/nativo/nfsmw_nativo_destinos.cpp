@@ -468,6 +468,9 @@ REXCVAR_DECLARE(int32_t, nfsmw_nativo_estadisticas_por_dibujo_s);
 // nfsmw_nativo_sombra_minimo only pays off with the single-sample PCF (defined in nfsmw_nativo_dibujos.cpp).
 REXCVAR_DECLARE(bool, nfsmw_nativo_pcf_barato);
 #if defined(FH2_RECOMP)
+REXCVAR_DECLARE(bool, present_frame_gen);  // sdk/src/ui/presenter.cpp
+#endif
+#if defined(FH2_RECOMP)
 // Clears outside a pass go to the multisample images too (defined in nfsmw_nativo_dibujos.cpp).
 REXCVAR_DECLARE(bool, fh2_nativo_msaa_persistente);
 #endif
@@ -1076,6 +1079,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if (fs_rampa_ != VK_NULL_HANDLE) dfn_.vkDestroyShaderModule(device_, fs_rampa_, nullptr);
 #if defined(FH2_RECOMP)
     Destruir(fh2_hdr_foto_);
+    for (Imagen& velocidad : fh2_velocidad_) {
+      Destruir(velocidad);
+    }
     if (fh2_hdr_pipeline_ != VK_NULL_HANDLE) dfn_.vkDestroyPipeline(device_, fh2_hdr_pipeline_, nullptr);
     if (fh2_hdr_fs_ != VK_NULL_HANDLE) dfn_.vkDestroyShaderModule(device_, fh2_hdr_fs_, nullptr);
     if (fh2_hdr_layout_pipeline_ != VK_NULL_HANDLE)
@@ -1656,6 +1662,113 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   }
 #endif
 
+#if defined(FH2_RECOMP)
+  /*
+   * present_frame_gen with the game's own motion.
+   *
+   * FH2's velocity pass (PS p_003929, the motion blur's input) reprojects every pixel with the camera's matrices or
+   * its car's (the stencil is the object id) and writes the motion shaped for the blur: xy the direction, scaled by
+   * a gain from motionBlurParams1 (pixel constant 125) and clamped, z its unclamped length. The presenter undoes
+   * that (vulkan_presenter_frame_gen.cpp), so the frame in the middle follows the real motion of each pixel instead
+   * of guessing it from the images.
+   *
+   * The render target is copied right after the velocity draw, at the first draw, copy or Swap that follows (the
+   * resolve that comes next may clear the EDRAM), into a rotation of kFh2RanurasVelocidad images: the presenter
+   * samples one up to a few frames later, on the same queue. Only while present_frame_gen is on.
+   */
+  void Fh2VelocidadAntesDeDibujar(const PeticionDibujo& p) {
+    if (fh2_velocidad_activa_ < 0) {
+      fh2_velocidad_activa_ = REXCVAR_GET(present_frame_gen) ? 1 : 0;
+    }
+    if (!fh2_velocidad_activa_ || !p.registros) {
+      return;
+    }
+    const bool velocidad = p.ps && p.ps->huella == kFh2HuellaVelocidad;
+    if (fh2_velocidad_pendiente_ && !velocidad) {
+      Fh2CopiarVelocidad();
+    }
+    if (!velocidad) {
+      return;
+    }
+    const uint32_t* r = p.registros;
+    fh2_velocidad_base_ = r[kDiagRegColorInfo] & 0xFFF;
+    fh2_velocidad_formato_ = (r[kDiagRegColorInfo] >> 16) & 0xF;
+    fh2_velocidad_superficie_ = r[kDiagRegSurfaceInfo];
+    // motionBlurParams1 = c125 of the pixel constants (0x4400-0x47FF, four words each).
+    std::memcpy(fh2_velocidad_parametros_, &r[0x4400 + 125 * 4], sizeof(fh2_velocidad_parametros_));
+    fh2_velocidad_pendiente_ = true;
+  }
+
+  void Fh2CopiarVelocidad() {
+    fh2_velocidad_pendiente_ = false;
+    if ((fh2_velocidad_superficie_ >> 16) & 0x3) {
+      return;  // MSAA: not the velocity target
+    }
+    Imagen* origen = ObtenerDestino(fh2_velocidad_base_, fh2_velocidad_formato_, fh2_velocidad_superficie_ & 0x3FFF);
+    if (!origen || origen->ms_imagen != VK_NULL_HANDLE || !Grabar()) {
+      return;
+    }
+    const uint32_t ranura = (fh2_velocidad_ranura_ + 1) % kFh2RanurasVelocidad;
+    Imagen& copia_imagen = fh2_velocidad_[ranura];
+    if (copia_imagen.imagen != VK_NULL_HANDLE &&
+        (copia_imagen.ancho != origen->ancho || copia_imagen.alto != origen->alto ||
+         copia_imagen.formato != origen->formato)) {
+      // Only when the render scale changes. The presenter rewrites its descriptor on a new version.
+      EsperarSalidas();
+      EsperarGpu();
+      for (Imagen& velocidad : fh2_velocidad_) {
+        Destruir(velocidad);
+      }
+    }
+    if (copia_imagen.imagen == VK_NULL_HANDLE) {
+      if (!Crear(copia_imagen, origen->ancho, origen->alto,
+                 VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                 origen->formato)) {
+        return;
+      }
+      ++fh2_velocidad_version_;
+      if (!fh2_velocidad_anotada_) {
+        fh2_velocidad_anotada_ = true;
+        REXLOG_INFO("[fh2 nativo] frame gen: velocidad del juego en la base {:03X}, {}x{}, VkFormat {}, "
+                    "motionBlurParams1 ({}, {}, {}, {})",
+                    fh2_velocidad_base_, origen->ancho, origen->alto, uint32_t(origen->formato),
+                    fh2_velocidad_parametros_[0], fh2_velocidad_parametros_[1], fh2_velocidad_parametros_[2],
+                    fh2_velocidad_parametros_[3]);
+      }
+    }
+    if (dibujos_) dibujos_->TerminarPase();
+    Preparar(*origen);
+    Preparar(copia_imagen);
+    // The velocity draw before the copy, and the presenter's earlier reads of this slot before overwriting it.
+    VkMemoryBarrier barrera{};
+    barrera.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrera.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrera.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    dfn_.vkCmdPipelineBarrier(comandos_trabajo_,
+                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrera, 0, nullptr, 0, nullptr);
+    VkImageCopy copia{};
+    copia.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copia.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copia.extent = {origen->ancho, origen->alto, 1};
+    MarcarGpu(kGpuCopias);
+    Fh2CopiarImagen(comandos_trabajo_, origen->imagen, VK_IMAGE_LAYOUT_GENERAL, copia_imagen.imagen,
+                    VK_IMAGE_LAYOUT_GENERAL, 1, &copia);
+    // The game's next writes to the target after the copy read it; the presenter samples the copy.
+    barrera.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+    barrera.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT |
+                            VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dfn_.vkCmdPipelineBarrier(comandos_trabajo_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT,
+                              0, 1, &barrera, 0, nullptr, 0, nullptr);
+    fh2_velocidad_ranura_ = ranura;
+    fh2_velocidad_lista_ = int32_t(ranura);
+    std::memcpy(fh2_velocidad_parametros_lista_, fh2_velocidad_parametros_, sizeof(fh2_velocidad_parametros_));
+  }
+#endif
+
   // Pipeline of the output pass with the fragment shader fs (and its specialization constants, if any), with
   // layout_pipeline_ unless another layout is given, writing the channels of mascara_escritura.
   VkPipeline CrearPipelineSalida(VkShaderModule fs, const VkSpecializationInfo* especial,
@@ -1792,6 +1905,11 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 #endif
 
   bool Copiar(const RegistrosCopia& reg) override {
+#if defined(FH2_RECOMP)
+    if (fh2_velocidad_pendiente_) {
+      Fh2CopiarVelocidad();  // present_frame_gen: before the resolve can clear it
+    }
+#endif
     // Draws since the previous copy: those of the render target being resolved now (rear-view mirror
     // diagnostic).
     const uint64_t dibujados = dibujos_ ? dibujos_->Dibujados() : 0;
@@ -2759,6 +2877,22 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     fh2_hdr_foto_intentada_ = false;
     fh2_hdr_base_escena_ = UINT32_MAX;
     fh2_hdr_mascara_activa_ = rex::ui::vulkan::GetHdrOutputState().hud_mask;
+    // present_frame_gen: this frame's velocity, if the game drew one.
+    if (fh2_velocidad_pendiente_) {
+      Fh2CopiarVelocidad();
+    }
+    VulkanPresenter::FrameGenMotion movimiento;
+    if (fh2_velocidad_lista_ >= 0) {
+      const Imagen& velocidad = fh2_velocidad_[size_t(fh2_velocidad_lista_)];
+      movimiento.image = velocidad.imagen;
+      movimiento.view = velocidad.vista;
+      movimiento.format = velocidad.formato;
+      movimiento.width = velocidad.ancho;
+      movimiento.height = velocidad.alto;
+      movimiento.version = fh2_velocidad_version_ * kFh2RanurasVelocidad + uint64_t(fh2_velocidad_lista_);
+      std::memcpy(movimiento.params, fh2_velocidad_parametros_lista_, sizeof(movimiento.params));
+    }
+    fh2_velocidad_lista_ = -1;
 #endif
     nfsmw::reflejo_demanda::AnotarSwap();  // nfsmw_reflejo_bajo_demanda
     // The per-draw diagnostic window opens here, on the PM4 ring thread, which is the one that records the
@@ -3063,6 +3197,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
           llamada = true;
           auto& contexto =
               static_cast<VulkanPresenter::VulkanGuestOutputRefreshContext&>(base_contexto);
+#if defined(FH2_RECOMP)
+          contexto.SetFrameGenMotion(movimiento);
+#endif
           pintado = PintarSalida(contexto, origen_frontal ? *origen_frontal : resuelta.imagen, w, h,
                                  origen_frontal != nullptr,  // nfsmw_nativo_frontal_perezoso
                                  foto_hud);
@@ -3739,6 +3876,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     if (peticion.registros) {
       Fh2HdrFotoAntesDelHud(peticion.registros);  // present_hdr's HUD mask
     }
+    Fh2VelocidadAntesDeDibujar(peticion);  // present_frame_gen
 #endif
     return dibujos_ && dibujos_->Dibujar(peticion);
   }
@@ -8139,6 +8277,20 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   VkShaderModule fh2_hdr_fs_ = VK_NULL_HANDLE;
   VkPipeline fh2_hdr_pipeline_ = VK_NULL_HANDLE;
   Imagen fh2_hdr_foto_{};                      // the scene before the HUD
+  // present_frame_gen: copies of the game's velocity target (Fh2CopiarVelocidad).
+  static constexpr uint32_t kFh2RanurasVelocidad = 4;
+  Imagen fh2_velocidad_[kFh2RanurasVelocidad]{};
+  uint32_t fh2_velocidad_ranura_ = 0;
+  int32_t fh2_velocidad_lista_ = -1;     // the slot copied this frame, -1 = none
+  uint64_t fh2_velocidad_version_ = 0;   // goes up whenever the slots are new images
+  int fh2_velocidad_activa_ = -1;        // present_frame_gen, read once
+  bool fh2_velocidad_pendiente_ = false;  // drawn, not copied yet
+  bool fh2_velocidad_anotada_ = false;
+  uint32_t fh2_velocidad_base_ = 0;
+  uint32_t fh2_velocidad_formato_ = 0;
+  uint32_t fh2_velocidad_superficie_ = 0;
+  float fh2_velocidad_parametros_[4] = {};
+  float fh2_velocidad_parametros_lista_[4] = {};
   bool fh2_hdr_mascara_activa_ = false;        // the presenter wants it (from the last Swap)
   uint32_t fh2_hdr_base_escena_ = UINT32_MAX;  // EDRAM base of this frame's last 2_10_10_10 draw
   bool fh2_hdr_foto_intentada_ = false;        // this frame

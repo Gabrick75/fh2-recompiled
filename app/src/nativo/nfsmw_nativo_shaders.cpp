@@ -405,7 +405,7 @@ static uint32_t ContarKills(const std::vector<uint32_t>& spirv) {
  * edited by hand: the road behind the car blurs and the car stays sharp. The constant is an OpConstant only this
  * module has in the whole library; it is replaced in place (same word count).
  */
-constexpr uint64_t kHuellaVelocidad = 0xDC5B04D673AAA96Cull;  // container of p_003929 (n3223)
+constexpr uint64_t kHuellaVelocidad = kFh2HuellaVelocidad;  // container of p_003929 (n3223)
 constexpr uint32_t kUmbralConsola = 0x3F008100u;
 constexpr uint32_t kUmbralPc = 0x3F000000u;  // 0.5
 

@@ -43,6 +43,12 @@ struct SamplerShader {
   bool mapa_sombras = false;
 };
 
+#if defined(FH2_RECOMP)
+// The fingerprint of FH2's velocity pass (PS n3223, p_003929): the motion blur's input, and present_frame_gen's
+// motion (nfsmw_nativo_destinos.cpp, Fh2VelocidadAntesDeDibujar).
+inline constexpr uint64_t kFh2HuellaVelocidad = 0xDC5B04D673AAA96Cull;
+#endif
+
 struct EntradaShader {
   const nfsmw::native::Shader* shader = nullptr;  // contenedor original y SPIR-V
   bool vertices = false;
