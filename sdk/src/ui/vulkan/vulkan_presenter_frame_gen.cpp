@@ -796,7 +796,13 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
   // The game's velocity, if this frame has it.
   const VkDescriptorSet motion_set = FrameGenMotionSet(motion);
   MotionConstants motion_constants = {};
-  if (motion.valid()) {
+  /*
+   * Only while the game's motion blur is on (motionBlurParams1.w, its strength, which FH2 moves between 0 and 1).
+   * Measured on S23 dumps: with w near 1 the decoded velocity warps the previous frame onto the current one
+   * (mean error 30 -> 12, 38 -> 16), with w at 0 it never does, though it is not zero (at 160 km/h too): the
+   * target then does not hold this frame's motion, and as a preferred candidate it bent trees and signs.
+   */
+  if (motion.valid() && motion.params[3] > 0.5f) {
     motion_constants.params[0] = motion.params[1];
     motion_constants.params[1] = motion.params[2];
     motion_constants.params[2] = motion.params[3];
