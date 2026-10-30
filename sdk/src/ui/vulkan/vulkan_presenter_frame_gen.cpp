@@ -831,12 +831,13 @@ void VulkanPresenter::FrameGenDump(VkCommandBuffer command_buffer, VkImage guest
   fg.last_dump = now;
   fg.dump_width = fg.width;
   fg.dump_height = fg.height;
-  // The velocity too, when it fits the space of a fourth guest-sized image and has 4 bytes per texel.
-  const bool with_motion = motion.valid() && uint64_t(motion.width) * motion.height <= uint64_t(fg.width) * fg.height &&
-                           (motion.format == VK_FORMAT_R8G8B8A8_UNORM || motion.format == VK_FORMAT_B8G8R8A8_UNORM ||
-                            motion.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32);
-  fg.dump_motion_width = with_motion ? motion.width : 0;
-  fg.dump_motion_height = with_motion ? motion.height : 0;
+  // The velocity too, its top-left corner the size of the guest output (FH2's target is an EDRAM image taller
+  // than the screen), when it has 4 bytes per texel.
+  const bool with_motion =
+      motion.valid() && (motion.format == VK_FORMAT_R8G8B8A8_UNORM || motion.format == VK_FORMAT_B8G8R8A8_UNORM ||
+                         motion.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32);
+  fg.dump_motion_width = with_motion ? std::min(motion.width, fg.width) : 0;
+  fg.dump_motion_height = with_motion ? std::min(motion.height, fg.height) : 0;
   fg.dump_motion_format = motion.format;
   for (uint32_t i = 0; i < 4; ++i) {
     fg.dump_motion_params[i] = motion.params[i];
@@ -884,7 +885,7 @@ void VulkanPresenter::FrameGenDump(VkCommandBuffer command_buffer, VkImage guest
     VkBufferImageCopy region = {};
     region.bufferOffset = VkDeviceSize(fg.width) * fg.height * 4 * 3;
     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    region.imageExtent = {motion.width, motion.height, 1};
+    region.imageExtent = {fg.dump_motion_width, fg.dump_motion_height, 1};
     dfn.vkCmdCopyImageToBuffer(command_buffer, motion.image, VK_IMAGE_LAYOUT_GENERAL, fg.dump_buffer, 1,
                                &region);
   }
