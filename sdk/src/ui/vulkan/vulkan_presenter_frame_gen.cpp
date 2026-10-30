@@ -26,6 +26,7 @@
  */
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -68,6 +69,17 @@ REXCVAR_DEFINE_INT32(present_frame_gen_volcar_cada_s, 0, "UI/Presenter",
 REXCVAR_DEFINE_STRING(present_frame_gen_volcar_dir, "", "UI/Presenter",
                       "Depuracion de present_frame_gen: carpeta de los volcados (vacia = la del ejecutable)");
 
+/*
+ * The game's velocity (FH2's p_003929), decoded, in guest pixels: the motion the shader computes is in the units
+ * of its screen position, measured against the real motion of the dumped frames (the previous frame warped by it
+ * against the current one) at about -1.25 of the guest output's size. A candidate, not the answer: the search and
+ * the interpolation still compare it with the others, so a scale that is somewhat off only costs some matches.
+ */
+REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_x, -1.25, "UI/Presenter",
+                      "present_frame_gen: pixeles por unidad de la velocidad del juego, en x (por el ancho)");
+REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_y, -1.25, "UI/Presenter",
+                      "present_frame_gen: pixeles por unidad de la velocidad del juego, en y (por el alto)");
+
 REXCVAR_DEFINE_BOOL(present_frame_gen_capturar_intermedio, false, "UI/Presenter",
                     "Depuracion de present_frame_gen: las capturas guardan el ultimo fotograma intermedio "
                     "en vez del real");
@@ -93,12 +105,22 @@ struct LumaConstants {
   float dest_texel[2];
   int32_t from_guest_output;
 };
+// The game's velocity (frame_gen_search and frame_gen_interpolate's GameVector): motionBlurParams1's y, z and w and
+// whether there is any; the part of the texture the velocity covers (in texture coordinates); the guest pixels per
+// unit of the decoded motion.
+struct MotionConstants {
+  float params[4];
+  float region[2];
+  float scale[2];
+};
 struct SearchConstants {
   float level_texel[2];
   float parent_texel[2];
   float guest_pixels_per_texel;
   float refine_step;
   int32_t search_range;
+  float padding;
+  MotionConstants motion;
 };
 struct MedianConstants {
   float vector_texel[2];
@@ -106,8 +128,11 @@ struct MedianConstants {
 struct InterpolateConstants {
   float guest_texel[2];
   float vector_size[2];
+  MotionConstants motion;
 };
-constexpr uint32_t kFragmentConstantsSize = 32;
+constexpr uint32_t kFragmentConstantsSize = 64;
+static_assert(offsetof(SearchConstants, motion) == 32);
+static_assert(offsetof(InterpolateConstants, motion) == 16);
 static_assert(sizeof(LumaConstants) <= kFragmentConstantsSize);
 static_assert(sizeof(SearchConstants) <= kFragmentConstantsSize);
 static_assert(sizeof(InterpolateConstants) <= kFragmentConstantsSize);
@@ -139,6 +164,30 @@ std::shared_ptr<VulkanPresenter::GuestOutputImage> VulkanPresenter::FrameGenCapt
 }
 
 int32_t VulkanPresenter::FrameGenDebugMode() const { return REXCVAR_GET(present_frame_gen_depurar); }
+
+VkDescriptorSet VulkanPresenter::FrameGenMotionSet(const FrameGenMotion& motion) {
+  FrameGen& fg = frame_gen_;
+  if (!motion.valid()) {
+    return fg.motion_sets[FrameGen::kMotionSlots];
+  }
+  // The refresher's slot (its versions are generation * 4 + slot): a slot's image only changes when the refresher
+  // recreates its rotation, after waiting for its GPU work.
+  const uint32_t slot = uint32_t(motion.version % FrameGen::kMotionSlots);
+  if (fg.motion_set_views[slot] != motion.view) {
+    const VulkanDevice::Functions& dfn = vulkan_device_->functions();
+    VkDescriptorImageInfo info = {VK_NULL_HANDLE, motion.view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet write = {};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = fg.motion_sets[slot];
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    write.pImageInfo = &info;
+    dfn.vkUpdateDescriptorSets(vulkan_device_->device(), 1, &write, 0, nullptr);
+    fg.motion_set_views[slot] = motion.view;
+  }
+  return fg.motion_sets[slot];
+}
 
 bool VulkanPresenter::FrameGenInitialize() {
   if (frame_gen_.initialized || frame_gen_.failed) {
@@ -228,9 +277,29 @@ bool VulkanPresenter::FrameGenInitialize() {
     return fail("el layout de descriptores");
   }
 
+  // Set 2: the game's velocity and a nearest sampler.
+  VkDescriptorSetLayoutBinding motion_bindings[2] = {};
+  motion_bindings[0].binding = 0;
+  motion_bindings[0].descriptorCount = 1;
+  motion_bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  motion_bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+  motion_bindings[1].binding = 1;
+  motion_bindings[1].descriptorCount = 1;
+  motion_bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  motion_bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+  motion_bindings[1].pImmutableSamplers = &nearest_sampler;
+  VkDescriptorSetLayoutCreateInfo motion_layout_info = {};
+  motion_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  motion_layout_info.bindingCount = 2;
+  motion_layout_info.pBindings = motion_bindings;
+  if (dfn.vkCreateDescriptorSetLayout(device, &motion_layout_info, nullptr, &fg.motion_set_layout) !=
+      VK_SUCCESS) {
+    return fail("el layout de la velocidad");
+  }
+
   // Set 0 is the guest output's paint descriptor set as it is.
-  const VkDescriptorSetLayout set_layouts[2] = {guest_output_paint_image_descriptor_set_layout_,
-                                                fg.set_layout};
+  const VkDescriptorSetLayout set_layouts[3] = {guest_output_paint_image_descriptor_set_layout_,
+                                                fg.set_layout, fg.motion_set_layout};
   VkPushConstantRange push_constant_ranges[2] = {};
   push_constant_ranges[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
   push_constant_ranges[0].size = sizeof(GuestOutputPaintRectangleConstants);
@@ -239,7 +308,7 @@ bool VulkanPresenter::FrameGenInitialize() {
   push_constant_ranges[1].size = kFragmentConstantsSize;
   VkPipelineLayoutCreateInfo pipeline_layout_info = {};
   pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  pipeline_layout_info.setLayoutCount = 2;
+  pipeline_layout_info.setLayoutCount = 3;
   pipeline_layout_info.pSetLayouts = set_layouts;
   pipeline_layout_info.pushConstantRangeCount = 2;
   pipeline_layout_info.pPushConstantRanges = push_constant_ranges;
@@ -283,11 +352,13 @@ bool VulkanPresenter::FrameGenInitialize() {
   }
 
   constexpr uint32_t kSetCount = 2 * kFrameGenLevels * 2 + 2;
-  VkDescriptorPoolSize pool_sizes[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kSetCount * 3},
-                                        {VK_DESCRIPTOR_TYPE_SAMPLER, kSetCount * 2}};
+  constexpr uint32_t kMotionSetCount = FrameGen::kMotionSlots + 1;
+  VkDescriptorPoolSize pool_sizes[2] = {
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kSetCount * 3 + kMotionSetCount},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, kSetCount * 2 + kMotionSetCount}};
   VkDescriptorPoolCreateInfo pool_info = {};
   pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  pool_info.maxSets = kSetCount;
+  pool_info.maxSets = kSetCount + kMotionSetCount;
   pool_info.poolSizeCount = 2;
   pool_info.pPoolSizes = pool_sizes;
   if (dfn.vkCreateDescriptorPool(device, &pool_info, nullptr, &fg.descriptor_pool) != VK_SUCCESS) {
@@ -336,6 +407,17 @@ bool VulkanPresenter::FrameGenInitialize() {
         fg.timestamps = VK_NULL_HANDLE;
       }
       fg.timestamp_period_ns = properties.limits.timestampPeriod;
+    }
+  }
+
+  for (VkDescriptorSet& set : fg.motion_sets) {
+    VkDescriptorSetAllocateInfo allocate_info = {};
+    allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocate_info.descriptorPool = fg.descriptor_pool;
+    allocate_info.descriptorSetCount = 1;
+    allocate_info.pSetLayouts = &fg.motion_set_layout;
+    if (dfn.vkAllocateDescriptorSets(device, &allocate_info, &set) != VK_SUCCESS) {
+      return fail("los descriptores de la velocidad");
     }
   }
 
@@ -404,6 +486,10 @@ void VulkanPresenter::FrameGenShutdown() {
   util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device, fg.luma_fs);
   util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device, fg.pipeline_layout);
   util::DestroyAndNullHandle(dfn.vkDestroyDescriptorSetLayout, device, fg.set_layout);
+  util::DestroyAndNullHandle(dfn.vkDestroyDescriptorSetLayout, device, fg.motion_set_layout);
+  for (VkImageView& view : fg.motion_set_views) {
+    view = VK_NULL_HANDLE;
+  }
   util::DestroyAndNullHandle(dfn.vkDestroyRenderPass, device, fg.color_pass);
   util::DestroyAndNullHandle(dfn.vkDestroyRenderPass, device, fg.vector_pass);
   util::DestroyAndNullHandle(dfn.vkDestroyRenderPass, device, fg.luma_pass);
@@ -539,6 +625,18 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
     }
   }
   write_set(fg.median_set, fg.vectors[0], fg.vectors[0], fg.vectors[0]);
+  {
+    // The set for frames without the game's velocity: any image, never read (the shaders check params.w).
+    VkDescriptorImageInfo info = {VK_NULL_HANDLE, fg.luma[0][0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write = {};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = fg.motion_sets[FrameGen::kMotionSlots];
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    write.pImageInfo = &info;
+    dfn.vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+  }
   write_set(fg.interpolate_set, fg.history, fg.history, fg.smoothed);
   // The frame in the middle as a guest output image for the effects, in its own reference slot.
   VkDescriptorImageInfo output_info = {VK_NULL_HANDLE, fg.output->view(),
@@ -597,8 +695,8 @@ namespace {
 void FrameGenPass(const VulkanDevice::Functions& dfn, VkCommandBuffer command_buffer,
                   VkRenderPass render_pass, VkFramebuffer framebuffer, uint32_t width,
                   uint32_t height, VkPipeline pipeline, VkPipelineLayout pipeline_layout,
-                  VkDescriptorSet set_0, VkDescriptorSet set_1, const void* constants,
-                  uint32_t constants_size) {
+                  VkDescriptorSet set_0, VkDescriptorSet set_1, VkDescriptorSet set_2,
+                  const void* constants, uint32_t constants_size) {
   VkRenderPassBeginInfo begin_info = {};
   begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
   begin_info.renderPass = render_pass;
@@ -610,8 +708,8 @@ void FrameGenPass(const VulkanDevice::Functions& dfn, VkCommandBuffer command_bu
   const VkRect2D scissor = {{0, 0}, {width, height}};
   dfn.vkCmdSetScissor(command_buffer, 0, 1, &scissor);
   dfn.vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-  const VkDescriptorSet sets[2] = {set_0, set_1};
-  dfn.vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 2,
+  const VkDescriptorSet sets[3] = {set_0, set_1, set_2};
+  dfn.vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 3,
                               sets, 0, nullptr);
   // The whole target, in NDC.
   const float rectangle[4] = {-1.0f, -1.0f, 2.0f, 2.0f};
@@ -647,7 +745,7 @@ void VulkanPresenter::FrameGenRecordLuma(VkCommandBuffer command_buffer,
     constants.from_guest_output = level == 0;
     FrameGenPass(dfn, command_buffer, fg.luma_pass, target.framebuffer, target.width, target.height,
                  fg.luma_pipeline, fg.pipeline_layout, guest_output_set, fg.luma_sets[pyramid][level],
-                 &constants, sizeof(constants));
+                 fg.motion_sets[FrameGen::kMotionSlots], &constants, sizeof(constants));
   }
 }
 
@@ -695,10 +793,27 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
     fg.luma_sequence[current] = sequence;
   }
 
+  // The game's velocity, if this frame has it.
+  const VkDescriptorSet motion_set = FrameGenMotionSet(motion);
+  MotionConstants motion_constants = {};
+  if (motion.valid()) {
+    motion_constants.params[0] = motion.params[1];
+    motion_constants.params[1] = motion.params[2];
+    motion_constants.params[2] = motion.params[3];
+    motion_constants.params[3] = 1.0f;
+    // FH2 draws it at half the guest output's size, in the top-left corner of a larger target.
+    motion_constants.region[0] = float(fg.width) * 0.5f / float(motion.width);
+    motion_constants.region[1] = float(fg.height) * 0.5f / float(motion.height);
+    motion_constants.scale[0] = float(REXCVAR_GET(present_frame_gen_escala_movimiento_x)) * float(fg.width);
+    motion_constants.scale[1] = float(REXCVAR_GET(present_frame_gen_escala_movimiento_y)) * float(fg.height);
+    ++fg.with_motion;
+  }
+
   // The search, from the coarsest level down.
   for (uint32_t level = kFrameGenLevels; level-- > 0;) {
     const FrameGenTarget& target = fg.vectors[level];
     SearchConstants constants = {};
+    constants.motion = motion_constants;
     constants.level_texel[0] = 1.0f / float(target.width);
     constants.level_texel[1] = 1.0f / float(target.height);
     constants.guest_pixels_per_texel = float(fg.width) / float(target.width);
@@ -712,7 +827,7 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
     }
     FrameGenPass(dfn, command_buffer, fg.vector_pass, target.framebuffer, target.width,
                  target.height, fg.search_pipeline, fg.pipeline_layout, guest_output_set,
-                 fg.search_sets[current][level], &constants, sizeof(constants));
+                 fg.search_sets[current][level], motion_set, &constants, sizeof(constants));
   }
 
   // The vector median of the finest level.
@@ -721,16 +836,18 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
   median_constants.vector_texel[1] = 1.0f / float(fg.smoothed.height);
   FrameGenPass(dfn, command_buffer, fg.vector_pass, fg.smoothed.framebuffer, fg.smoothed.width,
                fg.smoothed.height, fg.median_pipeline, fg.pipeline_layout, guest_output_set,
-               fg.median_set, &median_constants, sizeof(median_constants));
+               fg.median_set, fg.motion_sets[FrameGen::kMotionSlots], &median_constants,
+               sizeof(median_constants));
 
   InterpolateConstants constants;
+  constants.motion = motion_constants;
   constants.guest_texel[0] = 1.0f / float(fg.width);
   constants.guest_texel[1] = 1.0f / float(fg.height);
   constants.vector_size[0] = float(fg.smoothed.width);
   constants.vector_size[1] = float(fg.smoothed.height);
   FrameGenPass(dfn, command_buffer, fg.color_pass, fg.output_framebuffer, fg.width, fg.height,
                fg.interpolate_pipeline, fg.pipeline_layout, guest_output_set, fg.interpolate_set,
-               &constants, sizeof(constants));
+               motion_set, &constants, sizeof(constants));
   fg.output_sequence = sequence;
   FrameGenDump(command_buffer, guest_output_image, motion);
   if (fg.timestamps != VK_NULL_HANDLE) {
@@ -741,10 +858,11 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
   // Every ~30 s at 60 on the screen.
   if (++fg.intermediates % 900 == 0) {
     REXLOG_INFO(
-        "[presentador] frame gen: {} fotogramas intermedios, {} sin fotograma anterior; GPU {:.2f} ms "
-        "por intermedio ({} medidos)",
-        fg.intermediates, fg.skipped, fg.gpu_ms_count ? fg.gpu_ms_sum / double(fg.gpu_ms_count) : 0.0,
-        fg.gpu_ms_count);
+        "[presentador] frame gen: {} fotogramas intermedios, {} sin fotograma anterior, {} de los ultimos 900 "
+        "con la velocidad del juego; GPU {:.2f} ms por intermedio ({} medidos)",
+        fg.intermediates, fg.skipped, fg.with_motion,
+        fg.gpu_ms_count ? fg.gpu_ms_sum / double(fg.gpu_ms_count) : 0.0, fg.gpu_ms_count);
+    fg.with_motion = 0;
     fg.gpu_ms_sum = 0.0;
     fg.gpu_ms_count = 0;
   }
@@ -927,8 +1045,8 @@ void VulkanPresenter::FrameGenRecordHistory(VkCommandBuffer command_buffer,
   }
   // (Set 1 is unused; any but the interpolation's, which holds the history.)
   FrameGenPass(dfn, command_buffer, fg.color_pass, fg.history.framebuffer, fg.width, fg.height,
-               fg.copy_pipeline, fg.pipeline_layout, guest_output_set, fg.luma_sets[0][0], nullptr,
-               0);
+               fg.copy_pipeline, fg.pipeline_layout, guest_output_set, fg.luma_sets[0][0],
+               fg.motion_sets[FrameGen::kMotionSlots], nullptr, 0);
   fg.history_sequence = sequence;
 }
 

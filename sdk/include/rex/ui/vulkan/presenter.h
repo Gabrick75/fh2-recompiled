@@ -692,6 +692,12 @@ class VulkanPresenter final : public Presenter {
     VkDescriptorSet search_sets[2][kFrameGenLevels] = {};
     VkDescriptorSet interpolate_set = VK_NULL_HANDLE;
     VkDescriptorSet median_set = VK_NULL_HANDLE;
+    // Set 2: the game's velocity (FrameGenMotion), one per slot of the refresher's rotation (version % 4, the
+    // set rewritten when that slot's image changes), and the last one for frames without it.
+    static constexpr uint32_t kMotionSlots = 4;
+    VkDescriptorSetLayout motion_set_layout = VK_NULL_HANDLE;
+    VkDescriptorSet motion_sets[kMotionSlots + 1] = {};
+    VkImageView motion_set_views[kMotionSlots] = {};
 
     // The guest output (GuestOutputProperties::sequence) each pyramid and the history hold, 0 = none.
     uint64_t luma_sequence[2] = {};
@@ -702,6 +708,7 @@ class VulkanPresenter final : public Presenter {
     // For the log.
     uint64_t intermediates = 0;
     uint64_t skipped = 0;
+    uint64_t with_motion = 0;
     // GPU time of each frame in the middle, from the pyramid to the interpolation: two timestamps per slot,
     // a slot read back kTimestampSlots frames in the middle later (by then its paint has completed:
     // PaintAndPresentImpl awaits all but the last kSubmissionCount paints). No pool where the queue has no
@@ -753,6 +760,8 @@ class VulkanPresenter final : public Presenter {
   void FrameGenRecordHistory(VkCommandBuffer command_buffer, VkDescriptorSet guest_output_set,
                              uint64_t sequence);
   bool IsFrameGenAvailable() const override;
+  // The set 2 for this frame's game velocity (the empty one without it).
+  VkDescriptorSet FrameGenMotionSet(const FrameGenMotion& motion);
   // For CaptureGuestOutput: the frame in the middle when present_frame_gen_capturar_intermedio asks for it
   // and one has been made, else null.
   std::shared_ptr<GuestOutputImage> FrameGenCaptureImage() const;

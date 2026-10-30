@@ -15,6 +15,9 @@ layout(push_constant) uniform FrameGenInterpolateConstants {
   // After the rectangle constants of the vertex shader.
   layout(offset = 16) vec2 guest_texel;  // 1 / the guest output size
   vec2 vector_size;                      // the vector field's size (a quarter of the guest output)
+  vec4 motion_params;                    // motionBlurParams1's y, z, w, and 1 if there is velocity (GameVector)
+  vec2 motion_region;
+  vec2 motion_scale;
 } constants;
 
 layout(set = 0, binding = 0) uniform texture2D current_frame;
@@ -25,6 +28,33 @@ layout(set = 1, binding = 3) uniform sampler linear_sampler;
 layout(set = 1, binding = 4) uniform sampler nearest_sampler;
 
 layout(location = 0) out vec4 color_out;
+
+// The game's velocity (FH2's p_003929, nfsmw_nativo_destinos.cpp): drawn at half the guest output's size in the
+// corner of a larger target, upside down, as the motion blur stores it: xy the direction (the blur vector, clamped,
+// times 5 around 0.498), z the unclamped length times the blur gain g(L) = 1 + w / (1 + (L z)^y) of
+// motionBlurParams1. Undone here into the half vector d of this file: the pixel's content moves by 2d from the
+// previous frame to the current one. Zero where there is no velocity this frame (params.w = 0).
+layout(set = 2, binding = 0) uniform texture2D game_velocity;
+layout(set = 2, binding = 1) uniform sampler game_velocity_sampler;
+
+vec2 GameVector(vec2 uv) {
+  if (constants.motion_params.w == 0.0) {
+    return vec2(0.0);
+  }
+  vec2 tc = vec2(uv.x, 1.0 - uv.y) * constants.motion_region;
+  vec4 v = textureLod(sampler2D(game_velocity, game_velocity_sampler), tc, 0.0);
+  vec2 s = (v.xy - 0.49803922) / 5.0;
+  float py = constants.motion_params.x, pz = constants.motion_params.y, pw = constants.motion_params.z;
+  float L = v.z / (1.0 + pw);
+  for (int i = 0; i < 8; ++i) {
+    L = v.z / (1.0 + pw / (1.0 + pow(max(L * pz, 0.0), py)));
+  }
+  float n = length(s);
+  vec2 blur = n > 1e-5 ? s * (L / n) : vec2(0.0);
+  // The shader's motion is previous minus current position, with x negated for the blur.
+  vec2 previous_minus_current = vec2(-blur.x, blur.y);
+  return -0.5 * previous_minus_current * constants.motion_scale;
+}
 
 vec4 Previous(vec2 uv) { return textureLod(sampler2D(previous_frame, linear_sampler), uv, 0.0); }
 vec4 Current(vec2 uv) { return textureLod(sampler2D(current_frame, current_sampler), uv, 0.0); }
@@ -56,16 +86,21 @@ void main() {
       textureLod(sampler2D(vectors, nearest_sampler), (base + vec2(0.0, 1.0)) * vector_texel, 0.0).rg,
       textureLod(sampler2D(vectors, nearest_sampler), (base + vec2(1.0, 1.0)) * vector_texel, 0.0).rg,
       vec2(0.0));
+  // The game's motion of this pixel: the velocity is stored at current-frame positions, so it is looked up again
+  // where the pixel lands in the current frame.
+  vec2 game = GameVector(uv);
+  game = GameVector(uv + game * constants.guest_texel);
   vec2 best = vec2(0.0);
   float best_score = 1e9, best_mismatch = 1e9;
-  for (int i = 0; i < 6; ++i) {
-    float m = Mismatch(uv, candidates[i]);
-    // The smooth field is preferred: it does not shimmer from one pixel to the next.
-    float score = m * (i == 0 ? 0.7 : 1.0);
+  for (int i = 0; i < (constants.motion_params.w != 0.0 ? 7 : 6); ++i) {
+    vec2 candidate = i < 6 ? candidates[i] : game;
+    float m = Mismatch(uv, candidate);
+    // The smooth field is preferred: it does not shimmer from one pixel to the next. The game's motion more.
+    float score = m * (i == 0 ? 0.7 : (i == 6 ? 0.6 : 1.0));
     if (score < best_score) {
       best_score = score;
       best_mismatch = m;
-      best = candidates[i];
+      best = candidate;
     }
   }
   vec2 o = best * constants.guest_texel;
