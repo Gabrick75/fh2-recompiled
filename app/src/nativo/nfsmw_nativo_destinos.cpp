@@ -2878,7 +2878,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     fh2_hdr_foto_lista_ = false;
     fh2_hdr_foto_intentada_ = false;
     fh2_hdr_base_escena_ = UINT32_MAX;
-    fh2_hdr_mascara_activa_ = rex::ui::vulkan::GetHdrOutputState().hud_mask;
+    // present_frame_gen uses the mask too: the HUD of the frame in the middle is the current frame's, not
+    // interpolated (the game's velocity is the scene's under it, and the minimap turns instead of moving).
+    fh2_hdr_mascara_activa_ = rex::ui::vulkan::GetHdrOutputState().hud_mask || REXCVAR_GET(present_frame_gen);
     // present_frame_gen: this frame's velocity, if the game drew one.
     if (fh2_velocidad_pendiente_) {
       Fh2CopiarVelocidad();

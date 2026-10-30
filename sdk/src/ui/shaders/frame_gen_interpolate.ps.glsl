@@ -109,7 +109,13 @@ void main() {
   vec4 b = Current(current_inside ? uv + o : uv);
   vec4 middle = previous_inside && current_inside ? (a + b) * 0.5 : (current_inside ? b : a);
   vec4 color = mix(middle, Current(uv), smoothstep(0.05, 0.15, best_mismatch));
-  // The HUD coverage (present_hdr's mask) of either frame.
-  color.a = max(a.a, b.a);
+  // The HUD: the guest output's alpha is its mask with FH2's native renderer (present_hdr's, which it also writes
+  // for present_frame_gen; opaque elsewhere, so a frame without it is shown as it is). Where either frame has HUD,
+  // the current frame unwarped: the HUD updates at the game's rate but stays whole, where the scene's motion
+  // under it (or a minimap that turns) would bend it.
+  vec4 current_here = Current(uv);
+  float hud = max(current_here.a, Previous(uv).a);
+  color = mix(color, current_here, step(0.5, hud));
+  color.a = max(hud, max(a.a, b.a));
   color_out = color;
 }
