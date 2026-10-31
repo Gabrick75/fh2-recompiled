@@ -108,6 +108,20 @@ void main() {
       best = candidate;
     }
   }
+  /*
+   * Mode 2 (frame_gen_motion.ps.glsl): the motion computed from the game's depth and matrices is exact for the scene,
+   * so it decides alone. Letting the colors choose is what made thin things vanish: for a pole or a branch that moves,
+   * the background's vector matches too (both of its ends land on the sky) and won. The motion is the current
+   * frame's, so it is looked up where the pixel lands in the current frame, twice to settle.
+   */
+  bool authoritative = constants.motion_params.w != 0.0 && constants.motion_params.x < 0.0 &&
+                       constants.motion_params.y > 0.5;  // present_frame_gen_movimiento_autoritario
+  if (authoritative) {
+    best = GameVector(uv);
+    best = GameVector(uv + best * constants.guest_texel);
+    best = GameVector(uv + best * constants.guest_texel);
+    best_mismatch = 0.0;
+  }
   vec2 o = best * constants.guest_texel;
   bool previous_inside = Inside(uv - o), current_inside = Inside(uv + o);
   vec4 a = Previous(previous_inside ? uv - o : uv);
@@ -122,8 +136,16 @@ void main() {
    * Either way, the previous frame unwarped, which is what the screen already shows.
    */
   vec3 ends = abs(a.rgb - b.rgb);
-  float doubt = max(smoothstep(0.03, 0.08, best_mismatch), smoothstep(0.08, 0.2, max(ends.r, max(ends.g, ends.b))));
-  vec4 color = mix(middle, Previous(uv), doubt);
+  float ends_max = max(ends.r, max(ends.g, ends.b));
+  vec4 color;
+  if (authoritative) {
+    // With the right vector, ends that differ are something appearing or disappearing behind an object (or light
+    // changing): the current frame's end alone, along the motion, instead of a see-through mix.
+    color = mix(middle, b, smoothstep(0.1, 0.25, ends_max));
+  } else {
+    float doubt = max(smoothstep(0.03, 0.08, best_mismatch), smoothstep(0.08, 0.2, ends_max));
+    color = mix(middle, Previous(uv), doubt);
+  }
   /*
    * Glowing particles (sparks, fireflies, lights in the dark): small bright points that land somewhere else every
    * frame, so no vector follows them and the average of the two ends drops them. The screen recording of the S23

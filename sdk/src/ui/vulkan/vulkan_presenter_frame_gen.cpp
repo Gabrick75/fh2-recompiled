@@ -81,6 +81,11 @@ REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_x, -1.25, "UI/Presente
 REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_y, -1.25, "UI/Presenter",
                       "present_frame_gen: pixeles por unidad de la velocidad del juego, en y (por el alto)");
 
+// Mode 2's computed motion decides alone where it exists (frame_gen_interpolate.ps.glsl); off, it is only the
+// preferred candidate, as the decoded velocity was.
+REXCVAR_DEFINE_BOOL(present_frame_gen_movimiento_autoritario, true, "UI/Presenter",
+                    "present_frame_gen: el movimiento calculado de la profundidad del juego decide solo donde existe");
+
 REXCVAR_DEFINE_BOOL(present_frame_gen_capturar_intermedio, false, "UI/Presenter",
                     "Depuracion de present_frame_gen: las capturas guardan el ultimo fotograma intermedio "
                     "en vez del real");
@@ -671,9 +676,8 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
   }
   created = created && create_target(fg.smoothed, LevelSize(width, 0), LevelSize(height, 0),
                                      kVectorFormat, fg.vector_pass);
-  // Mode 2's motion, at half the guest output's size like the game's velocity.
-  created = created && create_target(fg.game_motion, std::max(width / 2, 1u), std::max(height / 2, 1u),
-                                     kVectorFormat, fg.vector_pass);
+  // Mode 2's motion, at the guest output's size (thin things need every pixel).
+  created = created && create_target(fg.game_motion, width, height, kVectorFormat, fg.vector_pass);
   if (created) {
     std::unique_ptr<GuestOutputImage> output = GuestOutputImage::Create(vulkan_device_, width, height);
     created = output != nullptr;
@@ -950,6 +954,7 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
                  fg.luma_sets[0][0], fg.depth_sets[slot], &game_constants, sizeof(game_constants));
     motion_set = fg.game_motion_set;
     motion_constants.params[0] = -1.0f;  // GameVector reads the computed motion as it is
+    motion_constants.params[1] = REXCVAR_GET(present_frame_gen_movimiento_autoritario) ? 1.0f : 0.0f;
     motion_constants.params[3] = 1.0f;
     ++fg.with_depth;
   }
@@ -972,8 +977,9 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
     ++fg.with_motion;
   }
 
-  // The search, from the coarsest level down.
-  for (uint32_t level = kFrameGenLevels; level-- > 0;) {
+  // The search, from the coarsest level down: only without mode 2's motion, which the interpolation then follows
+  // alone (the luma pyramid is still made, for the next frame's search if it has no motion).
+  for (uint32_t level = kFrameGenLevels; !computed_motion && level-- > 0;) {
     const FrameGenTarget& target = fg.vectors[level];
     SearchConstants constants = {};
     constants.motion = motion_constants;
@@ -994,13 +1000,15 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
   }
 
   // The vector median of the finest level.
-  MedianConstants median_constants;
-  median_constants.vector_texel[0] = 1.0f / float(fg.smoothed.width);
-  median_constants.vector_texel[1] = 1.0f / float(fg.smoothed.height);
-  FrameGenPass(dfn, command_buffer, fg.vector_pass, fg.smoothed.framebuffer, fg.smoothed.width,
-               fg.smoothed.height, fg.median_pipeline, fg.pipeline_layout, guest_output_set,
-               fg.median_set, fg.motion_sets[FrameGen::kMotionSlots], &median_constants,
-               sizeof(median_constants));
+  if (!computed_motion) {
+    MedianConstants median_constants;
+    median_constants.vector_texel[0] = 1.0f / float(fg.smoothed.width);
+    median_constants.vector_texel[1] = 1.0f / float(fg.smoothed.height);
+    FrameGenPass(dfn, command_buffer, fg.vector_pass, fg.smoothed.framebuffer, fg.smoothed.width,
+                 fg.smoothed.height, fg.median_pipeline, fg.pipeline_layout, guest_output_set,
+                 fg.median_set, fg.motion_sets[FrameGen::kMotionSlots], &median_constants,
+                 sizeof(median_constants));
+  }
 
   InterpolateConstants constants;
   constants.motion = motion_constants;
@@ -1116,22 +1124,27 @@ void VulkanPresenter::FrameGenDump(VkCommandBuffer command_buffer, VkImage guest
   fg.dump_height = fg.height;
   // The velocity too, its top-left corner the size of the guest output (FH2's target is an EDRAM image taller
   // than the screen), when it has 4 bytes per texel.
+  // With mode 2, its computed motion instead (RG16F half vectors in guest pixels, the guest output's size).
+  const bool with_game = motion.has_depth() && motion.stencil_view != VK_NULL_HANDLE &&
+                         fg.game_motion.image != VK_NULL_HANDLE;
   const bool with_motion =
-      motion.valid() && (motion.format == VK_FORMAT_R8G8B8A8_UNORM || motion.format == VK_FORMAT_B8G8R8A8_UNORM ||
-                         motion.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32);
-  fg.dump_motion_width = with_motion ? std::min(motion.width, fg.width) : 0;
-  fg.dump_motion_height = with_motion ? std::min(motion.height, fg.height) : 0;
-  fg.dump_motion_format = motion.format;
+      !with_game && motion.valid() &&
+      (motion.format == VK_FORMAT_R8G8B8A8_UNORM || motion.format == VK_FORMAT_B8G8R8A8_UNORM ||
+       motion.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32);
+  fg.dump_motion_width = with_game ? fg.width : (with_motion ? std::min(motion.width, fg.width) : 0);
+  fg.dump_motion_height = with_game ? fg.height : (with_motion ? std::min(motion.height, fg.height) : 0);
+  fg.dump_motion_format = with_game ? VK_FORMAT_R16G16_SFLOAT : motion.format;
   for (uint32_t i = 0; i < 4; ++i) {
     fg.dump_motion_params[i] = motion.params[i];
   }
-  if (motion.valid() && !with_motion) {
+  if (motion.valid() && !with_motion && !with_game) {
     REXLOG_WARN("[presentador] frame gen: la velocidad del juego ({}x{}, VkFormat {}) no entra en el volcado",
                 motion.width, motion.height, uint32_t(motion.format));
   }
-  const VkImage images[3] = {fg.history.image, fg.output->image(), guest_output_image};
-  VkImageMemoryBarrier barriers[3];
-  for (uint32_t i = 0; i < 3; ++i) {
+  const VkImage images[4] = {fg.history.image, fg.output->image(), guest_output_image, fg.game_motion.image};
+  const uint32_t image_count = with_game ? 4 : 3;
+  VkImageMemoryBarrier barriers[4];
+  for (uint32_t i = 0; i < image_count; ++i) {
     VkImageMemoryBarrier& barrier = barriers[i];
     barrier = {};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1147,8 +1160,8 @@ void VulkanPresenter::FrameGenDump(VkCommandBuffer command_buffer, VkImage guest
   dfn.vkCmdPipelineBarrier(command_buffer,
                            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
                                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 3, barriers);
-  for (uint32_t i = 0; i < 3; ++i) {
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, image_count, barriers);
+  for (uint32_t i = 0; i < image_count; ++i) {
     VkBufferImageCopy region = {};
     region.bufferOffset = VkDeviceSize(fg.width) * fg.height * 4 * i;
     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -1173,7 +1186,8 @@ void VulkanPresenter::FrameGenDump(VkCommandBuffer command_buffer, VkImage guest
                                &region);
   }
   // Back for the effects (fragment, compute for a temporal upscaler), and the copies for the host.
-  for (VkImageMemoryBarrier& barrier : barriers) {
+  for (uint32_t i = 0; i < image_count; ++i) {
+    VkImageMemoryBarrier& barrier = barriers[i];
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -1190,7 +1204,7 @@ void VulkanPresenter::FrameGenDump(VkCommandBuffer command_buffer, VkImage guest
   dfn.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
                                VK_PIPELINE_STAGE_HOST_BIT,
-                           0, 0, nullptr, 1, &buffer_barrier, 3, barriers);
+                           0, 0, nullptr, 1, &buffer_barrier, image_count, barriers);
   fg.dump_pending = true;
   fg.dump_submission = paint_context_.submission_tracker.GetCurrentSubmission();
 }
