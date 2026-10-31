@@ -119,6 +119,22 @@ void main() {
   vec3 ends = abs(a.rgb - b.rgb);
   float doubt = max(smoothstep(0.03, 0.08, best_mismatch), smoothstep(0.08, 0.2, max(ends.r, max(ends.g, ends.b))));
   vec4 color = mix(middle, Previous(uv), doubt);
+  /*
+   * Glowing particles (sparks, fireflies, lights in the dark): small bright points that land somewhere else every
+   * frame, so no vector follows them and the average of the two ends drops them. The screen recording of the S23
+   * showed them gone from every frame in the middle, blinking at 30 Hz. A pixel much brighter than its ring in
+   * either real frame keeps the brighter of the two, unwarped: the particles of both frames, never none.
+   */
+  const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
+  vec2 r = 2.0 * constants.guest_texel;
+  vec4 p_here = Previous(uv);
+  float ring_p = dot(Previous(uv + vec2(r.x, 0.0)).rgb + Previous(uv - vec2(r.x, 0.0)).rgb +
+                     Previous(uv + vec2(0.0, r.y)).rgb + Previous(uv - vec2(0.0, r.y)).rgb, kLuma) * 0.25;
+  float ring_c = dot(Current(uv + vec2(r.x, 0.0)).rgb + Current(uv - vec2(r.x, 0.0)).rgb +
+                     Current(uv + vec2(0.0, r.y)).rgb + Current(uv - vec2(0.0, r.y)).rgb, kLuma) * 0.25;
+  vec4 c_here = Current(uv);
+  float spark = max(dot(p_here.rgb, kLuma) - ring_p, dot(c_here.rgb, kLuma) - ring_c);
+  color.rgb = mix(color.rgb, max(color.rgb, max(p_here.rgb, c_here.rgb)), smoothstep(0.12, 0.25, spark));
   // The HUD: the guest output's alpha is its mask with FH2's native renderer (present_hdr's, which it also writes
   // for present_frame_gen; opaque elsewhere, so a frame without it is shown as it is). Where either frame has HUD,
   // the current frame unwarped: the HUD updates at the game's rate but stays whole, where the scene's motion
