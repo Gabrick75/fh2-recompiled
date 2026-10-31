@@ -68,13 +68,14 @@ void main() {
   ivec2 size = textureSize(depth_texture, 0);
   vec2 uv = gl_FragCoord.xy * constants.dest_texel;
   ivec2 center = ivec2(uv * constants.depth_region * vec2(size));
-  float nearest_depth = 2.0;
+  // FH2's Z is reversed: the pass's w is -near Q / (1 - Q - depth), so depth 1 is the near plane and 0 the far one.
+  float nearest_depth = -1.0;
   vec2 best = vec2(0.0);
   for (int y = -1; y <= 1; ++y) {
     for (int x = -1; x <= 1; ++x) {
       float depth;
       vec2 motion = Motion(center + ivec2(x, y), size, depth);
-      if (depth < nearest_depth) {
+      if (depth > nearest_depth) {
         nearest_depth = depth;
         best = motion;
       }

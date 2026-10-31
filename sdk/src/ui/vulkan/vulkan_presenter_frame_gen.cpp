@@ -71,19 +71,19 @@ REXCVAR_DEFINE_STRING(present_frame_gen_volcar_dir, "", "UI/Presenter",
                       "Depuracion de present_frame_gen: carpeta de los volcados (vacia = la del ejecutable)");
 
 /*
- * The game's velocity (FH2's p_003929), decoded, in guest pixels: the motion the shader computes is in the units
- * of its screen position, measured against the real motion of the dumped frames (the previous frame warped by it
- * against the current one) at about -1.25 of the guest output's size. A candidate, not the answer: the search and
- * the interpolation still compare it with the others, so a scale that is somewhat off only costs some matches.
+ * Guest pixels per unit of the motion computed from the game's depth and matrices, over the guest output's size:
+ * the pass's position is NDC, so half the size, with y negated because NDC's y goes up. This is the theory; the -1.25
+ * fitted on the blur's velocity was worse than no motion on the computed field (S23 dumps, error 41.8 against 28.3).
  */
-REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_x, -1.25, "UI/Presenter",
+REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_x, 0.5, "UI/Presenter",
                       "present_frame_gen: pixeles por unidad de la velocidad del juego, en x (por el ancho)");
-REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_y, -1.25, "UI/Presenter",
+REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_y, -0.5, "UI/Presenter",
                       "present_frame_gen: pixeles por unidad de la velocidad del juego, en y (por el alto)");
 
 // Mode 2's computed motion decides alone where it exists (frame_gen_interpolate.ps.glsl); off, it is only the
-// preferred candidate, as the decoded velocity was.
-REXCVAR_DEFINE_BOOL(present_frame_gen_movimiento_autoritario, true, "UI/Presenter",
+// preferred candidate, as the decoded velocity was. Off until the dumps show the field explains the real motion: on
+// with a wrong field, the whole picture wobbled like jelly on the S23.
+REXCVAR_DEFINE_BOOL(present_frame_gen_movimiento_autoritario, false, "UI/Presenter",
                     "present_frame_gen: el movimiento calculado de la profundidad del juego decide solo donde existe");
 
 REXCVAR_DEFINE_BOOL(present_frame_gen_capturar_intermedio, false, "UI/Presenter",
@@ -979,7 +979,8 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
 
   // The search, from the coarsest level down: only without mode 2's motion, which the interpolation then follows
   // alone (the luma pyramid is still made, for the next frame's search if it has no motion).
-  for (uint32_t level = kFrameGenLevels; !computed_motion && level-- > 0;) {
+  const bool skip_search = computed_motion && REXCVAR_GET(present_frame_gen_movimiento_autoritario);
+  for (uint32_t level = kFrameGenLevels; !skip_search && level-- > 0;) {
     const FrameGenTarget& target = fg.vectors[level];
     SearchConstants constants = {};
     constants.motion = motion_constants;
@@ -1000,7 +1001,7 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
   }
 
   // The vector median of the finest level.
-  if (!computed_motion) {
+  if (!skip_search) {
     MedianConstants median_constants;
     median_constants.vector_texel[0] = 1.0f / float(fg.smoothed.width);
     median_constants.vector_texel[1] = 1.0f / float(fg.smoothed.height);
