@@ -1,12 +1,14 @@
 #version 460
+#extension GL_EXT_samplerless_texture_functions : require
 
 // present_frame_gen: the motion of every pixel the way FH2's velocity pass (p_003929) computes it, from its own depth
 // texture and matrix table, but kept as it is: without the motion blur's curve and clamp, and whether the blur is on
 // or not (the game only keeps its velocity target usable while the blur is on). Compiled with
 // tools/compilar_shaders.sh.
 //
-// The steps are the pass's, in its order: the depth texture packs a 24-bit float depth (20-bit mantissa, 4-bit
-// exponent) and the stencil, which is the object id (0 or 128 and up: the world; 1-127: a car); the pixel is moved
+// The steps are the pass's, in its order: its depth texture is the scene's depth and stencil (the native renderer packs
+// them into the game's 8_8_8_8 view; here they are read from the D24S8 image as they are), the stencil being the
+// object id (0 or 128 and up: the world; 1-127: a car); the pixel is moved
 // back to its view position with QAndNegNearQAndScale and projected into the previous frame with the object's rows
 // of invCurrentVPThenPrevVP. The result is the previous minus the current position, in the units of the pass's
 // screen position (x right and y up from the center), turned into the half vector of the other frame_gen shaders
@@ -21,6 +23,7 @@ layout(push_constant) uniform FrameGenMotionConstants {
 
 layout(set = 2, binding = 0) uniform texture2D depth_texture;
 layout(set = 2, binding = 1) uniform sampler nearest_sampler;
+layout(set = 2, binding = 3) uniform utexture2D stencil_texture;
 // c32-c255 (invCurrentVPThenPrevVP), c124 (QAndNegNearQAndScale), then the exponent adjust in row 225's x.
 layout(set = 2, binding = 2, std140) uniform GameConstants {
   vec4 rows[226];
@@ -35,16 +38,14 @@ void main() {
   // The pass's screen position: x right, y up, -1 to 1.
   vec2 position = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
   vec4 q = game.rows[224];  // QAndNegNearQAndScale
-  float exp_adjust = exp2(game.rows[225].x);
-
-  vec4 t = textureLod(sampler2D(depth_texture, nearest_sampler), uv * constants.depth_region, 0.0) * exp_adjust;
-  // r2 = t.wxyz, then r2.yz swapped: r2.x = t.w, r2.y = t.y, r2.z = t.x, r2.w = t.z.
-  float exponent_bits = 15.9375 * t.w;
-  bool high_stencil = t.z >= 0.5;  // the threshold as nfsmw_nativo_shaders.cpp corrects it
-  float stencil = high_stencil ? 0.0 : t.z;
-  float mantissa_bits = dot(vec3(t.y, t.x, fract(exponent_bits)), vec3(255.0, 65280.0, 1048576.0));
+  ivec2 texel = ivec2(uv * constants.depth_region * vec2(textureSize(depth_texture, 0)));
+  // What the pass decodes from the 8_8_8_8 view: the depth (24-bit float there) and the stencil / 255.
+  float depth = texelFetch(depth_texture, texel, 0).r;
+  float stencil = float(texelFetch(stencil_texture, texel, 0).r & 0xFFu) / 255.0;
+  if (stencil >= 0.5) {  // the threshold as nfsmw_nativo_shaders.cpp corrects it
+    stencil = 0.0;
+  }
   float object = floor(stencil * 85.0 + 0.5);
-  float depth = (mantissa_bits * exp2(-20.0) + 1.0) * exp2(floor(exponent_bits) - 15.0);
 
   float inverse = 1.0 / (1.0 - q.x - depth);
   vec3 view = vec3(position.y * q.y * inverse, q.y * inverse * (1.0 - depth), q.y * inverse);

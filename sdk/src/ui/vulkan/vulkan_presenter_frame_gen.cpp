@@ -363,7 +363,7 @@ bool VulkanPresenter::FrameGenInitialize() {
   // Mode 2: the game motion set and one depth set per slot.
   constexpr uint32_t kDepthSetCount = FrameGen::kMotionSlots + 1;
   VkDescriptorPoolSize pool_sizes[3] = {
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kSetCount * 3 + kMotionSetCount + kDepthSetCount},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kSetCount * 3 + kMotionSetCount + kDepthSetCount * 2},
       {VK_DESCRIPTOR_TYPE_SAMPLER, kSetCount * 2 + kMotionSetCount + kDepthSetCount},
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, FrameGen::kMotionSlots}};
   VkDescriptorPoolCreateInfo pool_info = {};
@@ -422,7 +422,7 @@ bool VulkanPresenter::FrameGenInitialize() {
 
   // Mode 2: set 2 of the motion pass, the depth texture and the constants.
   {
-    VkDescriptorSetLayoutBinding depth_bindings[3] = {};
+    VkDescriptorSetLayoutBinding depth_bindings[4] = {};
     depth_bindings[0].binding = 0;
     depth_bindings[0].descriptorCount = 1;
     depth_bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -436,9 +436,13 @@ bool VulkanPresenter::FrameGenInitialize() {
     depth_bindings[2].descriptorCount = 1;
     depth_bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     depth_bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    depth_bindings[3].binding = 3;
+    depth_bindings[3].descriptorCount = 1;
+    depth_bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    depth_bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     VkDescriptorSetLayoutCreateInfo depth_layout_info = {};
     depth_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    depth_layout_info.bindingCount = 3;
+    depth_layout_info.bindingCount = 4;
     depth_layout_info.pBindings = depth_bindings;
     if (dfn.vkCreateDescriptorSetLayout(device, &depth_layout_info, nullptr, &fg.depth_set_layout) != VK_SUCCESS) {
       return fail("el layout de la profundidad");
@@ -909,7 +913,7 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
   // Mode 2: the motion from the velocity pass's depth and matrices, whether its blur is on or not.
   VkDescriptorSet motion_set = FrameGenMotionSet(motion);
   MotionConstants motion_constants = {};
-  const bool computed_motion = motion.has_depth();
+  const bool computed_motion = motion.has_depth() && motion.stencil_view != VK_NULL_HANDLE;
   if (computed_motion) {
     const uint32_t slot = uint32_t(motion.depth_version % FrameGen::kMotionSlots);
     std::memcpy(fg.constant_mappings[slot], motion.constants.data(), sizeof(float) * motion.constants.size());
@@ -919,15 +923,18 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
     range.size = VK_WHOLE_SIZE;
     dfn.vkFlushMappedMemoryRanges(vulkan_device_->device(), 1, &range);
     if (fg.depth_set_views[slot] != motion.depth_view) {
-      VkDescriptorImageInfo info = {VK_NULL_HANDLE, motion.depth_view, VK_IMAGE_LAYOUT_GENERAL};
-      VkWriteDescriptorSet write = {};
-      write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      write.dstSet = fg.depth_sets[slot];
-      write.dstBinding = 0;
-      write.descriptorCount = 1;
-      write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-      write.pImageInfo = &info;
-      dfn.vkUpdateDescriptorSets(vulkan_device_->device(), 1, &write, 0, nullptr);
+      VkDescriptorImageInfo infos[2] = {{VK_NULL_HANDLE, motion.depth_view, VK_IMAGE_LAYOUT_GENERAL},
+                                        {VK_NULL_HANDLE, motion.stencil_view, VK_IMAGE_LAYOUT_GENERAL}};
+      VkWriteDescriptorSet writes[2] = {};
+      for (uint32_t k = 0; k < 2; ++k) {
+        writes[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[k].dstSet = fg.depth_sets[slot];
+        writes[k].dstBinding = k ? 3 : 0;
+        writes[k].descriptorCount = 1;
+        writes[k].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        writes[k].pImageInfo = &infos[k];
+      }
+      dfn.vkUpdateDescriptorSets(vulkan_device_->device(), 2, writes, 0, nullptr);
       fg.depth_set_views[slot] = motion.depth_view;
     }
     GameMotionConstants game_constants;
