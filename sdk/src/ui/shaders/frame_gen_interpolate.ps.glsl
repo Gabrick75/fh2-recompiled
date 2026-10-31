@@ -7,9 +7,9 @@
 // field as they are (an object's edge must not get the average of the object and the background) and zero
 // (the HUD, which does not move, matches it exactly). The smooth field wins unless another candidate's two
 // ends look clearly more alike: picking per pixel on a near tie is what made surfaces shimmer. The color is
-// the average of both ends. Where even the best vector does not match (something appears or disappears, or
-// the motion was too fast for the search), the current frame as it is, not warped: at worst that spot
-// repeats a frame, where a wrong vector would tear and bend it.
+// the average of both ends. Where that is in doubt (the best vector does not match, or its two ends differ at
+// the pixel itself), the previous frame as it is: the frame already on the screen, so that spot just does not
+// change for one refresh. It moves at the game's rate there, but it cannot flicker, tear or bend.
 
 layout(push_constant) uniform FrameGenInterpolateConstants {
   // After the rectangle constants of the vertex shader.
@@ -108,13 +108,17 @@ void main() {
   vec4 a = Previous(previous_inside ? uv - o : uv);
   vec4 b = Current(current_inside ? uv + o : uv);
   vec4 middle = previous_inside && current_inside ? (a + b) * 0.5 : (current_inside ? b : a);
-  // A thin object (leaves, a pole, a sign's edge) whose vector is the background's: the three-tap mismatch can
-  // pass on the background around it, but its own two ends differ, and their average is the object half see-
-  // through, flickering against the solid real frames. Then the current frame's end alone: at worst slightly
-  // out of place, but whole.
+  /*
+   * The doubt, and the conservative answer to it (the S23 tests: trees and signs kept flickering).
+   *
+   * The three-tap mismatch: a vector that does not carry the previous frame onto the current one. The two ends
+   * at the pixel itself: a thin object (leaves, a pole, a sign's edge) whose vector is the background's passes
+   * the three taps on the background around it, and the average of its ends is the object half see-through.
+   * Either way, the previous frame unwarped, which is what the screen already shows.
+   */
   vec3 ends = abs(a.rgb - b.rgb);
-  middle = mix(middle, b, smoothstep(0.12, 0.3, max(ends.r, max(ends.g, ends.b))));
-  vec4 color = mix(middle, Current(uv), smoothstep(0.05, 0.15, best_mismatch));
+  float doubt = max(smoothstep(0.03, 0.08, best_mismatch), smoothstep(0.08, 0.2, max(ends.r, max(ends.g, ends.b))));
+  vec4 color = mix(middle, Previous(uv), doubt);
   // The HUD: the guest output's alpha is its mask with FH2's native renderer (present_hdr's, which it also writes
   // for present_frame_gen; opaque elsewhere, so a frame without it is shown as it is). Where either frame has HUD,
   // the current frame unwarped: the HUD updates at the game's rate but stays whole, where the scene's motion
