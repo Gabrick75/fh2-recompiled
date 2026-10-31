@@ -71,19 +71,20 @@ REXCVAR_DEFINE_STRING(present_frame_gen_volcar_dir, "", "UI/Presenter",
                       "Depuracion de present_frame_gen: carpeta de los volcados (vacia = la del ejecutable)");
 
 /*
- * Guest pixels per unit of the motion computed from the game's depth and matrices, over the guest output's size:
- * the pass's position is NDC, so half the size, with y negated because NDC's y goes up. This is the theory; the -1.25
- * fitted on the blur's velocity was worse than no motion on the computed field (S23 dumps, error 41.8 against 28.3).
+ * Guest pixels per unit of the motion computed from the game's depth and matrices, over the guest output's size.
+ * Measured, not derived: on nine S23 dumps with motion, warping the previous frame by the field fits the current one
+ * best at these values (mean error 24.7 against 28.2 without motion). NDC would give 0.5 and -0.5, which fit worse
+ * than no motion; why the game's matrices span more than one frame's motion is not known.
  */
-REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_x, 0.5, "UI/Presenter",
+REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_x, 0.175, "UI/Presenter",
                       "present_frame_gen: pixeles por unidad de la velocidad del juego, en x (por el ancho)");
-REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_y, -0.5, "UI/Presenter",
+REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_y, -0.05, "UI/Presenter",
                       "present_frame_gen: pixeles por unidad de la velocidad del juego, en y (por el alto)");
 
 // Mode 2's computed motion decides alone where it exists (frame_gen_interpolate.ps.glsl); off, it is only the
-// preferred candidate, as the decoded velocity was. Off until the dumps show the field explains the real motion: on
-// with a wrong field, the whole picture wobbled like jelly on the S23.
-REXCVAR_DEFINE_BOOL(present_frame_gen_movimiento_autoritario, false, "UI/Presenter",
+// preferred candidate, as the decoded velocity was. It needs the measured scale above: with a wrong one the whole
+// picture wobbled like jelly on the S23.
+REXCVAR_DEFINE_BOOL(present_frame_gen_movimiento_autoritario, true, "UI/Presenter",
                     "present_frame_gen: el movimiento calculado de la profundidad del juego decide solo donde existe");
 
 REXCVAR_DEFINE_BOOL(present_frame_gen_capturar_intermedio, false, "UI/Presenter",
