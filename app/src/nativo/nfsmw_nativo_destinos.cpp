@@ -470,6 +470,9 @@ REXCVAR_DECLARE(int32_t, nfsmw_nativo_estadisticas_por_dibujo_s);
 REXCVAR_DECLARE(bool, nfsmw_nativo_pcf_barato);
 #if defined(FH2_RECOMP)
 REXCVAR_DECLARE(bool, present_frame_gen);  // sdk/src/ui/presenter.cpp
+REXCVAR_DEFINE_BOOL(present_frame_gen_registrar_matrices, false, "FH2",
+                    "Depuracion de present_frame_gen: registrar la matriz de reproyeccion del pase de velocidad cada 10 "
+                    "fotogramas");
 #endif
 #if defined(FH2_RECOMP)
 // Clears outside a pass go to the multisample images too (defined in nfsmw_nativo_dibujos.cpp).
@@ -1699,6 +1702,22 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
     // motionBlurParams1 = c125 of the pixel constants (0x4400-0x47FF, four words each).
     std::memcpy(fh2_velocidad_parametros_, &r[0x4400 + 125 * 4], sizeof(fh2_velocidad_parametros_));
     fh2_velocidad_pendiente_ = true;
+    /*
+     * Mode 2 research (present_frame_gen_registrar_matrices): the world's reprojection matrix the velocity pass uses
+     * (invCurrentVPThenPrevVP, rows c32-c35 for object 0), QAndNegNearQAndScale (c124) and the blur strength, every
+     * 10th velocity draw, to see whether the game keeps the matrix up to date when the blur is off (w = 0), where its
+     * velocity stopped matching the motion.
+     */
+    if (REXCVAR_GET(present_frame_gen_registrar_matrices) && ++fh2_velocidad_registros_ % 10 == 0) {
+      float c[6][4];
+      std::memcpy(c[0], &r[0x4400 + 32 * 4], 4 * 4 * sizeof(float));
+      std::memcpy(c[4], &r[0x4400 + 124 * 4], 2 * 4 * sizeof(float));
+      REXLOG_INFO("[fh2 nativo] frame gen matrices: w {:.3f} | c32 {:.5f} {:.5f} {:.5f} {:.5f} | c33 {:.5f} {:.5f} {:.5f} "
+                  "{:.5f} | c34 {:.5f} {:.5f} {:.5f} {:.5f} | c35 {:.5f} {:.5f} {:.5f} {:.5f} | c124 {:.5f} {:.5f} "
+                  "{:.5f} {:.5f}",
+                  c[5][3], c[0][0], c[0][1], c[0][2], c[0][3], c[1][0], c[1][1], c[1][2], c[1][3], c[2][0], c[2][1],
+                  c[2][2], c[2][3], c[3][0], c[3][1], c[3][2], c[3][3], c[4][0], c[4][1], c[4][2], c[4][3]);
+    }
   }
 
   void Fh2CopiarVelocidad() {
@@ -8295,6 +8314,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   uint32_t fh2_velocidad_superficie_ = 0;
   float fh2_velocidad_parametros_[4] = {};
   float fh2_velocidad_parametros_lista_[4] = {};
+  uint64_t fh2_velocidad_registros_ = 0;
   bool fh2_hdr_mascara_activa_ = false;        // the presenter wants it (from the last Swap)
   uint32_t fh2_hdr_base_escena_ = UINT32_MAX;  // EDRAM base of this frame's last 2_10_10_10 draw
   bool fh2_hdr_foto_intentada_ = false;        // this frame
