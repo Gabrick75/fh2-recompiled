@@ -22,7 +22,7 @@ layout(push_constant) uniform FrameGenMotionConstants {
   layout(offset = 16) vec2 dest_texel;  // 1 / this target's size (the guest output's)
   vec2 depth_region;                    // the part of the depth texture the screen covers, in texture coordinates
   vec2 scale;                           // guest pixels per unit of motion (present_frame_gen_escala_movimiento_x/y)
-  float sky_depth;                      // below this depth, at infinity (present_frame_gen_profundidad_cielo)
+  float padding;
   float debug_view;                     // 1: depth * 1000 and stencil in place of the motion, for the dumps
 } constants;
 
@@ -45,18 +45,17 @@ vec2 Motion(ivec2 texel, ivec2 size, out float depth) {
   // The pass's screen position: x right, y up, -1 to 1.
   vec2 position = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
   vec4 q = game.rows[224];  // QAndNegNearQAndScale
-  depth = texelFetch(depth_texture, texel, 0).r;
-  float stencil = float(texelFetch(stencil_texture, texel, 0).r & 0xFFu) / 255.0;
+  // The game renders y up, so the scene's depth is upside down in the image (as its velocity target is): the screen's
+  // top row is the screen area's last one.
+  ivec2 stored = ivec2(texel.x, int(vec2(size).y * constants.depth_region.y) - 1 - texel.y);
+  depth = texelFetch(depth_texture, stored, 0).r;
+  float stencil = float(texelFetch(stencil_texture, stored, 0).r & 0xFFu) / 255.0;
   if (stencil >= 0.5) {  // the threshold as nfsmw_nativo_shaders.cpp corrects it
     stencil = 0.0;
   }
   float object = floor(stencil * 85.0 + 0.5);
-  // The sky dome follows the camera, so reprojecting it as fixed world gave it the expansion of a nearby surface,
-  // and the floating race markers, which have no depth of their own, trembled with it. At infinity only the camera's
-  // rotation moves it.
-  float reprojected_depth = depth < constants.sky_depth ? 0.0 : depth;
-  float inverse = 1.0 / (1.0 - q.x - reprojected_depth);
-  vec3 view = vec3(position.y * q.y * inverse, q.y * inverse * (1.0 - reprojected_depth), q.y * inverse);
+  float inverse = 1.0 / (1.0 - q.x - depth);
+  vec3 view = vec3(position.y * q.y * inverse, q.y * inverse * (1.0 - depth), q.y * inverse);
   int a0 = int(clamp(floor(4.0 * object + 0.5), -256.0, 255.0));
   vec4 m0 = Row(a0), m1 = Row(a0 + 1), m3 = Row(a0 + 3);
   float x = view.z * m0.x * position.x + dot(view, m0.yzw);
@@ -75,8 +74,9 @@ void main() {
   vec2 uv = gl_FragCoord.xy * constants.dest_texel;
   ivec2 center = ivec2(uv * constants.depth_region * vec2(size));
   if (constants.debug_view != 0.0) {
-    vector_out = vec2(texelFetch(depth_texture, center, 0).r * 1000.0,
-                      float(texelFetch(stencil_texture, center, 0).r & 0xFFu));
+    ivec2 stored = ivec2(center.x, int(vec2(size).y * constants.depth_region.y) - 1 - center.y);
+    vector_out = vec2(texelFetch(depth_texture, stored, 0).r * 1000.0,
+                      float(texelFetch(stencil_texture, stored, 0).r & 0xFFu));
     return;
   }
   // FH2's Z is reversed: the pass's w is -near Q / (1 - Q - depth), so depth 1 is the near plane and 0 the far one.

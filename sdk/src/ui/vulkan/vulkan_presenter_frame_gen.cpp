@@ -71,19 +71,14 @@ REXCVAR_DEFINE_STRING(present_frame_gen_volcar_dir, "", "UI/Presenter",
                       "Depuracion de present_frame_gen: carpeta de los volcados (vacia = la del ejecutable)");
 
 /*
- * Guest pixels per unit of the motion computed from the game's depth and matrices, over the guest output's size.
- * Measured, not derived: on nine S23 dumps with motion, warping the previous frame by the field fits the current one
- * best at these values (mean error 24.7 against 28.2 without motion). NDC would give 0.5 and -0.5, which fit worse
- * than no motion; why the game's matrices span more than one frame's motion is not known.
+ * Guest pixels per unit of the motion computed from the game's depth and matrices, over the guest output's size: the
+ * pass's position is NDC, so half the size, with y negated because NDC's y goes up.
  */
-REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_x, 0.175, "UI/Presenter",
+REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_x, 0.5, "UI/Presenter",
                       "present_frame_gen: pixeles por unidad de la velocidad del juego, en x (por el ancho)");
-REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_y, -0.05, "UI/Presenter",
+REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_y, -0.5, "UI/Presenter",
                       "present_frame_gen: pixeles por unidad de la velocidad del juego, en y (por el alto)");
 
-// Below this depth (FH2's Z is reversed: small is far) a pixel counts as the sky, at infinity: see frame_gen_motion.
-REXCVAR_DEFINE_DOUBLE(present_frame_gen_profundidad_cielo, 0.0, "UI/Presenter",
-                      "present_frame_gen: profundidad por debajo de la cual un pixel es cielo, sin traslacion");
 // Debugging: the dumps' motion file holds depth * 1000 and the stencil instead. Breaks the picture while on.
 REXCVAR_DEFINE_BOOL(present_frame_gen_ver_profundidad, false, "UI/Presenter",
                     "Depuracion de present_frame_gen: el volcado guarda profundidad y stencil en lugar del movimiento");
@@ -144,7 +139,7 @@ struct GameMotionConstants {
   float dest_texel[2];
   float depth_region[2];
   float scale[2];
-  float sky_depth;
+  float padding;
   float debug_view;
 };
 struct InterpolateConstants {
@@ -959,7 +954,7 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
     game_constants.depth_region[1] = std::min(1.0f, float(fg.height) / float(motion.depth_height));
     game_constants.scale[0] = float(REXCVAR_GET(present_frame_gen_escala_movimiento_x)) * float(fg.width);
     game_constants.scale[1] = float(REXCVAR_GET(present_frame_gen_escala_movimiento_y)) * float(fg.height);
-    game_constants.sky_depth = float(REXCVAR_GET(present_frame_gen_profundidad_cielo));
+    game_constants.padding = 0.0f;
     game_constants.debug_view = REXCVAR_GET(present_frame_gen_ver_profundidad) ? 1.0f : 0.0f;
     FrameGenPass(dfn, command_buffer, fg.vector_pass, fg.game_motion.framebuffer, fg.game_motion.width,
                  fg.game_motion.height, fg.motion_pipeline, fg.motion_pipeline_layout, guest_output_set,
