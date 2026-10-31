@@ -46,6 +46,11 @@ vec2 GameVector(vec2 uv) {
   if (constants.motion_params.w == 0.0) {
     return vec2(0.0);
   }
+  // Mode 2 (frame_gen_motion.ps.glsl): the half vector already computed from the velocity pass's depth and
+  // matrices, top-down, at half the guest output's size.
+  if (constants.motion_params.x < 0.0) {
+    return textureLod(sampler2D(game_velocity, game_velocity_sampler), uv, 0.0).rg;
+  }
   vec2 tc = vec2(uv.x, 1.0 - uv.y) * constants.motion_region;
   vec4 v = textureLod(sampler2D(game_velocity, game_velocity_sampler), tc, 0.0);
   vec2 s = (v.xy - 0.49803922) / 5.0;

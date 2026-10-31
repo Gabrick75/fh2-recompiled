@@ -112,6 +112,21 @@ class VulkanPresenter final : public Presenter {
     // The game's motionBlurParams1 that frame, to undo the blur curve the velocity is stored with.
     float params[4] = {};
     bool valid() const { return view != VK_NULL_HANDLE; }
+
+    /*
+     * The velocity pass's own inputs, for computing the motion the way it does but without the blur (frame_gen_motion):
+     * its depth texture (the scene's depth resolved as 8_8_8_8 with the stencil, GENERAL layout) and its pixel
+     * constants c32-c255 (invCurrentVPThenPrevVP, four rows per object id), then c124 (QAndNegNearQAndScale) and the
+     * texture's exponent adjust as the last row's x.
+     */
+    static constexpr uint32_t kConstantRows = 224 + 2;
+    VkImage depth_image = VK_NULL_HANDLE;
+    VkImageView depth_view = VK_NULL_HANDLE;
+    uint32_t depth_width = 0;
+    uint32_t depth_height = 0;
+    uint64_t depth_version = 0;
+    std::array<float, kConstantRows * 4> constants{};
+    bool has_depth() const { return depth_view != VK_NULL_HANDLE; }
   };
 
   // The callback must use the graphics and compute queue 0 of the device.
@@ -698,6 +713,21 @@ class VulkanPresenter final : public Presenter {
     VkDescriptorSetLayout motion_set_layout = VK_NULL_HANDLE;
     VkDescriptorSet motion_sets[kMotionSlots + 1] = {};
     VkImageView motion_set_views[kMotionSlots] = {};
+    // Mode 2 (frame_gen_motion.ps.glsl): the motion computed from the velocity pass's depth and matrices, at half
+    // the guest output's size, read through `game_motion_set` (set 2 of the search and the interpolation). Its own
+    // set 2 per slot of the refresher's rotation: the depth texture and a uniform buffer with the constants.
+    FrameGenTarget game_motion;
+    VkDescriptorSet game_motion_set = VK_NULL_HANDLE;
+    VkDescriptorSetLayout depth_set_layout = VK_NULL_HANDLE;
+    VkPipelineLayout motion_pipeline_layout = VK_NULL_HANDLE;
+    VkShaderModule motion_fs = VK_NULL_HANDLE;
+    VkPipeline motion_pipeline = VK_NULL_HANDLE;
+    VkDescriptorSet depth_sets[kMotionSlots] = {};
+    VkImageView depth_set_views[kMotionSlots] = {};
+    VkBuffer constant_buffers[kMotionSlots] = {};
+    VkDeviceMemory constant_memory[kMotionSlots] = {};
+    void* constant_mappings[kMotionSlots] = {};
+    uint64_t with_depth = 0;
 
     // The guest output (GuestOutputProperties::sequence) each pyramid and the history hold, 0 = none.
     uint64_t luma_sequence[2] = {};

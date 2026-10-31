@@ -29,6 +29,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -94,6 +95,7 @@ namespace shaders {
 #include "../shaders/vulkan_spirv/frame_gen_interpolate_ps.h"
 #include "../shaders/vulkan_spirv/frame_gen_luma_ps.h"
 #include "../shaders/vulkan_spirv/frame_gen_median_ps.h"
+#include "../shaders/vulkan_spirv/frame_gen_motion_ps.h"
 #include "../shaders/vulkan_spirv/frame_gen_search_ps.h"
 }  // namespace shaders
 
@@ -124,6 +126,11 @@ struct SearchConstants {
 };
 struct MedianConstants {
   float vector_texel[2];
+};
+struct GameMotionConstants {
+  float dest_texel[2];
+  float depth_region[2];
+  float scale[2];
 };
 struct InterpolateConstants {
   float guest_texel[2];
@@ -353,13 +360,16 @@ bool VulkanPresenter::FrameGenInitialize() {
 
   constexpr uint32_t kSetCount = 2 * kFrameGenLevels * 2 + 2;
   constexpr uint32_t kMotionSetCount = FrameGen::kMotionSlots + 1;
-  VkDescriptorPoolSize pool_sizes[2] = {
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kSetCount * 3 + kMotionSetCount},
-      {VK_DESCRIPTOR_TYPE_SAMPLER, kSetCount * 2 + kMotionSetCount}};
+  // Mode 2: the game motion set and one depth set per slot.
+  constexpr uint32_t kDepthSetCount = FrameGen::kMotionSlots + 1;
+  VkDescriptorPoolSize pool_sizes[3] = {
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kSetCount * 3 + kMotionSetCount + kDepthSetCount},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, kSetCount * 2 + kMotionSetCount + kDepthSetCount},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, FrameGen::kMotionSlots}};
   VkDescriptorPoolCreateInfo pool_info = {};
   pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  pool_info.maxSets = kSetCount + kMotionSetCount;
-  pool_info.poolSizeCount = 2;
+  pool_info.maxSets = kSetCount + kMotionSetCount + kDepthSetCount;
+  pool_info.poolSizeCount = 3;
   pool_info.pPoolSizes = pool_sizes;
   if (dfn.vkCreateDescriptorPool(device, &pool_info, nullptr, &fg.descriptor_pool) != VK_SUCCESS) {
     return fail("el pool de descriptores");
@@ -410,6 +420,56 @@ bool VulkanPresenter::FrameGenInitialize() {
     }
   }
 
+  // Mode 2: set 2 of the motion pass, the depth texture and the constants.
+  {
+    VkDescriptorSetLayoutBinding depth_bindings[3] = {};
+    depth_bindings[0].binding = 0;
+    depth_bindings[0].descriptorCount = 1;
+    depth_bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    depth_bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    depth_bindings[1].binding = 1;
+    depth_bindings[1].descriptorCount = 1;
+    depth_bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    depth_bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    depth_bindings[1].pImmutableSamplers = &nearest_sampler;
+    depth_bindings[2].binding = 2;
+    depth_bindings[2].descriptorCount = 1;
+    depth_bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    depth_bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    VkDescriptorSetLayoutCreateInfo depth_layout_info = {};
+    depth_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    depth_layout_info.bindingCount = 3;
+    depth_layout_info.pBindings = depth_bindings;
+    if (dfn.vkCreateDescriptorSetLayout(device, &depth_layout_info, nullptr, &fg.depth_set_layout) != VK_SUCCESS) {
+      return fail("el layout de la profundidad");
+    }
+    const VkDescriptorSetLayout motion_layouts[3] = {guest_output_paint_image_descriptor_set_layout_, fg.set_layout,
+                                                     fg.depth_set_layout};
+    VkPipelineLayoutCreateInfo motion_layout_info = pipeline_layout_info;
+    motion_layout_info.pSetLayouts = motion_layouts;
+    if (dfn.vkCreatePipelineLayout(device, &motion_layout_info, nullptr, &fg.motion_pipeline_layout) != VK_SUCCESS) {
+      return fail("el layout del movimiento");
+    }
+    if (!create_shader(shaders::frame_gen_motion_ps, sizeof(shaders::frame_gen_motion_ps), fg.motion_fs)) {
+      return fail("el shader del movimiento");
+    }
+    fg.motion_pipeline = CreateGuestOutputPaintPipeline(GuestOutputPaintEffect::kBilinear, fg.vector_pass,
+                                                        fg.motion_fs, fg.motion_pipeline_layout);
+    if (fg.motion_pipeline == VK_NULL_HANDLE) {
+      return fail("la tuberia del movimiento");
+    }
+    const VkDeviceSize constant_size = VkDeviceSize(FrameGenMotion::kConstantRows) * 16;
+    for (uint32_t slot = 0; slot < FrameGen::kMotionSlots; ++slot) {
+      if (!util::CreateDedicatedAllocationBuffer(vulkan_device_, constant_size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                                 util::MemoryPurpose::kUpload, fg.constant_buffers[slot],
+                                                 fg.constant_memory[slot]) ||
+          dfn.vkMapMemory(device, fg.constant_memory[slot], 0, VK_WHOLE_SIZE, 0, &fg.constant_mappings[slot]) !=
+              VK_SUCCESS) {
+        return fail("los buffers de constantes");
+      }
+    }
+  }
+
   for (VkDescriptorSet& set : fg.motion_sets) {
     VkDescriptorSetAllocateInfo allocate_info = {};
     allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -418,6 +478,32 @@ bool VulkanPresenter::FrameGenInitialize() {
     allocate_info.pSetLayouts = &fg.motion_set_layout;
     if (dfn.vkAllocateDescriptorSets(device, &allocate_info, &set) != VK_SUCCESS) {
       return fail("los descriptores de la velocidad");
+    }
+  }
+
+  {
+    VkDescriptorSetAllocateInfo allocate_info = {};
+    allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocate_info.descriptorPool = fg.descriptor_pool;
+    allocate_info.descriptorSetCount = 1;
+    allocate_info.pSetLayouts = &fg.motion_set_layout;
+    if (dfn.vkAllocateDescriptorSets(device, &allocate_info, &fg.game_motion_set) != VK_SUCCESS) {
+      return fail("el descriptor del movimiento");
+    }
+    allocate_info.pSetLayouts = &fg.depth_set_layout;
+    for (uint32_t slot = 0; slot < FrameGen::kMotionSlots; ++slot) {
+      if (dfn.vkAllocateDescriptorSets(device, &allocate_info, &fg.depth_sets[slot]) != VK_SUCCESS) {
+        return fail("los descriptores de la profundidad");
+      }
+      VkDescriptorBufferInfo buffer_info = {fg.constant_buffers[slot], 0, VK_WHOLE_SIZE};
+      VkWriteDescriptorSet write = {};
+      write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      write.dstSet = fg.depth_sets[slot];
+      write.dstBinding = 2;
+      write.descriptorCount = 1;
+      write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      write.pBufferInfo = &buffer_info;
+      dfn.vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
     }
   }
 
@@ -450,6 +536,7 @@ void VulkanPresenter::FrameGenDestroyTargets() {
     destroy(level);
   }
   destroy(fg.smoothed);
+  destroy(fg.game_motion);
   util::DestroyAndNullHandle(dfn.vkDestroyFramebuffer, device, fg.output_framebuffer);
   fg.output.reset();
   util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device, fg.dump_buffer);
@@ -475,6 +562,16 @@ void VulkanPresenter::FrameGenShutdown() {
   }
   util::DestroyAndNullHandle(dfn.vkDestroyDescriptorPool, device, fg.descriptor_pool);
   util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, fg.median_pipeline);
+  util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, fg.motion_pipeline);
+  util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device, fg.motion_fs);
+  util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device, fg.motion_pipeline_layout);
+  util::DestroyAndNullHandle(dfn.vkDestroyDescriptorSetLayout, device, fg.depth_set_layout);
+  for (uint32_t slot = 0; slot < FrameGen::kMotionSlots; ++slot) {
+    util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device, fg.constant_buffers[slot]);
+    util::DestroyAndNullHandle(dfn.vkFreeMemory, device, fg.constant_memory[slot]);
+    fg.constant_mappings[slot] = nullptr;
+    fg.depth_set_views[slot] = VK_NULL_HANDLE;
+  }
   util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, fg.copy_pipeline);
   util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, fg.interpolate_pipeline);
   util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, fg.search_pipeline);
@@ -570,6 +667,9 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
   }
   created = created && create_target(fg.smoothed, LevelSize(width, 0), LevelSize(height, 0),
                                      kVectorFormat, fg.vector_pass);
+  // Mode 2's motion, at half the guest output's size like the game's velocity.
+  created = created && create_target(fg.game_motion, std::max(width / 2, 1u), std::max(height / 2, 1u),
+                                     kVectorFormat, fg.vector_pass);
   if (created) {
     std::unique_ptr<GuestOutputImage> output = GuestOutputImage::Create(vulkan_device_, width, height);
     created = output != nullptr;
@@ -626,6 +726,18 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
   }
   write_set(fg.median_set, fg.vectors[0], fg.vectors[0], fg.vectors[0]);
   {
+    // The search and the interpolation read mode 2's motion through set 2.
+    VkDescriptorImageInfo info = {VK_NULL_HANDLE, fg.game_motion.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write = {};
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = fg.game_motion_set;
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    write.pImageInfo = &info;
+    dfn.vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+  }
+  {
     // The set for frames without the game's velocity: any image, never read (the shaders check params.w).
     VkDescriptorImageInfo info = {VK_NULL_HANDLE, fg.luma[0][0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet write = {};
@@ -654,7 +766,7 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
 
   // Every new image to the layout the descriptors say, so a binding a pass does not read is valid from
   // the first frame.
-  VkImageMemoryBarrier barriers[1 + 3 * kFrameGenLevels + 2];
+  VkImageMemoryBarrier barriers[1 + 3 * kFrameGenLevels + 3];
   uint32_t barrier_count = 0;
   const auto add_barrier = [&](VkImage image) {
     VkImageMemoryBarrier& barrier = barriers[barrier_count++];
@@ -675,6 +787,7 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
     add_barrier(fg.vectors[level].image);
   }
   add_barrier(fg.smoothed.image);
+  add_barrier(fg.game_motion.image);
   add_barrier(fg.output->image());
   dfn.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
@@ -793,16 +906,53 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
     fg.luma_sequence[current] = sequence;
   }
 
-  // The game's velocity, if this frame has it.
-  const VkDescriptorSet motion_set = FrameGenMotionSet(motion);
+  // Mode 2: the motion from the velocity pass's depth and matrices, whether its blur is on or not.
+  VkDescriptorSet motion_set = FrameGenMotionSet(motion);
   MotionConstants motion_constants = {};
+  const bool computed_motion = motion.has_depth();
+  if (computed_motion) {
+    const uint32_t slot = uint32_t(motion.depth_version % FrameGen::kMotionSlots);
+    std::memcpy(fg.constant_mappings[slot], motion.constants.data(), sizeof(float) * motion.constants.size());
+    VkMappedMemoryRange range = {};
+    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    range.memory = fg.constant_memory[slot];
+    range.size = VK_WHOLE_SIZE;
+    dfn.vkFlushMappedMemoryRanges(vulkan_device_->device(), 1, &range);
+    if (fg.depth_set_views[slot] != motion.depth_view) {
+      VkDescriptorImageInfo info = {VK_NULL_HANDLE, motion.depth_view, VK_IMAGE_LAYOUT_GENERAL};
+      VkWriteDescriptorSet write = {};
+      write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      write.dstSet = fg.depth_sets[slot];
+      write.dstBinding = 0;
+      write.descriptorCount = 1;
+      write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      write.pImageInfo = &info;
+      dfn.vkUpdateDescriptorSets(vulkan_device_->device(), 1, &write, 0, nullptr);
+      fg.depth_set_views[slot] = motion.depth_view;
+    }
+    GameMotionConstants game_constants;
+    game_constants.dest_texel[0] = 1.0f / float(fg.game_motion.width);
+    game_constants.dest_texel[1] = 1.0f / float(fg.game_motion.height);
+    // The screen is the depth texture's top-left guest-output-sized corner.
+    game_constants.depth_region[0] = std::min(1.0f, float(fg.width) / float(motion.depth_width));
+    game_constants.depth_region[1] = std::min(1.0f, float(fg.height) / float(motion.depth_height));
+    game_constants.scale[0] = float(REXCVAR_GET(present_frame_gen_escala_movimiento_x)) * float(fg.width);
+    game_constants.scale[1] = float(REXCVAR_GET(present_frame_gen_escala_movimiento_y)) * float(fg.height);
+    FrameGenPass(dfn, command_buffer, fg.vector_pass, fg.game_motion.framebuffer, fg.game_motion.width,
+                 fg.game_motion.height, fg.motion_pipeline, fg.motion_pipeline_layout, guest_output_set,
+                 fg.luma_sets[0][0], fg.depth_sets[slot], &game_constants, sizeof(game_constants));
+    motion_set = fg.game_motion_set;
+    motion_constants.params[0] = -1.0f;  // GameVector reads the computed motion as it is
+    motion_constants.params[3] = 1.0f;
+    ++fg.with_depth;
+  }
   /*
    * Only while the game's motion blur is on (motionBlurParams1.w, its strength, which FH2 moves between 0 and 1).
    * Measured on S23 dumps: with w near 1 the decoded velocity warps the previous frame onto the current one
    * (mean error 30 -> 12, 38 -> 16), with w at 0 it never does, though it is not zero (at 160 km/h too): the
    * target then does not hold this frame's motion, and as a preferred candidate it bent trees and signs.
    */
-  if (motion.valid() && motion.params[3] > 0.5f) {
+  if (!computed_motion && motion.valid() && motion.params[3] > 0.5f) {
     motion_constants.params[0] = motion.params[1];
     motion_constants.params[1] = motion.params[2];
     motion_constants.params[2] = motion.params[3];
@@ -865,10 +1015,12 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
   if (++fg.intermediates % 900 == 0) {
     REXLOG_INFO(
         "[presentador] frame gen: {} fotogramas intermedios, {} sin fotograma anterior, {} de los ultimos 900 "
-        "con la velocidad del juego; GPU {:.2f} ms por intermedio ({} medidos)",
-        fg.intermediates, fg.skipped, fg.with_motion,
+        "con la velocidad del juego y {} con el movimiento de su profundidad; GPU {:.2f} ms por intermedio ({} "
+        "medidos)",
+        fg.intermediates, fg.skipped, fg.with_motion, fg.with_depth,
         fg.gpu_ms_count ? fg.gpu_ms_sum / double(fg.gpu_ms_count) : 0.0, fg.gpu_ms_count);
     fg.with_motion = 0;
+    fg.with_depth = 0;
     fg.gpu_ms_sum = 0.0;
     fg.gpu_ms_count = 0;
   }

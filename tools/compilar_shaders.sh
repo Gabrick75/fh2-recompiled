@@ -28,7 +28,7 @@ NATIVO_SHADERS=$RAIZ/app/src/nativo/shaders
 for src in "$UI_SHADERS"/hdr_output.ps.glsl "$UI_SHADERS"/hdr_ui_mask.ps.glsl \
            "$UI_SHADERS"/frame_gen_luma.ps.glsl "$UI_SHADERS"/frame_gen_search.ps.glsl \
            "$UI_SHADERS"/frame_gen_interpolate.ps.glsl "$UI_SHADERS"/frame_gen_copy.ps.glsl \
-           "$UI_SHADERS"/frame_gen_median.ps.glsl \
+           "$UI_SHADERS"/frame_gen_median.ps.glsl "$UI_SHADERS"/frame_gen_motion.ps.glsl \
            "$NATIVO_SHADERS"/fh2_hdr_mascara_hud.ps.glsl; do
   name=$(basename "$src" .ps.glsl)_ps
   case "$src" in
