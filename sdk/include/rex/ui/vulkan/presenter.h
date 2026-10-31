@@ -121,8 +121,8 @@ class VulkanPresenter final : public Presenter {
      */
     static constexpr uint32_t kConstantRows = 224 + 2;
     VkImage depth_image = VK_NULL_HANDLE;
-    // The native renderer keeps it as the depth render target's own D24S8 (it builds the game's 8_8_8_8 view of it
-    // for the pass): a depth-only view (the float depth the pass decodes) and a stencil-only one (the object id).
+    // The native renderer keeps it as a D24S8 image: a depth-only view (the float depth the pass decodes). The object
+    // id comes from stencil_view, the packed 8_8_8_8 texture the pass samples, whose R is the stencil.
     VkImageView depth_view = VK_NULL_HANDLE;
     VkImageView stencil_view = VK_NULL_HANDLE;
     uint32_t depth_width = 0;

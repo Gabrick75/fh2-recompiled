@@ -28,7 +28,7 @@ layout(push_constant) uniform FrameGenMotionConstants {
 
 layout(set = 2, binding = 0) uniform texture2D depth_texture;
 layout(set = 2, binding = 1) uniform sampler nearest_sampler;
-layout(set = 2, binding = 3) uniform utexture2D stencil_texture;
+layout(set = 2, binding = 3) uniform texture2D stencil_texture;  // the packed depth: R is the stencil / 255
 // c32-c255 (invCurrentVPThenPrevVP), c124 (QAndNegNearQAndScale), then the exponent adjust in row 225's x.
 layout(set = 2, binding = 2, std140) uniform GameConstants {
   vec4 rows[226];
@@ -49,7 +49,7 @@ vec2 Motion(ivec2 texel, ivec2 size, out float depth) {
   // top row is the screen area's last one.
   ivec2 stored = ivec2(texel.x, int(vec2(size).y * constants.depth_region.y) - 1 - texel.y);
   depth = texelFetch(depth_texture, stored, 0).r;
-  float stencil = float(texelFetch(stencil_texture, stored, 0).r & 0xFFu) / 255.0;
+  float stencil = texelFetch(stencil_texture, stored, 0).r;
   if (stencil >= 0.5) {  // the threshold as nfsmw_nativo_shaders.cpp corrects it
     stencil = 0.0;
   }
@@ -76,7 +76,7 @@ void main() {
   if (constants.debug_view != 0.0) {
     ivec2 stored = ivec2(center.x, int(vec2(size).y * constants.depth_region.y) - 1 - center.y);
     vector_out = vec2(texelFetch(depth_texture, stored, 0).r * 1000.0,
-                      float(texelFetch(stencil_texture, stored, 0).r & 0xFFu));
+                      texelFetch(stencil_texture, stored, 0).r * 255.0);
     return;
   }
   // FH2's Z is reversed: the pass's w is -near Q / (1 - Q - depth), so depth 1 is the near plane and 0 the far one.

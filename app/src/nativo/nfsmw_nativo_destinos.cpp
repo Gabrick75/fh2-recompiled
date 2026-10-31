@@ -1733,11 +1733,12 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
 
   void Fh2DestruirProfundidades() {
     for (size_t i = 0; i < kFh2RanurasVelocidad; ++i) {
-      for (VkImageView& vista : fh2_profundidad_vistas_[i]) {
-        if (vista != VK_NULL_HANDLE) dfn_.vkDestroyImageView(device_, vista, nullptr);
-        vista = VK_NULL_HANDLE;
+      if (fh2_profundidad_vistas_[i] != VK_NULL_HANDLE) {
+        dfn_.vkDestroyImageView(device_, fh2_profundidad_vistas_[i], nullptr);
+        fh2_profundidad_vistas_[i] = VK_NULL_HANDLE;
       }
       Destruir(fh2_profundidad_[i]);
+      Destruir(fh2_empaquetada_[i]);
     }
   }
 
@@ -1819,15 +1820,13 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       if (copia_profundidad.imagen == VK_NULL_HANDLE &&
           Crear(copia_profundidad, profundidad->ancho, profundidad->alto,
                 VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, profundidad->formato)) {
-        // One view per aspect for sampling.
+        // Depth only, for sampling.
         VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         info.image = copia_profundidad.imagen;
         info.viewType = VK_IMAGE_VIEW_TYPE_2D;
         info.format = copia_profundidad.formato;
         info.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-        dfn_.vkCreateImageView(device_, &info, nullptr, &fh2_profundidad_vistas_[ranura][0]);
-        info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
-        dfn_.vkCreateImageView(device_, &info, nullptr, &fh2_profundidad_vistas_[ranura][1]);
+        dfn_.vkCreateImageView(device_, &info, nullptr, &fh2_profundidad_vistas_[ranura]);
         ++fh2_profundidad_version_;
         REXLOG_INFO("[fh2 nativo] frame gen: profundidad del pase de velocidad {:08X}, {}x{}, VkFormat {}, exp {}",
                     fh2_velocidad_profundidad_, profundidad->ancho, profundidad->alto, uint32_t(profundidad->formato),
@@ -1856,6 +1855,47 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
                                       VK_PIPELINE_STAGE_TRANSFER_BIT,
                                   0, 1, &barrera, 0, nullptr, 0, nullptr);
         fh2_profundidad_lista_ = true;
+      }
+    }
+    // The stencil (the object id) is only in the packed 8_8_8_8 view the pass samples (R), built from the render target:
+    // the resolved depth image reads 0 there, which treated every car as the world and shook the player's.
+    fh2_empaquetada_lista_ = false;
+    const auto empaquetada = fh2_empaquetadas_.find(fh2_velocidad_profundidad_);
+    if (fh2_profundidad_lista_ && empaquetada != fh2_empaquetadas_.end() && empaquetada->second.preparada) {
+      const Imagen& origen_ids = empaquetada->second;
+      Imagen& copia_ids = fh2_empaquetada_[ranura];
+      if (copia_ids.imagen != VK_NULL_HANDLE &&
+          (copia_ids.ancho != origen_ids.ancho || copia_ids.alto != origen_ids.alto ||
+           copia_ids.formato != origen_ids.formato)) {
+        EsperarSalidas();
+        EsperarGpu();
+        for (Imagen& ids : fh2_empaquetada_) {
+          Destruir(ids);
+        }
+      }
+      if (copia_ids.imagen != VK_NULL_HANDLE ||
+          Crear(copia_ids, origen_ids.ancho, origen_ids.alto,
+                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, origen_ids.formato)) {
+        Preparar(copia_ids);
+        barrera.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrera.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        dfn_.vkCmdPipelineBarrier(comandos_trabajo_,
+                                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrera, 0, nullptr, 0, nullptr);
+        VkImageCopy copia_i{};
+        copia_i.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copia_i.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copia_i.extent = {origen_ids.ancho, origen_ids.alto, 1};
+        Fh2CopiarImagen(comandos_trabajo_, origen_ids.imagen, VK_IMAGE_LAYOUT_GENERAL, copia_ids.imagen,
+                        VK_IMAGE_LAYOUT_GENERAL, 1, &copia_i);
+        barrera.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+        barrera.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+        dfn_.vkCmdPipelineBarrier(comandos_trabajo_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                      VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                  0, 1, &barrera, 0, nullptr, 0, nullptr);
+        fh2_empaquetada_lista_ = true;
       }
     }
     fh2_velocidad_constantes_lista_ = fh2_velocidad_constantes_;
@@ -2989,11 +3029,11 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       movimiento.height = velocidad.alto;
       movimiento.version = fh2_velocidad_version_ * kFh2RanurasVelocidad + uint64_t(fh2_velocidad_lista_);
       std::memcpy(movimiento.params, fh2_velocidad_parametros_lista_, sizeof(movimiento.params));
-      if (fh2_profundidad_lista_ && fh2_profundidad_vistas_[size_t(fh2_velocidad_lista_)][1] != VK_NULL_HANDLE) {
+      if (fh2_profundidad_lista_ && fh2_empaquetada_lista_) {
         const Imagen& profundidad = fh2_profundidad_[size_t(fh2_velocidad_lista_)];
         movimiento.depth_image = profundidad.imagen;
-        movimiento.depth_view = fh2_profundidad_vistas_[size_t(fh2_velocidad_lista_)][0];
-        movimiento.stencil_view = fh2_profundidad_vistas_[size_t(fh2_velocidad_lista_)][1];
+        movimiento.depth_view = fh2_profundidad_vistas_[size_t(fh2_velocidad_lista_)];
+        movimiento.stencil_view = fh2_empaquetada_[size_t(fh2_velocidad_lista_)].vista;
         movimiento.depth_width = profundidad.ancho;
         movimiento.depth_height = profundidad.alto;
         movimiento.depth_version = fh2_profundidad_version_ * kFh2RanurasVelocidad + uint64_t(fh2_velocidad_lista_);
@@ -8402,7 +8442,9 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   uint64_t fh2_velocidad_registros_ = 0;
   // Mode 2: the velocity pass's depth texture (copied with its velocity) and constants.
   Imagen fh2_profundidad_[kFh2RanurasVelocidad]{};
-  VkImageView fh2_profundidad_vistas_[kFh2RanurasVelocidad][2] = {};  // depth only, stencil only
+  VkImageView fh2_profundidad_vistas_[kFh2RanurasVelocidad] = {};  // depth only
+  Imagen fh2_empaquetada_[kFh2RanurasVelocidad]{};  // copies of the packed depth, for its stencil
+  bool fh2_empaquetada_lista_ = false;
   uint64_t fh2_profundidad_version_ = 0;
   bool fh2_profundidad_lista_ = false;
   uint32_t fh2_velocidad_profundidad_ = 0;
