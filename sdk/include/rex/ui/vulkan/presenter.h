@@ -720,6 +720,9 @@ class VulkanPresenter final : public Presenter {
     // the guest output's size, read through `game_motion_set` (set 2 of the search and the interpolation). Its own
     // set 2 per slot of the refresher's rotation: the depth texture and a uniform buffer with the constants.
     FrameGenTarget game_motion;
+    // A copy of the previous frame's (frame_gen_interpolate.ps.glsl), and the frame game_motion was computed for.
+    FrameGenTarget game_motion_previous;
+    uint64_t game_motion_sequence = 0;
     VkDescriptorSet game_motion_set = VK_NULL_HANDLE;
     VkDescriptorSetLayout depth_set_layout = VK_NULL_HANDLE;
     VkPipelineLayout motion_pipeline_layout = VK_NULL_HANDLE;

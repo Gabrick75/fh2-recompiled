@@ -23,6 +23,8 @@ layout(push_constant) uniform FrameGenInterpolateConstants {
 layout(set = 0, binding = 0) uniform texture2D current_frame;
 layout(set = 0, binding = 1) uniform sampler current_sampler;
 layout(set = 1, binding = 0) uniform texture2D previous_frame;
+// Mode 2: the previous frame's motion, valid when motion_params.z is 1.
+layout(set = 1, binding = 1) uniform texture2D previous_motion;
 layout(set = 1, binding = 2) uniform texture2D vectors;
 layout(set = 1, binding = 3) uniform sampler linear_sampler;
 layout(set = 1, binding = 4) uniform sampler nearest_sampler;
@@ -90,6 +92,23 @@ float SameSurface(vec2 uv, vec2 vector) {
   difference = max(difference, length(GameVector(uv - vec2(r.x, 0.0)) - vector));
   difference = max(difference, length(GameVector(uv + vec2(0.0, r.y)) - vector));
   difference = max(difference, length(GameVector(uv - vec2(0.0, r.y)) - vector));
+  return 1.0 - smoothstep(3.0, 7.0, difference);
+}
+
+// The same for what is fetched from the previous frame, against that frame's own motion: the current frame's cannot
+// know where the car was when it turns on the screen, and calls that place road.
+vec2 PreviousVector(vec2 uv) { return textureLod(sampler2D(previous_motion, nearest_sampler), uv, 0.0).rg; }
+
+float SameSurfacePrevious(vec2 uv, vec2 vector) {
+  if (constants.motion_params.z < 0.5) {
+    return SameSurface(uv, vector);
+  }
+  vec2 r = 5.0 * constants.guest_texel;
+  float difference = length(PreviousVector(uv) - vector);
+  difference = max(difference, length(PreviousVector(uv + vec2(r.x, 0.0)) - vector));
+  difference = max(difference, length(PreviousVector(uv - vec2(r.x, 0.0)) - vector));
+  difference = max(difference, length(PreviousVector(uv + vec2(0.0, r.y)) - vector));
+  difference = max(difference, length(PreviousVector(uv - vec2(0.0, r.y)) - vector));
   return 1.0 - smoothstep(3.0, 7.0, difference);
 }
 
@@ -176,7 +195,7 @@ void main() {
      * HUD (a shifted copy of the minimap and the speedometer, which the mask does not stop: the mask protects the
      * HUD's own pixels, not those that land on it). An end that fails is dropped and the other stands alone.
      */
-    float keep_a = still ? 1.0 : previous_inside ? SameSurface(uv - o, best) : 0.0;
+    float keep_a = still ? 1.0 : previous_inside ? SameSurfacePrevious(uv - o, best) : 0.0;
     float keep_b = still ? 1.0 : current_inside ? SameSurface(uv + o, best) : 0.0;
     keep_a *= 1.0 - step(0.1, a.a);
     keep_b *= 1.0 - step(0.1, b.a);

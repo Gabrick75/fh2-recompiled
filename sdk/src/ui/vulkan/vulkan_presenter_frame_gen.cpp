@@ -551,6 +551,7 @@ void VulkanPresenter::FrameGenDestroyTargets() {
   }
   destroy(fg.smoothed);
   destroy(fg.game_motion);
+  destroy(fg.game_motion_previous);
   util::DestroyAndNullHandle(dfn.vkDestroyFramebuffer, device, fg.output_framebuffer);
   fg.output.reset();
   util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device, fg.dump_buffer);
@@ -682,7 +683,11 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
   created = created && create_target(fg.smoothed, LevelSize(width, 0), LevelSize(height, 0),
                                      kVectorFormat, fg.vector_pass);
   // Mode 2's motion, at the guest output's size (thin things need every pixel).
-  created = created && create_target(fg.game_motion, width, height, kVectorFormat, fg.vector_pass);
+  created = created && create_target(fg.game_motion, width, height, kVectorFormat, fg.vector_pass,
+                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+  // The previous frame's, to check what an end fetches from the previous frame against that frame's own motion.
+  created = created && create_target(fg.game_motion_previous, width, height, kVectorFormat, fg.vector_pass,
+                                     VK_IMAGE_USAGE_TRANSFER_DST_BIT);
   if (created) {
     std::unique_ptr<GuestOutputImage> output = GuestOutputImage::Create(vulkan_device_, width, height);
     created = output != nullptr;
@@ -762,7 +767,7 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
     write.pImageInfo = &info;
     dfn.vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
   }
-  write_set(fg.interpolate_set, fg.history, fg.history, fg.smoothed);
+  write_set(fg.interpolate_set, fg.history, fg.game_motion_previous, fg.smoothed);
   // The frame in the middle as a guest output image for the effects, in its own reference slot.
   VkDescriptorImageInfo output_info = {VK_NULL_HANDLE, fg.output->view(),
                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -779,7 +784,7 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
 
   // Every new image to the layout the descriptors say, so a binding a pass does not read is valid from
   // the first frame.
-  VkImageMemoryBarrier barriers[1 + 3 * kFrameGenLevels + 3];
+  VkImageMemoryBarrier barriers[1 + 3 * kFrameGenLevels + 4];
   uint32_t barrier_count = 0;
   const auto add_barrier = [&](VkImage image) {
     VkImageMemoryBarrier& barrier = barriers[barrier_count++];
@@ -801,6 +806,8 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
   }
   add_barrier(fg.smoothed.image);
   add_barrier(fg.game_motion.image);
+  add_barrier(fg.game_motion_previous.image);
+  fg.game_motion_sequence = 0;
   add_barrier(fg.output->image());
   dfn.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
@@ -923,6 +930,7 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
   VkDescriptorSet motion_set = FrameGenMotionSet(motion);
   MotionConstants motion_constants = {};
   const bool computed_motion = motion.has_depth() && motion.stencil_view != VK_NULL_HANDLE;
+  bool has_previous_motion = false;
   if (computed_motion) {
     const uint32_t slot = uint32_t(motion.depth_version % FrameGen::kMotionSlots);
     std::memcpy(fg.constant_mappings[slot], motion.constants.data(), sizeof(float) * motion.constants.size());
@@ -956,9 +964,48 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
     game_constants.scale[1] = float(REXCVAR_GET(present_frame_gen_escala_movimiento_y)) * float(fg.height);
     game_constants.padding = 0.0f;
     game_constants.debug_view = REXCVAR_GET(present_frame_gen_ver_profundidad) ? 1.0f : 0.0f;
+    // The motion still there is the previous frame's only if it was computed for the frame now in the history.
+    has_previous_motion = fg.game_motion_sequence && fg.game_motion_sequence == fg.history_sequence;
+    if (has_previous_motion) {
+      const auto barrier_for = [](VkImage image, VkAccessFlags src_access, VkAccessFlags dst_access,
+                                  VkImageLayout old_layout, VkImageLayout new_layout) {
+        VkImageMemoryBarrier barrier = {};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcAccessMask = src_access;
+        barrier.dstAccessMask = dst_access;
+        barrier.oldLayout = old_layout;
+        barrier.newLayout = new_layout;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = image;
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        return barrier;
+      };
+      const VkImageMemoryBarrier to_transfer[2] = {
+          barrier_for(fg.game_motion.image, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL),
+          barrier_for(fg.game_motion_previous.image, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)};
+      dfn.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                               VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, to_transfer);
+      VkImageCopy region = {};
+      region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      region.extent = {fg.game_motion.width, fg.game_motion.height, 1};
+      dfn.vkCmdCopyImage(command_buffer, fg.game_motion.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         fg.game_motion_previous.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+      const VkImageMemoryBarrier to_read[2] = {
+          barrier_for(fg.game_motion.image, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
+                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+          barrier_for(fg.game_motion_previous.image, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)};
+      dfn.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 2, to_read);
+    }
     FrameGenPass(dfn, command_buffer, fg.vector_pass, fg.game_motion.framebuffer, fg.game_motion.width,
                  fg.game_motion.height, fg.motion_pipeline, fg.motion_pipeline_layout, guest_output_set,
                  fg.luma_sets[0][0], fg.depth_sets[slot], &game_constants, sizeof(game_constants));
+    fg.game_motion_sequence = sequence;
     motion_set = fg.game_motion_set;
     motion_constants.params[0] = -1.0f;  // GameVector reads the computed motion as it is
     motion_constants.params[1] = REXCVAR_GET(present_frame_gen_movimiento_autoritario) ? 1.0f : 0.0f;
@@ -1020,6 +1067,9 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
 
   InterpolateConstants constants;
   constants.motion = motion_constants;
+  if (computed_motion) {
+    constants.motion.params[2] = has_previous_motion ? 1.0f : 0.0f;
+  }
   constants.guest_texel[0] = 1.0f / float(fg.width);
   constants.guest_texel[1] = 1.0f / float(fg.height);
   constants.vector_size[0] = float(fg.smoothed.width);
