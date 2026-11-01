@@ -80,6 +80,19 @@ float Mismatch(vec2 uv, vec2 d) {
   return e * (1.0 / 9.0);
 }
 
+// Whether a vector's end lies on the surface of the pixel it belongs to, and on nothing else nearby: the pixels around
+// an object carry a little of its color (antialiasing, the game's blur) though the field calls them background, and
+// fetched from afar they drew a faint outline of the car at a road vector's distance from it.
+float SameSurface(vec2 uv, vec2 vector) {
+  vec2 r = 5.0 * constants.guest_texel;
+  float difference = length(GameVector(uv) - vector);
+  difference = max(difference, length(GameVector(uv + vec2(r.x, 0.0)) - vector));
+  difference = max(difference, length(GameVector(uv - vec2(r.x, 0.0)) - vector));
+  difference = max(difference, length(GameVector(uv + vec2(0.0, r.y)) - vector));
+  difference = max(difference, length(GameVector(uv - vec2(0.0, r.y)) - vector));
+  return 1.0 - smoothstep(3.0, 7.0, difference);
+}
+
 void main() {
   vec2 uv = gl_FragCoord.xy * constants.guest_texel;
   vec2 vector_texel = 1.0 / constants.vector_size;
@@ -163,8 +176,8 @@ void main() {
      * HUD (a shifted copy of the minimap and the speedometer, which the mask does not stop: the mask protects the
      * HUD's own pixels, not those that land on it). An end that fails is dropped and the other stands alone.
      */
-    float keep_a = still ? 1.0 : previous_inside ? 1.0 - smoothstep(2.0, 6.0, length(GameVector(uv - o) - best)) : 0.0;
-    float keep_b = still ? 1.0 : current_inside ? 1.0 - smoothstep(2.0, 6.0, length(GameVector(uv + o) - best)) : 0.0;
+    float keep_a = still ? 1.0 : previous_inside ? SameSurface(uv - o, best) : 0.0;
+    float keep_b = still ? 1.0 : current_inside ? SameSurface(uv + o, best) : 0.0;
     keep_a *= 1.0 - step(0.1, a.a);
     keep_b *= 1.0 - step(0.1, b.a);
     // The field is the current frame's: it can vouch for the current end, but not for what the previous frame had at
