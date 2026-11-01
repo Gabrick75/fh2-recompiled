@@ -167,6 +167,11 @@ void main() {
     float keep_b = still ? 1.0 : current_inside ? 1.0 - smoothstep(2.0, 6.0, length(GameVector(uv + o) - best)) : 0.0;
     keep_a *= 1.0 - step(0.1, a.a);
     keep_b *= 1.0 - step(0.1, b.a);
+    // The field is the current frame's: it can vouch for the current end, but not for what the previous frame had at
+    // the other one. When the car turns on the screen, its old position reads as road here, so a road pixel fetched
+    // the old car (the tail light outside the car, at speed in curves). Ends of clearly different colors: the
+    // current one alone.
+    keep_a *= 1.0 - keep_b * smoothstep(0.1, 0.25, ends_max);
     float kept = keep_a + keep_b;
     color = kept > 0.01 ? (a * keep_a + b * keep_b) / kept : Current(uv);
   } else {
