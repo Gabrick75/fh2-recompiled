@@ -114,6 +114,7 @@ void main() {
    * the background's vector matches too (both of its ends land on the sky) and won. The motion is the current
    * frame's, so it is looked up where the pixel lands in the current frame, twice to settle.
    */
+  bool still = false;
   bool authoritative = constants.motion_params.w != 0.0 && constants.motion_params.x < 0.0 &&
                        constants.motion_params.y > 0.5;  // present_frame_gen_movimiento_autoritario
   if (authoritative) {
@@ -121,6 +122,23 @@ void main() {
     best = GameVector(uv + best * constants.guest_texel);
     best = GameVector(uv + best * constants.guest_texel);
     best_mismatch = 0.0;
+    /*
+     * The shadow a car casts stays with it on the screen, but it is painted on a road that rushes past, so it takes the
+     * road's vector and smears along the car's edges. It has no geometry to tell it apart, so: next to something that
+     * barely moves on the screen (a point 40 pixels away), a moving pixel whose vector does not match where standing
+     * still does, stands still. Only there: over the whole screen the same test speckles foliage by chance.
+     */
+    if (length(best) > 3.0) {
+      vec2 r = 40.0 * constants.guest_texel;
+      if (length(GameVector(uv + vec2(r.x, 0.0))) < 1.0 || length(GameVector(uv - vec2(r.x, 0.0))) < 1.0 ||
+          length(GameVector(uv + vec2(0.0, r.y))) < 1.0 || length(GameVector(uv - vec2(0.0, r.y))) < 1.0) {
+        float moving = Mismatch(uv, best);
+        if (moving > 0.02 && Mismatch(uv, vec2(0.0)) < moving * 0.5) {
+          best = vec2(0.0);
+          still = true;
+        }
+      }
+    }
   }
   vec2 o = best * constants.guest_texel;
   bool previous_inside = Inside(uv - o), current_inside = Inside(uv + o);
@@ -145,8 +163,8 @@ void main() {
      * HUD (a shifted copy of the minimap and the speedometer, which the mask does not stop: the mask protects the
      * HUD's own pixels, not those that land on it). An end that fails is dropped and the other stands alone.
      */
-    float keep_a = previous_inside ? 1.0 - smoothstep(2.0, 6.0, length(GameVector(uv - o) - best)) : 0.0;
-    float keep_b = current_inside ? 1.0 - smoothstep(2.0, 6.0, length(GameVector(uv + o) - best)) : 0.0;
+    float keep_a = still ? 1.0 : previous_inside ? 1.0 - smoothstep(2.0, 6.0, length(GameVector(uv - o) - best)) : 0.0;
+    float keep_b = still ? 1.0 : current_inside ? 1.0 - smoothstep(2.0, 6.0, length(GameVector(uv + o) - best)) : 0.0;
     keep_a *= 1.0 - step(0.1, a.a);
     keep_b *= 1.0 - step(0.1, b.a);
     float kept = keep_a + keep_b;
