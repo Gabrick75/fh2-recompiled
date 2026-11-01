@@ -139,9 +139,18 @@ void main() {
   float ends_max = max(ends.r, max(ends.g, ends.b));
   vec4 color;
   if (authoritative) {
-    // With the right vector, ends that differ are something appearing or disappearing behind an object (or light
-    // changing): the current frame's end alone, along the motion, instead of a see-through mix.
-    color = mix(middle, b, smoothstep(0.1, 0.25, ends_max));
+    /*
+     * Each end must lie on this pixel's surface: the motion where the vector lands has to be this one. The road next
+     * to the car, whose vector is long, otherwise fetches the car (a ghost around it) and, near the HUD, fetches the
+     * HUD (a shifted copy of the minimap and the speedometer, which the mask does not stop: the mask protects the
+     * HUD's own pixels, not those that land on it). An end that fails is dropped and the other stands alone.
+     */
+    float keep_a = previous_inside ? 1.0 - smoothstep(2.0, 6.0, length(GameVector(uv - o) - best)) : 0.0;
+    float keep_b = current_inside ? 1.0 - smoothstep(2.0, 6.0, length(GameVector(uv + o) - best)) : 0.0;
+    keep_a *= 1.0 - step(0.1, a.a);
+    keep_b *= 1.0 - step(0.1, b.a);
+    float kept = keep_a + keep_b;
+    color = kept > 0.01 ? (a * keep_a + b * keep_b) / kept : Current(uv);
   } else {
     float doubt = max(smoothstep(0.03, 0.08, best_mismatch), smoothstep(0.08, 0.2, ends_max));
     color = mix(middle, Previous(uv), doubt);
