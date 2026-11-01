@@ -84,12 +84,15 @@ float Mismatch(vec2 uv, vec2 d) {
 // an object carry a little of its color (antialiasing, the game's blur) though the field calls them background, and
 // fetched from afar they drew a faint outline of the car at a road vector's distance from it.
 float SameSurface(vec2 uv, vec2 vector) {
-  vec2 r = 5.0 * constants.guest_texel;
+  // Eight directions on two rings: four points at one distance let a thin streak through between them.
+  const vec2 kDirections[8] = vec2[8](vec2(1.0, 0.0), vec2(0.7071, 0.7071), vec2(0.0, 1.0), vec2(-0.7071, 0.7071),
+                                      vec2(-1.0, 0.0), vec2(-0.7071, -0.7071), vec2(0.0, -1.0), vec2(0.7071, -0.7071));
   float difference = length(GameVector(uv) - vector);
-  difference = max(difference, length(GameVector(uv + vec2(r.x, 0.0)) - vector));
-  difference = max(difference, length(GameVector(uv - vec2(r.x, 0.0)) - vector));
-  difference = max(difference, length(GameVector(uv + vec2(0.0, r.y)) - vector));
-  difference = max(difference, length(GameVector(uv - vec2(0.0, r.y)) - vector));
+  for (int i = 0; i < 8; ++i) {
+    vec2 step_uv = kDirections[i] * constants.guest_texel;
+    difference = max(difference, length(GameVector(uv + 5.0 * step_uv) - vector));
+    difference = max(difference, length(GameVector(uv + 11.0 * step_uv) - vector));
+  }
   return 1.0 - smoothstep(3.0, 7.0, difference);
 }
 
@@ -184,7 +187,7 @@ void main() {
     // the other one. When the car turns on the screen, its old position reads as road here, so a road pixel fetched
     // the old car (the tail light outside the car, at speed in curves). Ends of clearly different colors: the
     // current one alone.
-    keep_a *= 1.0 - keep_b * smoothstep(0.1, 0.25, ends_max);
+    keep_a *= 1.0 - keep_b * smoothstep(0.05, 0.15, ends_max);
     float kept = keep_a + keep_b;
     color = kept > 0.01 ? (a * keep_a + b * keep_b) / kept : Current(uv);
   } else {
