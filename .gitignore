@@ -42,3 +42,6 @@ sdk/thirdparty/
 
 # Dear ImGui window layout, written by any ImGui program run from here
 imgui.ini
+
+# Local changes log (kept on disk, not published)
+docs/alteracoes_fh2.md
