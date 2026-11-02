@@ -7,6 +7,7 @@
 #include <rex/ppc/func.h>
 
 #include <atomic>
+#include <chrono>
 
 REX_EXTERN(__imp__sub_83201D50);
 
@@ -56,10 +57,26 @@ REX_HOOK_RAW(sub_82EC93F8) {
   const uint32_t cara = ctx.r4.u32 & 0xFF;
   const uint32_t caras = malla >= 0x10000 ? base[malla + 98] : 0;
   if (caras != 0 && cara >= caras) {
-    static std::atomic<int> reported{0};
-    if (reported.fetch_add(1, std::memory_order_relaxed) < 4) {
-      REXLOG_WARN("[fh2] sub_82EC93F8 (desde {:08X}): cara {} de una malla de {} ({:08X}): se usa la {}",
-                  static_cast<uint32_t>(ctx.lr), cara, caras, malla, cara % caras);
+    // Counted, not only the first few: to see whether these line up with the cars thrown in collisions. One line
+    // per second at most (with the raw word, the mesh and the caller), and a total every 10 s.
+    using Reloj = std::chrono::steady_clock;
+    static std::atomic<uint64_t> total{0}, desde_informe{0};
+    static std::atomic<int64_t> ultimo_linea{0}, ultimo_informe{0};
+    const int64_t ahora =
+        std::chrono::duration_cast<std::chrono::milliseconds>(Reloj::now().time_since_epoch()).count();
+    total.fetch_add(1, std::memory_order_relaxed);
+    const uint64_t n = desde_informe.fetch_add(1, std::memory_order_relaxed) + 1;
+    int64_t previo = ultimo_linea.load(std::memory_order_relaxed);
+    if (ahora - previo >= 1000 && ultimo_linea.compare_exchange_strong(previo, ahora)) {
+      REXLOG_WARN("[fh2] sub_82EC93F8 (desde {:08X}): cara {} (palabra {:08X}) de una malla de {} ({:08X}): se usa la {}",
+                  static_cast<uint32_t>(ctx.lr), cara, ctx.r4.u32, caras, malla, cara % caras);
+    }
+    previo = ultimo_informe.load(std::memory_order_relaxed);
+    if (previo == 0) {
+      ultimo_informe.compare_exchange_strong(previo, ahora);
+    } else if (ahora - previo >= 10000 && ultimo_informe.compare_exchange_strong(previo, ahora)) {
+      desde_informe.store(0, std::memory_order_relaxed);
+      REXLOG_WARN("[fh2] caras fuera de malla: {} en 10 s ({} en total)", n, total.load());
     }
     ctx.r4.u64 = cara % caras;
   }
