@@ -80,8 +80,9 @@ REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_y, -0.5, "UI/Presenter
                       "present_frame_gen: pixeles por unidad de la velocidad del juego, en y (por el alto)");
 
 // Debugging: the dumps' motion file holds depth * 1000 and the stencil instead. Breaks the picture while on.
-REXCVAR_DEFINE_BOOL(present_frame_gen_ver_profundidad, false, "UI/Presenter",
-                    "Depuracion de present_frame_gen: el volcado guarda profundidad y stencil en lugar del movimiento");
+REXCVAR_DEFINE_INT32(present_frame_gen_ver_profundidad, 0, "UI/Presenter",
+                     "Depuracion de present_frame_gen: el volcado guarda en lugar del movimiento la profundidad y "
+                     "1 el stencil, 2 la profundidad de la vista empaquetada");
 
 // Mode 2's computed motion decides alone where it exists (frame_gen_interpolate.ps.glsl); off, it is only the
 // preferred candidate, as the decoded velocity was. It needs the measured scale above: with a wrong one the whole
@@ -963,7 +964,7 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
     game_constants.scale[0] = float(REXCVAR_GET(present_frame_gen_escala_movimiento_x)) * float(fg.width);
     game_constants.scale[1] = float(REXCVAR_GET(present_frame_gen_escala_movimiento_y)) * float(fg.height);
     game_constants.padding = 0.0f;
-    game_constants.debug_view = REXCVAR_GET(present_frame_gen_ver_profundidad) ? 1.0f : 0.0f;
+    game_constants.debug_view = float(REXCVAR_GET(present_frame_gen_ver_profundidad));
     // The motion still there is the previous frame's only if it was computed for the frame now in the history.
     has_previous_motion = fg.game_motion_sequence && fg.game_motion_sequence == fg.history_sequence;
     if (has_previous_motion) {

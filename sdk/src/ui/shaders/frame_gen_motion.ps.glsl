@@ -75,8 +75,11 @@ void main() {
   ivec2 center = ivec2(uv * constants.depth_region * vec2(size));
   if (constants.debug_view != 0.0) {
     ivec2 stored = ivec2(center.x, int(vec2(size).y * constants.depth_region.y) - 1 - center.y);
+    vec4 packed_texel = texelFetch(stencil_texture, stored, 0);
+    // 2: the packed view's own depth bytes (G, then A) in place of the stencil, to compare its timing with the depth's.
     vector_out = vec2(texelFetch(depth_texture, stored, 0).r * 1000.0,
-                      texelFetch(stencil_texture, stored, 0).r * 255.0);
+                      constants.debug_view > 1.5 ? packed_texel.g * 1000.0 + packed_texel.a * 0.001
+                                                 : packed_texel.r * 255.0);
     return;
   }
   // FH2's Z is reversed: the pass's w is -near Q / (1 - Q - depth), so depth 1 is the near plane and 0 the far one.
