@@ -63,28 +63,6 @@ vec2 GameVector(vec2 uv) {
   return -0.5 * previous_minus_current * constants.motion_scale;
 }
 
-/*
- * Whether a car is near (mode 2 only: B of the computed motion). The depth and the stencil the motion comes from are
- * not of the presented image's moment: on the S23 dumps, while drifting, the car stood 40 to 100 pixels away from the
- * car on the screen, so part of the car took the road's motion and its tail light was drawn outside it. Within that
- * reach of a car the image decides between its own vectors and the game's (as without mode 2); elsewhere the game's
- * motion stays authoritative.
- */
-bool CarNear(vec2 uv) {
-  if (constants.motion_params.w == 0.0 || constants.motion_params.x >= 0.0) {
-    return false;
-  }
-  const vec2 kDirections[8] = vec2[8](vec2(1.0, 0.0), vec2(0.7071, 0.7071), vec2(0.0, 1.0), vec2(-0.7071, 0.7071),
-                                      vec2(-1.0, 0.0), vec2(-0.7071, -0.7071), vec2(0.0, -1.0), vec2(0.7071, -0.7071));
-  float car = textureLod(sampler2D(game_velocity, game_velocity_sampler), uv, 0.0).b;
-  for (int i = 0; i < 8; ++i) {
-    vec2 step_uv = kDirections[i] * constants.guest_texel;
-    car = max(car, textureLod(sampler2D(game_velocity, game_velocity_sampler), uv + 48.0 * step_uv, 0.0).b);
-    car = max(car, textureLod(sampler2D(game_velocity, game_velocity_sampler), uv + 112.0 * step_uv, 0.0).b);
-  }
-  return car > 0.5;
-}
-
 vec4 Previous(vec2 uv) { return textureLod(sampler2D(previous_frame, linear_sampler), uv, 0.0); }
 vec4 Current(vec2 uv) { return textureLod(sampler2D(current_frame, current_sampler), uv, 0.0); }
 
@@ -170,8 +148,7 @@ void main() {
    */
   bool still = false;
   bool authoritative = constants.motion_params.w != 0.0 && constants.motion_params.x < 0.0 &&
-                       constants.motion_params.y > 0.5 &&  // present_frame_gen_movimiento_autoritario
-                       !CarNear(uv);
+                       constants.motion_params.y > 0.5;  // present_frame_gen_movimiento_autoritario
   if (authoritative) {
     best = GameVector(uv);
     best = GameVector(uv + best * constants.guest_texel);
