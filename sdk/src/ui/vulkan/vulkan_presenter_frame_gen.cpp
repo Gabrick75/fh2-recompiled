@@ -82,7 +82,8 @@ REXCVAR_DEFINE_DOUBLE(present_frame_gen_escala_movimiento_y, -0.5, "UI/Presenter
 // Debugging: the dumps' motion file holds depth * 1000 and the stencil instead. Breaks the picture while on.
 REXCVAR_DEFINE_INT32(present_frame_gen_ver_profundidad, 0, "UI/Presenter",
                      "Depuracion de present_frame_gen: el volcado guarda en lugar del movimiento la profundidad y "
-                     "1 el stencil, 2 el byte G de la vista empaquetada, 3 sus bytes B y A");
+                     "1 el stencil, 2 el byte G de la vista empaquetada, 3 sus bytes B y A, 4 la diferencia "
+                     "entre su profundidad y la de la copia");
 
 // Mode 2's computed motion decides alone where it exists (frame_gen_interpolate.ps.glsl); off, it is only the
 // preferred candidate, as the decoded velocity was. It needs the measured scale above: with a wrong one the whole

@@ -38,6 +38,51 @@ layout(location = 0) out vec2 vector_out;
 
 vec4 Row(int index) { return index >= 0 && index < 224 ? game.rows[index] : vec4(0.0); }
 
+// The packed view's own depth: A the high byte, B, then G the low one (R is the stencil).
+float PackedDepth(vec4 packed_texel) {
+  return dot(floor(packed_texel.abg * 255.0 + 0.5), vec3(65536.0, 256.0, 1.0)) * (1.0 / 16777215.0);
+}
+
+/*
+ * The stencil of the depth texel `stored`, whose depth is `depth`. The packed view it comes from is not of the same
+ * moment as the depth copy: on the S23 dumps its car stood 40 to 100 pixels away from the car in the depth and on the
+ * screen while drifting (the trees matched), so the part of the car outside the old silhouette took the road's motion
+ * and a copy of the tail light was drawn outside the car. Its own depth is of its own moment, so the stencil is taken
+ * where the packed depth is this depth: here for nearly every pixel, else the nearest texel around that matches.
+ */
+const vec2 kSearchDirections[16] = vec2[16](
+    vec2(1.0, 0.0), vec2(0.9239, 0.3827), vec2(0.7071, 0.7071), vec2(0.3827, 0.9239), vec2(0.0, 1.0),
+    vec2(-0.3827, 0.9239), vec2(-0.7071, 0.7071), vec2(-0.9239, 0.3827), vec2(-1.0, 0.0), vec2(-0.9239, -0.3827),
+    vec2(-0.7071, -0.7071), vec2(-0.3827, -0.9239), vec2(0.0, -1.0), vec2(0.3827, -0.9239), vec2(0.7071, -0.7071),
+    vec2(0.9239, -0.3827));
+const float kSearchRadii[7] = float[7](6.0, 12.0, 24.0, 40.0, 60.0, 90.0, 128.0);
+
+float StencilAt(ivec2 stored, float depth, ivec2 size) {
+  vec4 here = texelFetch(stencil_texture, stored, 0);
+  float tolerance = max(2e-4, depth * 1e-3);
+  if (abs(PackedDepth(here) - depth) <= tolerance) {
+    return here.r;
+  }
+  ivec2 limit = ivec2(vec2(size) * constants.depth_region) - 1;
+  for (int ring = 0; ring < 7; ++ring) {
+    float best = tolerance;
+    float found = -1.0;
+    for (int i = 0; i < 16; ++i) {
+      ivec2 at = clamp(stored + ivec2(kSearchDirections[i] * kSearchRadii[ring]), ivec2(0), limit);
+      vec4 there = texelFetch(stencil_texture, at, 0);
+      float difference = abs(PackedDepth(there) - depth);
+      if (difference <= best) {
+        best = difference;
+        found = there.r;
+      }
+    }
+    if (found >= 0.0) {
+      return found;
+    }
+  }
+  return here.r;
+}
+
 // The half vector of the depth texel `texel` (the pass's math), and its depth.
 vec2 Motion(ivec2 texel, ivec2 size, out float depth) {
   texel = clamp(texel, ivec2(0), size - 1);
@@ -49,7 +94,7 @@ vec2 Motion(ivec2 texel, ivec2 size, out float depth) {
   // top row is the screen area's last one.
   ivec2 stored = ivec2(texel.x, int(vec2(size).y * constants.depth_region.y) - 1 - texel.y);
   depth = texelFetch(depth_texture, stored, 0).r;
-  float stencil = texelFetch(stencil_texture, stored, 0).r;
+  float stencil = StencilAt(stored, depth, size);
   if (stencil >= 0.5) {  // the threshold as nfsmw_nativo_shaders.cpp corrects it
     stencil = 0.0;
   }
@@ -77,6 +122,12 @@ void main() {
     ivec2 stored = ivec2(center.x, int(vec2(size).y * constants.depth_region.y) - 1 - center.y);
     vec4 packed_texel = texelFetch(stencil_texture, stored, 0);
     // 2: the packed view's own depth bytes (G, then A) in place of the stencil, to compare its timing with the depth's.
+    // 4: the depth, and how far the packed view's own depth is from it (x 100000).
+    if (constants.debug_view > 3.5) {
+      float depth = texelFetch(depth_texture, stored, 0).r;
+      vector_out = vec2(depth * 1000.0, clamp((PackedDepth(packed_texel) - depth) * 1e5, -60000.0, 60000.0));
+      return;
+    }
     // 3: its B and A bytes, one of them the depth's high byte.
     if (constants.debug_view > 2.5) {
       vector_out = vec2(packed_texel.b, packed_texel.a) * 1000.0;
@@ -87,17 +138,20 @@ void main() {
     return;
   }
   // FH2's Z is reversed: the pass's w is -near Q / (1 - Q - depth), so depth 1 is the near plane and 0 the far one.
+  // The nearest of the 3x3 by depth alone, then its motion: the stencil lookup once per pixel.
   float nearest_depth = -1.0;
-  vec2 best = vec2(0.0);
+  ivec2 nearest = center;
+  int stored_top = int(vec2(size).y * constants.depth_region.y) - 1;
   for (int y = -1; y <= 1; ++y) {
     for (int x = -1; x <= 1; ++x) {
-      float depth;
-      vec2 motion = Motion(center + ivec2(x, y), size, depth);
+      ivec2 texel = clamp(center + ivec2(x, y), ivec2(0), size - 1);
+      float depth = texelFetch(depth_texture, ivec2(texel.x, stored_top - texel.y), 0).r;
       if (depth > nearest_depth) {
         nearest_depth = depth;
-        best = motion;
+        nearest = texel;
       }
     }
   }
-  vector_out = best;
+  float depth;
+  vector_out = Motion(nearest, size, depth);
 }
