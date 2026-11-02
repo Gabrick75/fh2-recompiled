@@ -38,9 +38,14 @@ layout(location = 0) out vec2 vector_out;
 
 vec4 Row(int index) { return index >= 0 && index < 224 ? game.rows[index] : vec4(0.0); }
 
-// The packed view's own depth: A the high byte, B, then G the low one (R is the stencil).
+// The packed view's own depth: 24 bits, A the high byte, B, then G the low one (R is the stencil), in the Xenos'
+// float depth (20e4: 4 bits of exponent with a bias of 15, 20 of mantissa). Read as an integer they were never the
+// depth copy's (0.6 against 0.036 on the S23); as 20e4 they are.
 float PackedDepth(vec4 packed_texel) {
-  return dot(floor(packed_texel.abg * 255.0 + 0.5), vec3(65536.0, 256.0, 1.0)) * (1.0 / 16777215.0);
+  vec3 bytes = floor(packed_texel.abg * 255.0 + 0.5);
+  float exponent = floor(bytes.x / 16.0);
+  float mantissa = (mod(bytes.x, 16.0) * 65536.0 + bytes.y * 256.0 + bytes.z) * (1.0 / 1048576.0);
+  return exponent == 0.0 ? mantissa * exp2(-14.0) : (1.0 + mantissa) * exp2(exponent - 15.0);
 }
 
 /*
