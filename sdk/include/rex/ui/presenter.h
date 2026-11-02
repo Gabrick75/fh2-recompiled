@@ -14,6 +14,7 @@
 #include <array>
 #include <atomic>
 #include <climits>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstddef>
@@ -68,6 +69,10 @@ namespace ui {
 
 class Presenter;
 class Window;
+
+// Images presented to the surface since the start, real and present_frame_gen's alike, for the frame rate the
+// screen shows (the Android overlay reads it; the game's own rate counts its Swaps).
+extern std::atomic<uint64_t> g_presented_frames;
 
 class UIDrawContext {
  public:
@@ -458,6 +463,8 @@ class Presenter {
     uint32_t display_aspect_ratio_x;
     uint32_t display_aspect_ratio_y;
     bool is_8bpc;
+    // Which refresh wrote the image, counting from 1 (present_frame_gen tells consecutive frames apart).
+    uint64_t sequence = 0;
 
     GuestOutputProperties() { SetToInactive(); }
 
@@ -767,6 +774,17 @@ class Presenter {
   // Call via PaintAndPresent.
   virtual PaintResult PaintAndPresentImpl(bool execute_ui_drawers) = 0;
 
+  /*
+   * present_frame_gen: whether the implementation can paint a frame in the middle of the last two guest
+   * frames. The presenter's own thread then paints twice per guest frame (PaintFromPaintThread): first
+   * with paint_intermediate_ set, which the implementation answers by painting the frame in the middle
+   * and setting intermediate_painted_ (or by painting the real frame when there is no previous one), and
+   * half a frame later the real one. Both flags belong to whoever paints (paint_mode_mutex_).
+   */
+  virtual bool IsFrameGenAvailable() const { return false; }
+  bool paint_intermediate_ = false;
+  bool intermediate_painted_ = false;
+
   // For calling from the painting implementations if requested.
   void ExecuteUIDrawersFromUIThread(UIDrawContext& ui_draw_context);
 
@@ -1056,6 +1074,27 @@ class Presenter {
   uint64_t paint_thread_avisos_ = 0;
   uint64_t paint_thread_pintados_ = 0;
   uint64_t paint_thread_descartados_ = 0;
+  // present_frame_gen's pace, only on the paint thread: when the last guest frame arrived and the
+  // smoothed interval between them (33.3 ms until measured).
+  std::chrono::steady_clock::time_point frame_gen_last_arrival_{};
+  double frame_gen_interval_ms_ = 1000.0 / 30.0;
+  uint64_t frame_gen_log_counter_ = 0;
+  // The pace that came out (PaintFromPaintThread), for the log: [0] middle -> real, [1] real -> next middle.
+  struct FrameGenPace {
+    double sum = 0.0;
+    double min = 1e9;
+    double max = 0.0;
+    uint64_t count = 0;
+    void Add(double ms) {
+      sum += ms;
+      min = std::min(min, ms);
+      max = std::max(max, ms);
+      ++count;
+    }
+    double Mean() const { return count ? sum / double(count) : 0.0; }
+  };
+  FrameGenPace frame_gen_pace_[2];
+  std::chrono::steady_clock::time_point frame_gen_last_real_done_{};
   // Modifiable only by the UI thread, can be read by the thread that's
   // painting.
   uint32_t surface_width_in_paint_connection_ = 0;
@@ -1118,6 +1157,8 @@ class Presenter {
   // Accessible only by refreshing, whether the last refresh contained an image
   // rather than being blank.
   bool guest_output_active_last_refresh_ = false;
+  // GuestOutputProperties::sequence of the last refresh. Only the refreshing thread.
+  uint64_t guest_output_sequence_ = 0;
 
   // Ordered by the Z order, and then by the time of addition.
   // Note: All the iteration logic involving this Z ordering must be the same as

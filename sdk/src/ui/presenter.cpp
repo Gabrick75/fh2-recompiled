@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <thread>
 #include <utility>
 
 #include <rex/assert.h>
@@ -150,6 +151,34 @@ REXCVAR_DEFINE_INT32(present_hilo_gracia_fotogramas, 3000, "UI/Presenter",
 REXCVAR_DEFINE_INT32(present_hilo_prioridad, 0x2C, "UI/Presenter",
                      "Prioridad de Horizon del hilo de presentacion (0x1C-0x3B). 0x2C por defecto "
                      "(REX_SWITCH_PRIO_PRESENT). Sin efecto fuera de la Switch");
+
+/*
+ * present_frame_gen: a frame in the middle of every two the game makes, so a game held at 30 FPS reaches
+ * the panel at 60.
+ *
+ * The frame in the middle comes from the images alone (VulkanPresenter: a block search between the
+ * previous and the current guest output). It needs the presenter's own thread, which it turns on: the
+ * real frame waits half a frame after the one in the middle is presented, and that wait must not hold
+ * the thread that records the game's GPU work.
+ *
+ * The cost is half a frame of latency (the real frame is shown ~16.7 ms later at 30 FPS) and the GPU
+ * time of the passes. It only looks right with a steady pace: the game held at 30 on a 60 Hz panel (or
+ * at 60 on 120 Hz).
+ */
+REXCVAR_DEFINE_BOOL(present_frame_gen, false, "UI/Presenter",
+                    "Generar un fotograma intermedio entre cada dos del juego (30 FPS del juego -> 60 en "
+                    "la pantalla). Usa el hilo propio del presentador. Va mejor con el juego limitado a "
+                    "30 FPS y la pantalla a 60 Hz o mas")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+/*
+ * When the real frame is presented: this much before the middle of the measured interval between guest
+ * frames. With FIFO the present waits for its vblank anyway; the margin only keeps the real frame from
+ * missing it when the GPU work of the paint runs a little long.
+ */
+REXCVAR_DEFINE_DOUBLE(present_frame_gen_margen_ms, 2.0, "UI/Presenter",
+                      "present_frame_gen: cuantos ms antes de la mitad del intervalo entre fotogramas del "
+                      "juego se presenta el fotograma real")
+    .range(0.0, 20.0);
 
 REXCVAR_DEFINE_BOOL(present_letterbox, true, "UI/Presenter",
                     "Enable letterboxing for non-native aspect ratios");
@@ -684,6 +713,7 @@ bool Presenter::RefreshGuestOutput(
   writable_properties.display_aspect_ratio_x = display_aspect_ratio_x;
   writable_properties.display_aspect_ratio_y = display_aspect_ratio_y;
   writable_properties.is_8bpc = false;
+  writable_properties.sequence = ++guest_output_sequence_;
   bool is_active = writable_properties.IsActive();
   if (is_active) {
     if (!RefreshGuestOutputImpl(guest_output_mailbox_writable_, frontbuffer_width,
@@ -1654,10 +1684,15 @@ bool Presenter::InSurfaceOnMonitorFromUIThread() const {
 #endif  // XE_PLATFORM
 }
 
+std::atomic<uint64_t> g_presented_frames{0};
+
 Presenter::PaintResult Presenter::PaintAndPresent(bool execute_ui_drawers) {
   assert_false(execute_ui_drawers && !is_in_ui_thread_paint_);
   assert_true(surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedPaintable);
   PaintResult result = PaintAndPresentImpl(execute_ui_drawers);
+  if (result == PaintResult::kPresented || result == PaintResult::kPresentedSuboptimal) {
+    g_presented_frames.fetch_add(1, std::memory_order_relaxed);
+  }
   switch (result) {
     case PaintResult::kPresented:
       surface_paint_connection_was_optimal_at_successful_paint_ = true;
@@ -1727,7 +1762,8 @@ void Presenter::ContarBucleReconexion(PaintResult result) {
 // The presenter's own thread. See the long comment in presenter.h.
 
 void Presenter::StartPaintThreadFromUIThread() {
-  if (paint_thread_ || !REXCVAR_GET(present_hilo_propio)) {
+  // present_frame_gen needs this thread: it waits half a frame between its two presents.
+  if (paint_thread_ || !(REXCVAR_GET(present_hilo_propio) || REXCVAR_GET(present_frame_gen))) {
     return;
   }
   {
@@ -1897,39 +1933,103 @@ void Presenter::RequestPaintFromPaintThread() {
 }
 
 void Presenter::PaintFromPaintThread() {
-  PaintResult paint_result = PaintResult::kNotPresented;
-  {
-    // The paint_mode_ contract does not change: whoever paints holds this lock the whole time it paints,
-    // which is what gives the UI its barrier to disconnect without being painted over.
-    std::lock_guard<std::mutex> paint_mode_mutex_lock(paint_mode_mutex_);
-    // The mode may have changed between the signal and now (the game thread read it without the lock on
-    // purpose). The real one is checked here, and the same is done as on the usual path: if control has
-    // passed to the UI in the meantime (opening the menu, for example), the UI is asked to paint, so that
-    // frame is not lost in the transition.
-    switch (paint_mode_) {
-      case PaintMode::kNone:
-        break;
-      case PaintMode::kUIThreadOnRequest:
-        RequestPaintOrConnectionRecoveryViaWindow(true);
-        break;
-      case PaintMode::kGuestOutputThreadImmediately:
-        if (surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedPaintable) {
-          paint_result = PaintAndPresent(false);
-          if (surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedOutdated) {
-            RequestPaintOrConnectionRecoveryViaWindow(true);
+  // One paint with the usual handling around it. intermediate: present_frame_gen's frame in the middle;
+  // returns whether it was painted (false: the real frame was painted instead, or nothing was).
+  const auto paint = [this](bool intermediate) {
+    PaintResult paint_result = PaintResult::kNotPresented;
+    bool intermediate_painted = false;
+    {
+      // The paint_mode_ contract does not change: whoever paints holds this lock the whole time it
+      // paints, which is what gives the UI its barrier to disconnect without being painted over.
+      std::lock_guard<std::mutex> paint_mode_mutex_lock(paint_mode_mutex_);
+      // The mode may have changed between the signal and now (the game thread read it without the lock
+      // on purpose). The real one is checked here, and the same is done as on the usual path: if control
+      // has passed to the UI in the meantime (opening the menu, for example), the UI is asked to paint,
+      // so that frame is not lost in the transition.
+      switch (paint_mode_) {
+        case PaintMode::kNone:
+          break;
+        case PaintMode::kUIThreadOnRequest:
+          RequestPaintOrConnectionRecoveryViaWindow(true);
+          break;
+        case PaintMode::kGuestOutputThreadImmediately:
+          if (surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedPaintable) {
+            paint_intermediate_ = intermediate;
+            intermediate_painted_ = false;
+            paint_result = PaintAndPresent(false);
+            intermediate_painted = intermediate_painted_ && (paint_result == PaintResult::kPresented ||
+                                                             paint_result == PaintResult::kPresentedSuboptimal);
+            paint_intermediate_ = false;
+            intermediate_painted_ = false;
+            if (surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedOutdated) {
+              RequestPaintOrConnectionRecoveryViaWindow(true);
+            }
           }
-        }
-        break;
+          break;
+      }
     }
-  }
-  // Outside the lock, same as in RefreshGuestOutput.
-  if (host_gpu_loss_callback_) {
-    if (paint_result == PaintResult::kGpuLostResponsible) {
-      host_gpu_loss_callback_(true, false);
-    } else if (paint_result == PaintResult::kGpuLostExternally) {
-      host_gpu_loss_callback_(false, false);
+    // Outside the lock, same as in RefreshGuestOutput.
+    if (host_gpu_loss_callback_) {
+      if (paint_result == PaintResult::kGpuLostResponsible) {
+        host_gpu_loss_callback_(true, false);
+      } else if (paint_result == PaintResult::kGpuLostExternally) {
+        host_gpu_loss_callback_(false, false);
+      }
     }
+    return intermediate_painted;
+  };
+
+  /*
+   * present_frame_gen: the frame in the middle as soon as the new guest frame arrives, the real one half
+   * an interval later. The interval is the measured one between guest frames (smoothed), so the two
+   * presents split it evenly whatever the panel's rate; with FIFO each one also waits for its vblank. A
+   * frame after a pause (loading, a menu) is not interpolated: the previous one is too old to be its
+   * neighbor.
+   */
+  if (REXCVAR_GET(present_frame_gen) && IsFrameGenAvailable()) {
+    const auto arrival = std::chrono::steady_clock::now();
+    const double since_last_ms =
+        frame_gen_last_arrival_ == std::chrono::steady_clock::time_point{}
+            ? 1e9
+            : std::chrono::duration<double, std::milli>(arrival - frame_gen_last_arrival_).count();
+    frame_gen_last_arrival_ = arrival;
+    if (since_last_ms > 5.0 && since_last_ms < 100.0) {
+      frame_gen_interval_ms_ += (since_last_ms - frame_gen_interval_ms_) * 0.1;
+    }
+    const bool steady = since_last_ms < 100.0 && since_last_ms < frame_gen_interval_ms_ * 2.5;
+    if (steady && paint(true)) {
+      const auto intermediate_done = std::chrono::steady_clock::now();
+      const double wait_ms = frame_gen_interval_ms_ * 0.5 - REXCVAR_GET(present_frame_gen_margen_ms);
+      if (wait_ms > 0.0) {
+        std::this_thread::sleep_until(arrival + std::chrono::microseconds(int64_t(wait_ms * 1000.0)));
+      }
+      paint(false);
+      // The pace as it came out, between the ends of the presents (each may wait for its vblank): from the
+      // frame in the middle to the real one, and from the real one to the next frame in the middle.
+      const auto real_done = std::chrono::steady_clock::now();
+      frame_gen_pace_[0].Add(std::chrono::duration<double, std::milli>(real_done - intermediate_done).count());
+      if (frame_gen_last_real_done_ != std::chrono::steady_clock::time_point{}) {
+        frame_gen_pace_[1].Add(
+            std::chrono::duration<double, std::milli>(intermediate_done - frame_gen_last_real_done_).count());
+      }
+      frame_gen_last_real_done_ = real_done;
+    } else if (!steady) {
+      paint(false);
+    }
+    // (Steady but nothing in the middle: the implementation had no previous frame and painted the real one
+    // itself.)
+    if (++frame_gen_log_counter_ % 600 == 0) {
+      REXLOG_INFO(
+          "[presentador] frame gen: intervalo medio entre fotogramas del juego {:.2f} ms; intermedio -> real "
+          "{:.1f} ms ({:.1f}-{:.1f}), real -> intermedio {:.1f} ms ({:.1f}-{:.1f}), {} pares",
+          frame_gen_interval_ms_, frame_gen_pace_[0].Mean(), frame_gen_pace_[0].min, frame_gen_pace_[0].max,
+          frame_gen_pace_[1].Mean(), frame_gen_pace_[1].min, frame_gen_pace_[1].max, frame_gen_pace_[0].count);
+      frame_gen_pace_[0] = {};
+      frame_gen_pace_[1] = {};
+    }
+    return;
   }
+  paint(false);
 }
 
 void Presenter::PaintThreadMain() {

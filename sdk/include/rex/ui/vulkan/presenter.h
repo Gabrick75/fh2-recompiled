@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -95,6 +96,42 @@ class VulkanPresenter final : public Presenter {
   static constexpr VkImageLayout kGuestOutputInternalLayout =
       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+  /*
+   * present_frame_gen: the game's own motion for a guest frame, when the refresher has it (FH2's velocity pass,
+   * nfsmw_nativo_destinos.cpp). The image is in GENERAL layout and written on queue 0 before the refresh's
+   * work, so a later paint can sample it; the refresher keeps it alive for a few frames.
+   */
+  struct FrameGenMotion {
+    VkImage image = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    // Changes whenever `image` is a new image (descriptors are rewritten on a change).
+    uint64_t version = 0;
+    // The game's motionBlurParams1 that frame, to undo the blur curve the velocity is stored with.
+    float params[4] = {};
+    bool valid() const { return view != VK_NULL_HANDLE; }
+
+    /*
+     * The velocity pass's own inputs, for computing the motion the way it does but without the blur (frame_gen_motion):
+     * its depth texture (the scene's depth resolved as 8_8_8_8 with the stencil, GENERAL layout) and its pixel
+     * constants c32-c255 (invCurrentVPThenPrevVP, four rows per object id), then c124 (QAndNegNearQAndScale) and the
+     * texture's exponent adjust as the last row's x.
+     */
+    static constexpr uint32_t kConstantRows = 224 + 2;
+    VkImage depth_image = VK_NULL_HANDLE;
+    // The native renderer keeps it as a D24S8 image: a depth-only view (the float depth the pass decodes). The object
+    // id comes from stencil_view, the packed 8_8_8_8 texture the pass samples, whose R is the stencil.
+    VkImageView depth_view = VK_NULL_HANDLE;
+    VkImageView stencil_view = VK_NULL_HANDLE;
+    uint32_t depth_width = 0;
+    uint32_t depth_height = 0;
+    uint64_t depth_version = 0;
+    std::array<float, kConstantRows * 4> constants{};
+    bool has_depth() const { return depth_view != VK_NULL_HANDLE; }
+  };
+
   // The callback must use the graphics and compute queue 0 of the device.
   class VulkanGuestOutputRefreshContext final : public GuestOutputRefreshContext {
    public:
@@ -114,12 +151,16 @@ class VulkanPresenter final : public Presenter {
     uint64_t image_version() const { return image_version_; }
     // Whether a proper barrier must be done to acquire the image.
     bool image_ever_written_previously() const { return image_ever_written_previously_; }
+    // present_frame_gen: the game's motion for this frame, if the refresher has it.
+    void SetFrameGenMotion(const FrameGenMotion& motion) { motion_ = motion; }
+    const FrameGenMotion& frame_gen_motion() const { return motion_; }
 
    private:
     VkImage image_;
     VkImageView image_view_;
     uint64_t image_version_;
     bool image_ever_written_previously_;
+    FrameGenMotion motion_;
   };
 
   static std::unique_ptr<VulkanPresenter> Create(HostGpuLossCallback host_gpu_loss_callback,
@@ -245,6 +286,8 @@ class VulkanPresenter final : public Presenter {
     // whether the image has previously been written. If an image is active
     // after a refresh, it can be assumed that this is true.
     bool ever_successfully_refreshed = false;
+    // present_frame_gen: the game's motion the last refresh attached (VulkanGuestOutputRefreshContext).
+    FrameGenMotion motion;
 
     void SetToNewImage(const std::shared_ptr<GuestOutputImage>& new_image, uint64_t new_version) {
       image = new_image;
@@ -382,11 +425,16 @@ class VulkanPresenter final : public Presenter {
       VkFormat swapchain_format = VK_FORMAT_UNDEFINED;
     };
 
+    // The mailbox images, then present_frame_gen's frame in the middle in a slot of its own, so it never
+    // pushes a mailbox image out of the references (that would rewrite a descriptor every frame).
+    static constexpr uint32_t kGuestOutputPaintRefFrameGen = kGuestOutputMailboxSize;
+    static constexpr uint32_t kGuestOutputPaintRefCount = kGuestOutputMailboxSize + 1;
+
     enum GuestOutputDescriptorSet : uint32_t {
       kGuestOutputDescriptorSetGuestOutput0Sampled,
 
       kGuestOutputDescriptorSetIntermediate0Sampled =
-          kGuestOutputDescriptorSetGuestOutput0Sampled + kGuestOutputMailboxSize,
+          kGuestOutputDescriptorSetGuestOutput0Sampled + kGuestOutputPaintRefCount,
 
       kGuestOutputDescriptorSetCount =
           kGuestOutputDescriptorSetIntermediate0Sampled + kMaxGuestOutputPaintEffects - 1,
@@ -504,7 +552,7 @@ class VulkanPresenter final : public Presenter {
     // the reference is not in this array yet, the most outdated reference, if
     // needed, is replaced with the new one, awaiting the usage completion of
     // the last paint usage.
-    std::array<std::pair<uint64_t, std::shared_ptr<GuestOutputImage>>, kGuestOutputMailboxSize>
+    std::array<std::pair<uint64_t, std::shared_ptr<GuestOutputImage>>, kGuestOutputPaintRefCount>
         guest_output_image_paint_refs;
     // The latest submission index at which any guest output image was drawn.
     uint64_t guest_output_image_paint_last_submission = 0;
@@ -598,6 +646,166 @@ class VulkanPresenter final : public Presenter {
                                 const GuestOutputPaintConfig& config);
   void DestroyTemporalUpscalerContext();
 #endif
+
+  /*
+   * present_frame_gen (vulkan_presenter_frame_gen.cpp): a frame in the middle of every two guest
+   * frames, from the images alone, painted through the same effects as a real one.
+   *
+   * Everything is recorded into the paint command buffer, as fragment passes into formats every device
+   * can render to and filter (the guest output's 10:10:10:2 is not a storage format everywhere):
+   *   - a luma pyramid of each frame at 1/4, 1/8, 1/16 and 1/32 of the guest output (two, the previous
+   *     frame's and the current one's);
+   *   - a symmetric block search: every texel at 1/32, then refined at 1/16, 1/8 and 1/4, and a 3x3
+   *     vector median of the last level;
+   *   - the frame in the middle at the guest output's size, into `output`;
+   *   - after the real frame is painted, a copy of it into `history`, because the mailbox reuses its
+   *     images.
+   * Accessed only while painting (paint_mode_mutex_ held) and in the destructor.
+   */
+  struct FrameGenTarget {
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkFramebuffer framebuffer = VK_NULL_HANDLE;
+    uint32_t width = 0;
+    uint32_t height = 0;
+  };
+  // 1/4, 1/8, 1/16 and 1/32 of the guest output.
+  static constexpr uint32_t kFrameGenLevels = 4;
+  struct FrameGen {
+    bool initialized = false;
+    bool failed = false;
+    VkRenderPass luma_pass = VK_NULL_HANDLE;    // R8_UNORM
+    VkRenderPass vector_pass = VK_NULL_HANDLE;  // R16G16_SFLOAT
+    VkRenderPass color_pass = VK_NULL_HANDLE;   // kGuestOutputFormat
+    // Set 0 is the guest output's own paint descriptor set; set 1 is one of these.
+    VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+    VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+    VkShaderModule luma_fs = VK_NULL_HANDLE;
+    VkShaderModule search_fs = VK_NULL_HANDLE;
+    VkShaderModule interpolate_fs = VK_NULL_HANDLE;
+    VkShaderModule copy_fs = VK_NULL_HANDLE;
+    VkShaderModule median_fs = VK_NULL_HANDLE;
+    VkPipeline luma_pipeline = VK_NULL_HANDLE;
+    VkPipeline search_pipeline = VK_NULL_HANDLE;
+    VkPipeline interpolate_pipeline = VK_NULL_HANDLE;
+    VkPipeline copy_pipeline = VK_NULL_HANDLE;
+    VkPipeline median_pipeline = VK_NULL_HANDLE;
+    VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
+
+    // The guest output size the targets below are for; 0 before the first frame.
+    uint32_t width = 0;
+    uint32_t height = 0;
+    FrameGenTarget history;
+    FrameGenTarget luma[2][kFrameGenLevels];
+    // The vectors of each level, in guest pixels.
+    FrameGenTarget vectors[kFrameGenLevels];
+    // The finest vectors after the 3x3 vector median, which the interpolation reads.
+    FrameGenTarget smoothed;
+    std::shared_ptr<GuestOutputImage> output;
+    VkFramebuffer output_framebuffer = VK_NULL_HANDLE;
+    // [pyramid][level]: the level above as the source (level 0 reads the guest output from set 0).
+    VkDescriptorSet luma_sets[2][kFrameGenLevels] = {};
+    // [current pyramid][level]: both pyramids' level and the vectors of the level above.
+    VkDescriptorSet search_sets[2][kFrameGenLevels] = {};
+    VkDescriptorSet interpolate_set = VK_NULL_HANDLE;
+    VkDescriptorSet median_set = VK_NULL_HANDLE;
+    // Set 2: the game's velocity (FrameGenMotion), one per slot of the refresher's rotation (version % 4, the
+    // set rewritten when that slot's image changes), and the last one for frames without it.
+    static constexpr uint32_t kMotionSlots = 4;
+    VkDescriptorSetLayout motion_set_layout = VK_NULL_HANDLE;
+    VkDescriptorSet motion_sets[kMotionSlots + 1] = {};
+    VkImageView motion_set_views[kMotionSlots] = {};
+    // Mode 2 (frame_gen_motion.ps.glsl): the motion computed from the velocity pass's depth and matrices, at half
+    // the guest output's size, read through `game_motion_set` (set 2 of the search and the interpolation). Its own
+    // set 2 per slot of the refresher's rotation: the depth texture and a uniform buffer with the constants.
+    FrameGenTarget game_motion;
+    // A copy of the previous frame's (frame_gen_interpolate.ps.glsl), and the frame game_motion was computed for.
+    FrameGenTarget game_motion_previous;
+    uint64_t game_motion_sequence = 0;
+    VkDescriptorSet game_motion_set = VK_NULL_HANDLE;
+    VkDescriptorSetLayout depth_set_layout = VK_NULL_HANDLE;
+    VkPipelineLayout motion_pipeline_layout = VK_NULL_HANDLE;
+    VkShaderModule motion_fs = VK_NULL_HANDLE;
+    VkPipeline motion_pipeline = VK_NULL_HANDLE;
+    VkDescriptorSet depth_sets[kMotionSlots] = {};
+    VkImageView depth_set_views[kMotionSlots] = {};
+    VkBuffer constant_buffers[kMotionSlots] = {};
+    VkDeviceMemory constant_memory[kMotionSlots] = {};
+    void* constant_mappings[kMotionSlots] = {};
+    uint64_t with_depth = 0;
+
+    // The guest output (GuestOutputProperties::sequence) each pyramid and the history hold, 0 = none.
+    uint64_t luma_sequence[2] = {};
+    uint64_t history_sequence = 0;
+    // The guest output whose frame in the middle (before it) `output` holds.
+    uint64_t output_sequence = 0;
+
+    // For the log.
+    uint64_t intermediates = 0;
+    uint64_t skipped = 0;
+    uint64_t with_motion = 0;
+    // GPU time of each frame in the middle, from the pyramid to the interpolation: two timestamps per slot,
+    // a slot read back kTimestampSlots frames in the middle later (by then its paint has completed:
+    // PaintAndPresentImpl awaits all but the last kSubmissionCount paints). No pool where the queue has no
+    // timestamps.
+    static constexpr uint32_t kTimestampSlots = 4;
+    VkQueryPool timestamps = VK_NULL_HANDLE;
+    float timestamp_period_ns = 0.0f;
+    uint32_t timestamp_slot = 0;
+    bool timestamp_written[kTimestampSlots] = {};
+    double gpu_ms_sum = 0.0;
+    uint64_t gpu_ms_count = 0;
+
+    // present_frame_gen_volcar_cada_s: the previous frame, the one in the middle and the current one of the
+    // same paint, copied to `dump_memory` and written out once that paint has completed.
+    VkBuffer dump_buffer = VK_NULL_HANDLE;
+    VkDeviceMemory dump_memory = VK_NULL_HANDLE;
+    uint32_t dump_width = 0;
+    uint32_t dump_height = 0;
+    // The game's velocity copied with the three frames (4 bytes per texel), if the frame had it.
+    uint32_t dump_motion_width = 0;
+    uint32_t dump_motion_height = 0;
+    VkFormat dump_motion_format = VK_FORMAT_UNDEFINED;
+    float dump_motion_params[4] = {};
+    bool dump_pending = false;
+    uint64_t dump_submission = 0;
+    uint32_t dumps = 0;
+    std::chrono::steady_clock::time_point last_dump{};
+  };
+
+  bool FrameGenInitialize();
+  void FrameGenShutdown();
+  // Recreates the targets when the guest output size changes (initializing first if needed), with the
+  // barriers for the new images in `command_buffer`. False if they could not be created.
+  bool FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_t width, uint32_t height);
+  void FrameGenDestroyTargets();
+  // The luma pyramid of the guest output in `guest_output_set` into pyramid `pyramid`.
+  void FrameGenRecordLuma(VkCommandBuffer command_buffer, VkDescriptorSet guest_output_set,
+                          uint32_t pyramid);
+  // The frame between the history and the guest output `sequence`, into frame_gen_.output. False
+  // (and nothing recorded) if there is no previous frame to start from.
+  bool FrameGenRecordIntermediate(VkCommandBuffer command_buffer, VkDescriptorSet guest_output_set,
+                                  VkImage guest_output_image, const FrameGenMotion& motion,
+                                  uint64_t sequence);
+  // present_frame_gen_volcar_cada_s: records the copies of the three frames when one is due, and writes
+  // out the previous one once its paint has completed.
+  void FrameGenDump(VkCommandBuffer command_buffer, VkImage guest_output_image,
+                    const FrameGenMotion& motion);
+  // Keeps the guest output `sequence` as the history (and its pyramid), once per guest frame.
+  void FrameGenRecordHistory(VkCommandBuffer command_buffer, VkDescriptorSet guest_output_set,
+                             uint64_t sequence);
+  bool IsFrameGenAvailable() const override;
+  // The set 2 for this frame's game velocity (the empty one without it).
+  VkDescriptorSet FrameGenMotionSet(const FrameGenMotion& motion);
+  // For CaptureGuestOutput: the frame in the middle when present_frame_gen_capturar_intermedio asks for it
+  // and one has been made, else null.
+  std::shared_ptr<GuestOutputImage> FrameGenCaptureImage() const;
+  // present_frame_gen_depurar: 0 normal, 1 the real frame in place of the one in the middle (same pace), 2 the
+  // one in the middle in place of the real one too.
+  int32_t FrameGenDebugMode() const;
+
+  FrameGen frame_gen_;
 
   const VulkanDevice* vulkan_device_;
   const UISamplers* ui_samplers_;
