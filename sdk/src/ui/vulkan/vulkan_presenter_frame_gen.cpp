@@ -1105,7 +1105,7 @@ void VulkanPresenter::FrameGenDump(VkCommandBuffer command_buffer, VkImage guest
   const VulkanDevice::Functions& dfn = vulkan_device_->functions();
   const VkDevice device = vulkan_device_->device();
   FrameGen& fg = frame_gen_;
-  constexpr uint32_t kMaxDumps = 20;
+  constexpr uint32_t kMaxDumps = 150;
 
   // The previous dump, once its paint has completed.
   if (fg.dump_pending &&
