@@ -62,30 +62,41 @@ const vec2 kSearchDirections[16] = vec2[16](
     vec2(0.9239, -0.3827));
 const float kSearchRadii[7] = float[7](6.0, 12.0, 24.0, 40.0, 60.0, 90.0, 128.0);
 
+/*
+ * Matching any texel of that depth was not enough: in FH2's reversed depth the road beside the car is nearly as deep as
+ * its flank, and a loose match took the road's stencil there (the next S23 dumps still had road vectors on the car's
+ * rear corner). Both depths are equal to 1e-8 where nothing moved, so a difference means the scene changed between
+ * the two moments: nearer now, something arrived in front (a car: the stencil of the car texel around whose depth is
+ * closest); farther now, the car left (the world).
+ */
 float StencilAt(ivec2 stored, float depth, ivec2 size) {
   vec4 here = texelFetch(stencil_texture, stored, 0);
-  float tolerance = max(2e-4, depth * 1e-3);
-  if (abs(PackedDepth(here) - depth) <= tolerance) {
+  float packed_depth = PackedDepth(here);
+  if (abs(packed_depth - depth) <= max(1e-6, depth * 1e-4)) {
     return here.r;
   }
+  if (depth < packed_depth) {
+    return 0.0;
+  }
   ivec2 limit = ivec2(vec2(size) * constants.depth_region) - 1;
+  float best = depth * 0.05;
+  float found = here.r;
   for (int ring = 0; ring < 7; ++ring) {
-    float best = tolerance;
-    float found = -1.0;
     for (int i = 0; i < 16; ++i) {
       ivec2 at = clamp(stored + ivec2(kSearchDirections[i] * kSearchRadii[ring]), ivec2(0), limit);
       vec4 there = texelFetch(stencil_texture, at, 0);
+      // A car's stencil only (0 is the world; 128 and up the threshold also counts as the world).
+      if (there.r < 0.5 / 255.0 || there.r >= 0.5) {
+        continue;
+      }
       float difference = abs(PackedDepth(there) - depth);
-      if (difference <= best) {
+      if (difference < best) {
         best = difference;
         found = there.r;
       }
     }
-    if (found >= 0.0) {
-      return found;
-    }
   }
-  return here.r;
+  return found;
 }
 
 // The half vector of the depth texel `texel` (the pass's math), and its depth.
