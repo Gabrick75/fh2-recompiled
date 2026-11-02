@@ -109,7 +109,9 @@ vec2 Motion(ivec2 texel, ivec2 size, out float depth) {
   // top row is the screen area's last one.
   ivec2 stored = ivec2(texel.x, int(vec2(size).y * constants.depth_region.y) - 1 - texel.y);
   depth = texelFetch(depth_texture, stored, 0).r;
-  float stencil = StencilAt(stored, depth, size);
+  // The packed view's stencil as it is: StencilAt's correction never fired (the depth copy and the packed view agree
+  // with each other; both are off the presented image's moment). Kept for debug view 5.
+  float stencil = texelFetch(stencil_texture, stored, 0).r;
   if (stencil >= 0.5) {  // the threshold as nfsmw_nativo_shaders.cpp corrects it
     stencil = 0.0;
   }
