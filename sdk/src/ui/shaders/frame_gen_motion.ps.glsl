@@ -34,7 +34,7 @@ layout(set = 2, binding = 2, std140) uniform GameConstants {
   vec4 rows[226];
 } game;
 
-layout(location = 0) out vec2 vector_out;
+layout(location = 0) out vec4 vector_out;  // the half vector, and in B 1 for a car's texel
 
 vec4 Row(int index) { return index >= 0 && index < 224 ? game.rows[index] : vec4(0.0); }
 
@@ -99,7 +99,7 @@ float StencilAt(ivec2 stored, float depth, ivec2 size) {
 }
 
 // The half vector of the depth texel `texel` (the pass's math), and its depth.
-vec2 Motion(ivec2 texel, ivec2 size, out float depth) {
+vec2 Motion(ivec2 texel, ivec2 size, out float depth, out float car) {
   texel = clamp(texel, ivec2(0), size - 1);
   vec2 uv = (vec2(texel) + 0.5) / (vec2(size) * constants.depth_region);
   // The pass's screen position: x right, y up, -1 to 1.
@@ -114,6 +114,7 @@ vec2 Motion(ivec2 texel, ivec2 size, out float depth) {
     stencil = 0.0;
   }
   float object = floor(stencil * 85.0 + 0.5);
+  car = object > 0.5 ? 1.0 : 0.0;
   float inverse = 1.0 / (1.0 - q.x - depth);
   vec3 view = vec3(position.y * q.y * inverse, q.y * inverse * (1.0 - depth), q.y * inverse);
   int a0 = int(clamp(floor(4.0 * object + 0.5), -256.0, 255.0));
@@ -140,22 +141,22 @@ void main() {
     // 5: the depth, and the stencil as StencilAt corrects it.
     if (constants.debug_view > 4.5) {
       float depth = texelFetch(depth_texture, stored, 0).r;
-      vector_out = vec2(depth * 1000.0, StencilAt(stored, depth, size) * 255.0);
+      vector_out = vec4(depth * 1000.0, StencilAt(stored, depth, size) * 255.0, 0.0, 0.0);
       return;
     }
     // 4: the depth, and how far the packed view's own depth is from it (x 100000).
     if (constants.debug_view > 3.5) {
       float depth = texelFetch(depth_texture, stored, 0).r;
-      vector_out = vec2(depth * 1000.0, clamp((PackedDepth(packed_texel) - depth) * 1e5, -60000.0, 60000.0));
+      vector_out = vec4(depth * 1000.0, clamp((PackedDepth(packed_texel) - depth) * 1e5, -60000.0, 60000.0), 0.0, 0.0);
       return;
     }
     // 3: its B and A bytes, one of them the depth's high byte.
     if (constants.debug_view > 2.5) {
-      vector_out = vec2(packed_texel.b, packed_texel.a) * 1000.0;
+      vector_out = vec4(vec2(packed_texel.b, packed_texel.a) * 1000.0, 0.0, 0.0);
       return;
     }
-    vector_out = vec2(texelFetch(depth_texture, stored, 0).r * 1000.0,
-                      constants.debug_view > 1.5 ? packed_texel.g * 1000.0 : packed_texel.r * 255.0);
+    vector_out = vec4(texelFetch(depth_texture, stored, 0).r * 1000.0,
+                      constants.debug_view > 1.5 ? packed_texel.g * 1000.0 : packed_texel.r * 255.0, 0.0, 0.0);
     return;
   }
   // FH2's Z is reversed: the pass's w is -near Q / (1 - Q - depth), so depth 1 is the near plane and 0 the far one.
@@ -173,6 +174,6 @@ void main() {
       }
     }
   }
-  float depth;
-  vector_out = Motion(nearest, size, depth);
+  float depth, car;
+  vector_out = vec4(Motion(nearest, size, depth, car), car, 0.0);
 }

@@ -677,6 +677,7 @@ class VulkanPresenter final : public Presenter {
     bool failed = false;
     VkRenderPass luma_pass = VK_NULL_HANDLE;    // R8_UNORM
     VkRenderPass vector_pass = VK_NULL_HANDLE;  // R16G16_SFLOAT
+    VkRenderPass motion_pass = VK_NULL_HANDLE;  // R16G16B16A16_SFLOAT, mode 2's motion
     VkRenderPass color_pass = VK_NULL_HANDLE;   // kGuestOutputFormat
     // Set 0 is the guest output's own paint descriptor set; set 1 is one of these.
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;

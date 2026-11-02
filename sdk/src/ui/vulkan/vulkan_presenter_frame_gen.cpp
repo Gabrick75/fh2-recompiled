@@ -158,6 +158,8 @@ static_assert(sizeof(InterpolateConstants) <= kFragmentConstantsSize);
 
 constexpr VkFormat kLumaFormat = VK_FORMAT_R8_UNORM;
 constexpr VkFormat kVectorFormat = VK_FORMAT_R16G16_SFLOAT;
+// Mode 2's motion: the half vector, and in B whether the texel is a car's (frame_gen_motion.ps.glsl).
+constexpr VkFormat kMotionFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 
 // Texels of 1/32 searched each way: +-192 guest pixels for each half of the motion, so up to 384 pixels
 // between two frames (the roadside at full speed moved past the 192 of a search at 1/16).
@@ -269,6 +271,7 @@ bool VulkanPresenter::FrameGenInitialize() {
   };
   if (!create_render_pass(kLumaFormat, fg.luma_pass) ||
       !create_render_pass(kVectorFormat, fg.vector_pass) ||
+      !create_render_pass(kMotionFormat, fg.motion_pass) ||
       !create_render_pass(kGuestOutputFormat, fg.color_pass)) {
     return fail("los render passes");
   }
@@ -469,7 +472,7 @@ bool VulkanPresenter::FrameGenInitialize() {
     if (!create_shader(shaders::frame_gen_motion_ps, sizeof(shaders::frame_gen_motion_ps), fg.motion_fs)) {
       return fail("el shader del movimiento");
     }
-    fg.motion_pipeline = CreateGuestOutputPaintPipeline(GuestOutputPaintEffect::kBilinear, fg.vector_pass,
+    fg.motion_pipeline = CreateGuestOutputPaintPipeline(GuestOutputPaintEffect::kBilinear, fg.motion_pass,
                                                         fg.motion_fs, fg.motion_pipeline_layout);
     if (fg.motion_pipeline == VK_NULL_HANDLE) {
       return fail("la tuberia del movimiento");
@@ -606,6 +609,7 @@ void VulkanPresenter::FrameGenShutdown() {
   }
   util::DestroyAndNullHandle(dfn.vkDestroyRenderPass, device, fg.color_pass);
   util::DestroyAndNullHandle(dfn.vkDestroyRenderPass, device, fg.vector_pass);
+  util::DestroyAndNullHandle(dfn.vkDestroyRenderPass, device, fg.motion_pass);
   util::DestroyAndNullHandle(dfn.vkDestroyRenderPass, device, fg.luma_pass);
   fg.initialized = false;
 }
@@ -685,10 +689,10 @@ bool VulkanPresenter::FrameGenEnsureSize(VkCommandBuffer command_buffer, uint32_
   created = created && create_target(fg.smoothed, LevelSize(width, 0), LevelSize(height, 0),
                                      kVectorFormat, fg.vector_pass);
   // Mode 2's motion, at the guest output's size (thin things need every pixel).
-  created = created && create_target(fg.game_motion, width, height, kVectorFormat, fg.vector_pass,
+  created = created && create_target(fg.game_motion, width, height, kMotionFormat, fg.motion_pass,
                                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
   // The previous frame's, to check what an end fetches from the previous frame against that frame's own motion.
-  created = created && create_target(fg.game_motion_previous, width, height, kVectorFormat, fg.vector_pass,
+  created = created && create_target(fg.game_motion_previous, width, height, kMotionFormat, fg.motion_pass,
                                      VK_IMAGE_USAGE_TRANSFER_DST_BIT);
   if (created) {
     std::unique_ptr<GuestOutputImage> output = GuestOutputImage::Create(vulkan_device_, width, height);
@@ -1004,7 +1008,7 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
       dfn.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
                                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 2, to_read);
     }
-    FrameGenPass(dfn, command_buffer, fg.vector_pass, fg.game_motion.framebuffer, fg.game_motion.width,
+    FrameGenPass(dfn, command_buffer, fg.motion_pass, fg.game_motion.framebuffer, fg.game_motion.width,
                  fg.game_motion.height, fg.motion_pipeline, fg.motion_pipeline_layout, guest_output_set,
                  fg.luma_sets[0][0], fg.depth_sets[slot], &game_constants, sizeof(game_constants));
     fg.game_motion_sequence = sequence;
@@ -1035,7 +1039,8 @@ bool VulkanPresenter::FrameGenRecordIntermediate(VkCommandBuffer command_buffer,
 
   // The search, from the coarsest level down: only without mode 2's motion, which the interpolation then follows
   // alone (the luma pyramid is still made, for the next frame's search if it has no motion).
-  const bool skip_search = computed_motion && REXCVAR_GET(present_frame_gen_movimiento_autoritario);
+  // Always now: next to the cars the image decides between its own vectors and the game's (the interpolation).
+  const bool skip_search = false;
   for (uint32_t level = kFrameGenLevels; !skip_search && level-- > 0;) {
     const FrameGenTarget& target = fg.vectors[level];
     SearchConstants constants = {};
@@ -1150,7 +1155,8 @@ void VulkanPresenter::FrameGenDump(VkCommandBuffer command_buffer, VkImage guest
                                       uint32_t(fg.dump_motion_format)};
           std::fwrite(header, sizeof(header), 1, file);
           std::fwrite(fg.dump_motion_params, sizeof(fg.dump_motion_params), 1, file);
-          std::fwrite(static_cast<const uint8_t*>(mapping) + pixels * 4 * 3, 4,
+          std::fwrite(static_cast<const uint8_t*>(mapping) + pixels * 4 * 3,
+                      fg.dump_motion_format == kMotionFormat ? 8 : 4,
                       size_t(fg.dump_motion_width) * fg.dump_motion_height, file);
           std::fclose(file);
         }
@@ -1171,7 +1177,7 @@ void VulkanPresenter::FrameGenDump(VkCommandBuffer command_buffer, VkImage guest
     return;
   }
   if (fg.dump_buffer == VK_NULL_HANDLE &&
-      !util::CreateDedicatedAllocationBuffer(vulkan_device_, VkDeviceSize(fg.width) * fg.height * 4 * 4,
+      !util::CreateDedicatedAllocationBuffer(vulkan_device_, VkDeviceSize(fg.width) * fg.height * 4 * 5,
                                              VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                              util::MemoryPurpose::kReadback, fg.dump_buffer,
                                              fg.dump_memory)) {
@@ -1193,7 +1199,7 @@ void VulkanPresenter::FrameGenDump(VkCommandBuffer command_buffer, VkImage guest
        motion.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32);
   fg.dump_motion_width = with_game ? fg.width : (with_motion ? std::min(motion.width, fg.width) : 0);
   fg.dump_motion_height = with_game ? fg.height : (with_motion ? std::min(motion.height, fg.height) : 0);
-  fg.dump_motion_format = with_game ? VK_FORMAT_R16G16_SFLOAT : motion.format;
+  fg.dump_motion_format = with_game ? kMotionFormat : motion.format;
   for (uint32_t i = 0; i < 4; ++i) {
     fg.dump_motion_params[i] = motion.params[i];
   }
