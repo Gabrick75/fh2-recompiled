@@ -66,8 +66,8 @@ const float kSearchRadii[7] = float[7](6.0, 12.0, 24.0, 40.0, 60.0, 90.0, 128.0)
  * Matching any texel of that depth was not enough: in FH2's reversed depth the road beside the car is nearly as deep as
  * its flank, and a loose match took the road's stencil there (the next S23 dumps still had road vectors on the car's
  * rear corner). Both depths are equal to 1e-8 where nothing moved, so a difference means the scene changed between
- * the two moments: nearer now, something arrived in front (a car: the stencil of the car texel around whose depth is
- * closest); farther now, the car left (the world).
+ * the two moments: a car arrived or left. The stencil is then a car's if a car texel around has this depth, else the
+ * world's.
  */
 float StencilAt(ivec2 stored, float depth, ivec2 size) {
   vec4 here = texelFetch(stencil_texture, stored, 0);
@@ -75,12 +75,11 @@ float StencilAt(ivec2 stored, float depth, ivec2 size) {
   if (abs(packed_depth - depth) <= max(1e-6, depth * 1e-4)) {
     return here.r;
   }
-  if (depth < packed_depth) {
-    return 0.0;
-  }
+  // Farther now is not always the world: where the old and the new car overlap the old one may be the nearer. Either
+  // way, a car texel around of this depth (within 2 %) makes it car, and nothing makes it the world.
   ivec2 limit = ivec2(vec2(size) * constants.depth_region) - 1;
-  float best = depth * 0.05;
-  float found = here.r;
+  float best = depth * 0.02;
+  float found = 0.0;
   for (int ring = 0; ring < 7; ++ring) {
     for (int i = 0; i < 16; ++i) {
       ivec2 at = clamp(stored + ivec2(kSearchDirections[i] * kSearchRadii[ring]), ivec2(0), limit);
@@ -138,6 +137,12 @@ void main() {
     ivec2 stored = ivec2(center.x, int(vec2(size).y * constants.depth_region.y) - 1 - center.y);
     vec4 packed_texel = texelFetch(stencil_texture, stored, 0);
     // 2: the packed view's own depth bytes (G, then A) in place of the stencil, to compare its timing with the depth's.
+    // 5: the depth, and the stencil as StencilAt corrects it.
+    if (constants.debug_view > 4.5) {
+      float depth = texelFetch(depth_texture, stored, 0).r;
+      vector_out = vec2(depth * 1000.0, StencilAt(stored, depth, size) * 255.0);
+      return;
+    }
     // 4: the depth, and how far the packed view's own depth is from it (x 100000).
     if (constants.debug_view > 3.5) {
       float depth = texelFetch(depth_texture, stored, 0).r;
