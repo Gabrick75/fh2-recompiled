@@ -494,9 +494,9 @@ public final class GameActivity extends SDLActivity
         return label;
     }
 
-    // A line under the FPS with the GPU, CPU and RAM use, every second, read off the UI thread.
+    // Lines under the FPS with the GPU, CPU and RAM use and the power draw, every second, read off the UI thread.
     private void showUsage(LinearLayout overlay) {
-        TextView usageLabel = overlayLabel("GPU --  CPU --  RAM --");
+        TextView usageLabel = overlayLabel("GPU --  CPU --  RAM --\nPWR --");
         overlay.addView(usageLabel, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         startUsageMonitor(usageLabel);
@@ -515,23 +515,24 @@ public final class GameActivity extends SDLActivity
             while (!isFinishing() && !isDestroyed()) {
                 String text = monitor.sample();
                 monitor.sampleClocks();  // the clocks and their caps go to the log only, not the overlay
+                float fps;
+                try {
+                    fps = nativeFps();
+                } catch (UnsatisfiedLinkError e) {
+                    fps = -1;
+                }
+                String power = monitor.power(fps);  // battery watts and fps per watt, on a second line
                 if (usageLabel != null) {
-                    clock.post(() -> usageLabel.setText(text));
+                    clock.post(() -> usageLabel.setText(text + "\n" + power));
                 }
                 if (++tick % 5 == 0) {
-                    float fps;
-                    try {
-                        fps = nativeFps();
-                    } catch (UnsatisfiedLinkError e) {
-                        fps = -1;
-                    }
                     // With frame generation, the rate the screen shows next to the game's.
                     float screen = frameGen ? screenRate.sample() : -1;
                     String line = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT)
                             .format(new java.util.Date()) +
                             String.format(java.util.Locale.ROOT, "  %.1f fps  ", fps) +
                             (screen >= 0 ? String.format(java.util.Locale.ROOT, "tela %.1f fps  ", screen) : "") +
-                            text +
+                            text + "  " + power +
                             monitor.clocksLine() + "\n";
                     try (java.io.FileWriter writer = new java.io.FileWriter(usageLog, true)) {
                         writer.write(line);

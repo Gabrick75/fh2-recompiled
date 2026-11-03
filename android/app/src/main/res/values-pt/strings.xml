@@ -99,6 +99,7 @@
     <string name="fps_limit">Limite de FPS</string>
     <string name="free">Livre</string>
     <string name="free_1f_1f" formatted="false">" (livre %.1f/%.1f)"</string>
+    <string name="power_charging">(carregando)</string>
     <string name="from_an_export_or_an_automatic">De uma exportação ou de um backup automático</string>
     <string name="fsr_mode">Modo FSR</string>
     <string name="fxaa_quality">Qualidade do FXAA</string>
