@@ -25,6 +25,7 @@ import java.util.Map;
  * - CPU: the game's share of all cores, and its busiest thread as a share of one core. When that thread is near
  *   100 % (usually "GPU Commands", the emulated GPU's command processor), it is what limits the frame rate.
  * - RAM: the game's resident memory, and the phone's available memory of its total.
+ * - PWR: the battery's power draw in watts and the game's frames per watt (power()), on a second line.
  */
 final class UsageMonitor {
     private static final String TAG = "fh2";
@@ -153,6 +154,60 @@ final class UsageMonitor {
             }
         }
         return line.toString();
+    }
+
+    // Power drawn from the battery, averaged over the last POWER_WINDOW samples (the current reading is instant
+    // and jumps from frame to frame).
+    private static final int POWER_WINDOW = 5;
+    private final double[] powerWatts = new double[POWER_WINDOW];
+    private int powerCount, powerNext;
+    private boolean powerLogged;
+
+    /**
+     * The phone's power draw and the frames per joule it buys: "PWR 5.3 W  6.8 fps/W". It is the whole phone
+     * (screen, radio, SoC) as the battery sees it, so it compares settings and builds on the same phone, not phones
+     * with each other. While charging the battery reads the charger minus the draw, so no number is shown; nor where
+     * the phone does not report its current. Call once a second, after sample().
+     */
+    String power(float fps) {
+        android.content.Intent battery = context.registerReceiver(null,
+                new android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED));
+        boolean plugged = battery != null && battery.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) != 0;
+        if (plugged) {
+            powerCount = 0;
+            return "PWR -- " + AppLanguage.tr(R.string.power_charging);
+        }
+        android.os.BatteryManager manager =
+                (android.os.BatteryManager) context.getSystemService(Context.BATTERY_SERVICE);
+        long current = manager == null ? Long.MIN_VALUE
+                : manager.getLongProperty(android.os.BatteryManager.BATTERY_PROPERTY_CURRENT_NOW);
+        // Volts: the sticky intent's mV, or the kernel's µV.
+        double volts = battery == null ? -1 : battery.getIntExtra(android.os.BatteryManager.EXTRA_VOLTAGE, -1) / 1000.0;
+        if (volts < 2 || volts > 6) volts = readLong("/sys/class/power_supply/battery/voltage_now") / 1e6;
+        if (current == Long.MIN_VALUE || current == 0 || current == Integer.MIN_VALUE || volts < 2 || volts > 6) {
+            if (!powerLogged) {
+                powerLogged = true;
+                Log.i(TAG, "Power: no battery current (" + current + ") or voltage (" + volts + " V)");
+            }
+            return "PWR --";
+        }
+        // Microamperes by the API, but some kernels (several Samsung, MediaTek) give milliamperes: a phone running
+        // the game draws well over 20 mA, which is under 20000 only in mA. The sign also varies (discharge is
+        // negative on most phones, positive on some): on battery, it is always a draw.
+        double amps = Math.abs(current) < 20000 ? Math.abs(current) / 1e3 : Math.abs(current) / 1e6;
+        if (!powerLogged) {
+            powerLogged = true;
+            Log.i(TAG, "Power: current " + current + " (" + amps + " A), " + volts + " V");
+        }
+        powerWatts[powerNext] = amps * volts;
+        powerNext = (powerNext + 1) % POWER_WINDOW;
+        powerCount = Math.min(POWER_WINDOW, powerCount + 1);
+        double sum = 0;
+        for (int i = 0; i < powerCount; i++) sum += powerWatts[i];
+        double watts = sum / powerCount;
+        String text = String.format(Locale.ROOT, "PWR %.1f W", watts);
+        if (fps > 0 && watts > 0.1) text += String.format(Locale.ROOT, "  %.1f fps/W", fps / watts);
+        return text;
     }
 
     private static int policyNumber(File policy) {
