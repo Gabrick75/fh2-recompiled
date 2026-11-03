@@ -381,4 +381,5 @@
     <string name="present_thread_desc">Unstable: may make the motion less smooth and gave no FPS gain in tests. The image is sent to the screen by a separate thread, so the game starts the next frame without waiting for it. Leave it off unless you are testing.</string>
     <string name="frame_gen">Frame generation</string>
     <string name="frame_gen_description">Draws a frame between every two the game makes, so 30 FPS reach the screen as 60. Best with the FPS limit at 30: the screen switches to at least twice the limit. Costs GPU time and shows each real frame about half a frame later.</string>
+    <string name="frame_gen_beta">Beta: still being tested. Car lights while drifting and fast moving edges can show smears or ghosts.</string>
 </resources>

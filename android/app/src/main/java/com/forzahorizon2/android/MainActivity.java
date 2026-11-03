@@ -1009,10 +1009,15 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     // present_frame_gen: a frame in the middle of every two the game makes. Both renderers (it works on the images).
+    // Marked in red as a beta under its description: the generated frames still have known artefacts.
     private LinearLayout frameGenRow() {
-        return ui.toggleRow(tr(R.string.frame_gen), tr(R.string.frame_gen_description),
+        LinearLayout row = ui.toggleRow(tr(R.string.frame_gen), tr(R.string.frame_gen_description),
                 GameOptions.flag(this, GameOptions.FRAME_GEN),
                 v -> GameOptions.flag(this, GameOptions.FRAME_GEN, v));
+        TextView beta = ui.text(tr(R.string.frame_gen_beta), 13, Menu.RED, true);
+        beta.setPadding(0, ui.dp(4), 0, 0);
+        ((LinearLayout) Menu.descriptionOf(row).getParent()).addView(beta);
+        return row;
     }
 
     /** The native renderer's shadow map size: 0 (no shadows) to 100 % of the game's 1600x1600, in 5 % steps. */

@@ -379,4 +379,5 @@
     <string name="present_thread_desc">Instável: pode deixar o movimento menos suave e não ganhou FPS nos testes. A imagem é enviada para a tela por uma thread separada, e o jogo começa o próximo quadro sem esperar por ela. Deixe desligado, a não ser para testar.</string>
     <string name="frame_gen">Geração de quadros</string>
     <string name="frame_gen_description">Desenha um quadro entre cada dois que o jogo faz, e os 30 FPS chegam à tela como 60. Melhor com o limite de FPS em 30: a tela passa para pelo menos o dobro do limite. Gasta GPU e mostra cada quadro real cerca de meio quadro depois.</string>
+    <string name="frame_gen_beta">Beta: ainda em testes. Luzes dos carros no drift e bordas em movimento rápido podem mostrar borrões ou fantasmas.</string>
 </resources>

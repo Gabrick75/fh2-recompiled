@@ -379,4 +379,5 @@
     <string name="present_thread_desc">Inestable: puede hacer el movimiento menos fluido y no ganó FPS en las pruebas. La imagen se envía a la pantalla desde un hilo aparte, y el juego empieza el siguiente cuadro sin esperarla. Déjalo desactivado salvo para probar.</string>
     <string name="frame_gen">Generación de cuadros</string>
     <string name="frame_gen_description">Dibuja un cuadro entre cada dos que hace el juego, y los 30 FPS llegan a la pantalla como 60. Mejor con el límite de FPS en 30: la pantalla pasa a por lo menos el doble del límite. Gasta GPU y muestra cada cuadro real cerca de medio cuadro después.</string>
+    <string name="frame_gen_beta">Beta: todavía en pruebas. Las luces de los coches al derrapar y los bordes en movimiento rápido pueden mostrar manchas o fantasmas.</string>
 </resources>
