@@ -52,10 +52,37 @@ uint32_t CargarU32(const uint8_t* base, uint32_t address) {
 // past the mesh into whatever follows it; on the console that is the next prop's mesh (they are laid out
 // 0x3D0 apart) and the garbage there happens to be harmless, here it is a null pointer and the game reads guest 0.
 // Keep the face inside the mesh.
+namespace {
+// What the last GJK test on this thread answered (see sub_82ECEB88 below): 0 apart, 1 intersect, 2 apart at
+// distance zero turned into intersect by the guard. And the first mesh of the pair sub_82ED0488 is walking.
+thread_local uint32_t g_gjk_ruta = 0;
+thread_local uint32_t g_malla_a = 0;
+constexpr uint32_t kCaraA = 0x82ED094C;  // return of the face walk of shape A (record word at r1+396)
+constexpr uint32_t kCaraB = 0x82ED097C;  // return of the face walk of shape B (record word at r1+412)
+}  // namespace
+
 REX_HOOK_RAW(sub_82EC93F8) {
   const uint32_t malla = ctx.r3.u32;
   const uint32_t cara = ctx.r4.u32 & 0xFF;
   const uint32_t caras = malla >= 0x10000 ? base[malla + 98] : 0;
+  // Both faces of a pair, logged when either is outside its mesh: is it the other mesh's index?
+  const uint32_t sitio = static_cast<uint32_t>(ctx.lr);
+  if (sitio == kCaraA) {
+    g_malla_a = malla;
+  } else if (sitio == kCaraB && g_malla_a >= 0x10000 && malla >= 0x10000) {
+    const uint32_t palabra_a = CargarU32(base, ctx.r1.u32 + 396), palabra_b = CargarU32(base, ctx.r1.u32 + 412);
+    const uint32_t cara_a = palabra_a & 0xFF, caras_a = base[g_malla_a + 98];
+    const uint32_t cara_b = palabra_b & 0xFF, caras_b = caras;
+    if (cara_a >= caras_a || cara_b >= caras_b) {
+      static std::atomic<int> pares{0};
+      if (pares.fetch_add(1, std::memory_order_relaxed) < 300) {
+        static const char* const kRutas[] = {"separadas", "penetrando", "forzada"};
+        REXLOG_WARN("[fh2] par fuera de malla: A cara {} ({:08X}) de {} ({:08X}) | B cara {} ({:08X}) de {} ({:08X}) | gjk {}",
+                    cara_a, palabra_a, caras_a, g_malla_a, cara_b, palabra_b, caras_b, malla,
+                    kRutas[g_gjk_ruta < 3 ? g_gjk_ruta : 0]);
+      }
+    }
+  }
   if (caras != 0 && cara >= caras) {
     // Counted, not only the first few: to see whether these line up with the cars thrown in collisions. One line
     // per second at most (with the raw word, the mesh and the caller), and a total every 10 s.
@@ -91,6 +118,7 @@ REX_HOOK_RAW(sub_82EC93F8) {
 REX_HOOK_RAW(sub_82ECEB88) {
   const uint32_t punto_a = ctx.r4.u32, punto_b = ctx.r5.u32;
   __imp__sub_82ECEB88(ctx, base);
+  g_gjk_ruta = (ctx.r3.u32 & 0xFF) != 0 ? 1 : 0;
   if ((ctx.r3.u32 & 0xFF) != 0 || punto_a < 0x10000 || punto_b < 0x10000) {
     return;
   }
@@ -99,6 +127,7 @@ REX_HOOK_RAW(sub_82ECEB88) {
       return;
     }
   }
+  g_gjk_ruta = 2;
   static std::atomic<int> reported{0};
   if (reported.fetch_add(1, std::memory_order_relaxed) < 4) {
     REXLOG_WARN("[fh2] sub_82ECEB88 (desde {:08X}): formas a distancia cero tratadas como en contacto",
