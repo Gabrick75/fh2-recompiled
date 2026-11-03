@@ -61,8 +61,17 @@ REXCVAR_DEFINE_BOOL(ppc_fixed_fp_mode, REX_FIXED_FP_MODE_DEFAULT, "CPU",
                     "Run guest code in IEEE FP mode only: never turn on flush-to-zero for VMX code, which skips the "
                     "host FP control writes around it. VMX results keep denormals the console flushes");
 
+// With ppc_fixed_fp_mode, the console's VMX flush-to-zero without the toggles: FZ is set once per thread and kept
+// on, so VMX results match the Xenon (whose VMX always flushes denormals). The scalar FPU then flushes too, where
+// the Xenon keeps them; denormal scalar values are far rarer in game code than VMX ones (packed integers and
+// near-zero lanes in the collision and audio code).
+REXCVAR_DEFINE_BOOL(ppc_fixed_fp_flush, true, "CPU",
+                    "With ppc_fixed_fp_mode, keep flush-to-zero on for all guest code: VMX flushes denormals as the "
+                    "console does (the scalar FPU flushes them too). Off: VMX keeps them");
+
 namespace rex::ppc {
 std::atomic<bool> g_fixed_fp_mode{REX_FIXED_FP_MODE_DEFAULT};
+std::atomic<uint32_t> g_fixed_fp_host_bits{0};
 }  // namespace rex::ppc
 
 namespace rex::system {
@@ -694,6 +703,11 @@ void XThread::Execute() {
     ctx->r10.u64 = args[7];
 
   rex::ppc::g_fixed_fp_mode.store(REXCVAR_GET(ppc_fixed_fp_mode), std::memory_order_relaxed);
+  rex::ppc::g_fixed_fp_host_bits.store(
+      REXCVAR_GET(ppc_fixed_fp_mode) && REXCVAR_GET(ppc_fixed_fp_flush)
+          ? uint32_t(rex::ppc::FPSCRRegister::FlushMask)
+          : 0u,
+      std::memory_order_relaxed);
   ctx->fpscr.InitHost();
 
   // Convert this host thread to a fiber so SwitchTo works bidirectionally.

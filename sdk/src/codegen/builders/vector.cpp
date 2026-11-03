@@ -1204,6 +1204,17 @@ bool build_vpkd3d128(BuilderContext& ctx) {
   // TODO(tomc): vectorize
   // NOTE: handling vector reversal here too
   ctx.emit_set_flush_mode(true);
+  // FLOAT16_2, NORMSHORT4 and FLOAT16_4 store vD one halfword at a time while still reading vB. With vD == vB (the
+  // FMOD mixer packs a register into itself: vpkd3d128 v63,v63,5,2,0, 57 sites in FH2) a later lane read bytes an
+  // earlier one had already packed, and the sign bit was read back from the halfword just written. Read a copy.
+  const uint32_t pk_type = ctx.insn.operands[2];
+  const bool pk_alias = ctx.insn.operands[0] == ctx.insn.operands[1] && pk_type >= 3 && pk_type <= 5;
+  std::string pk_src = fmt::format("{}", ctx.v(ctx.insn.operands[1]));
+  if (pk_alias) {
+    ctx.println("	{{");
+    ctx.println("	const PPCVRegister vpk_src = {};", pk_src);
+    pk_src = "vpk_src";
+  }
   switch (ctx.insn.operands[2]) {
     case 0:  // D3D color
     {
@@ -1318,21 +1329,21 @@ bool build_vpkd3d128(BuilderContext& ctx) {
         size_t srcIdx = 3 - i;  // Guest element i is at host array index 3-i
         size_t dstIdx =
             (1 - i) + (2 * ctx.insn.operands[4]);  // Output reversed: elem 0 to high, elem 1 to low
-        ctx.println("\t{}.u32 = ({}.u32[{}]&0x7FFFFFFF);", ctx.temp(), ctx.v(ctx.insn.operands[1]),
+        ctx.println("\t{}.u32 = ({}.u32[{}]&0x7FFFFFFF);", ctx.temp(), pk_src,
                     srcIdx);
         ctx.println(
             "\t{0}.u8[0] = ({1}.f32 != {1}.f32) || ({1}.f32 > 65504.0f) ? 0xFF : "
             "(({2}.u32[{3}]&0x7f800000)>>23);",
-            ctx.v_temp(), ctx.temp(), ctx.v(ctx.insn.operands[1]), srcIdx);
+            ctx.v_temp(), ctx.temp(), pk_src, srcIdx);
         ctx.println("\t{}.u16 = {}.u8[0] != 0xFF ? (({}.u32[{}]&0x7FE000)>>13) : 0x0;", ctx.temp(),
-                    ctx.v_temp(), ctx.v(ctx.insn.operands[1]), srcIdx);
+                    ctx.v_temp(), pk_src, srcIdx);
         ctx.println(
             "\t{0}.u16[{1}] = {2}.u8[0] != 0xFF ? ({2}.u8[0] > 0x70 ? "
             "((({2}.u8[0]-0x70)<<10)+{3}.u16) : (0x71-{2}.u8[0] > 31 ? 0x0 : "
             "((0x400+{3}.u16)>>(0x71-{2}.u8[0])))) : 0x7FFF;",
             ctx.v(ctx.insn.operands[0]), dstIdx, ctx.v_temp(), ctx.temp());
         ctx.println("\t{}.u16[{}] |= (({}.u32[{}]&0x80000000)>>16);", ctx.v(ctx.insn.operands[0]),
-                    dstIdx, ctx.v(ctx.insn.operands[1]), srcIdx);
+                    dstIdx, pk_src, srcIdx);
       }
       break;
     }
@@ -1345,7 +1356,7 @@ bool build_vpkd3d128(BuilderContext& ctx) {
       for (size_t i = 0; i < 4; i++) {
         size_t srcIdx = 3 - i;  // Guest element i is at host array index 3-i
         size_t dstIdx = (3 - i) + (2 * ctx.insn.operands[4]);  // Output also reversed
-        ctx.println("\t{}.s32 = {}.s32[{}] - 0x40400000;", ctx.temp(), ctx.v(ctx.insn.operands[1]),
+        ctx.println("\t{}.s32 = {}.s32[{}] - 0x40400000;", ctx.temp(), pk_src,
                     srcIdx);
         ctx.println("\t{}.s32 = {}.s32 > 32767 ? 32767 : ({}.s32 < -32767 ? -32767 : {}.s32);",
                     ctx.temp(), ctx.temp(), ctx.temp(), ctx.temp());
@@ -1366,21 +1377,21 @@ bool build_vpkd3d128(BuilderContext& ctx) {
       for (size_t i = 0; i < 4; i++) {
         size_t srcIdx = 3 - i;  // Guest element i is at host array index 3-i
         size_t dstIdx = (3 - i) + (2 * ctx.insn.operands[4]);  // Output also reversed
-        ctx.println("\t{}.u32 = ({}.u32[{}]&0x7FFFFFFF);", ctx.temp(), ctx.v(ctx.insn.operands[1]),
+        ctx.println("\t{}.u32 = ({}.u32[{}]&0x7FFFFFFF);", ctx.temp(), pk_src,
                     srcIdx);
         ctx.println(
             "\t{0}.u8[0] = ({1}.f32 != {1}.f32) || ({1}.f32 > 65504.0f) ? 0xFF : "
             "(({2}.u32[{3}]&0x7f800000)>>23);",
-            ctx.v_temp(), ctx.temp(), ctx.v(ctx.insn.operands[1]), srcIdx);
+            ctx.v_temp(), ctx.temp(), pk_src, srcIdx);
         ctx.println("\t{}.u16 = {}.u8[0] != 0xFF ? (({}.u32[{}]&0x7FE000)>>13) : 0x0;", ctx.temp(),
-                    ctx.v_temp(), ctx.v(ctx.insn.operands[1]), srcIdx);
+                    ctx.v_temp(), pk_src, srcIdx);
         ctx.println(
             "\t{0}.u16[{1}] = {2}.u8[0] != 0xFF ? ({2}.u8[0] > 0x70 ? "
             "((({2}.u8[0]-0x70)<<10)+{3}.u16) : (0x71-{2}.u8[0] > 31 ? 0x0 : "
             "((0x400+{3}.u16)>>(0x71-{2}.u8[0])))) : 0x7FFF;",
             ctx.v(ctx.insn.operands[0]), dstIdx, ctx.v_temp(), ctx.temp());
         ctx.println("\t{}.u16[{}] |= (({}.u32[{}]&0x80000000)>>16);", ctx.v(ctx.insn.operands[0]),
-                    dstIdx, ctx.v(ctx.insn.operands[1]), srcIdx);
+                    dstIdx, pk_src, srcIdx);
       }
       break;
     }
@@ -1409,6 +1420,9 @@ bool build_vpkd3d128(BuilderContext& ctx) {
     default:
       ctx.println("\t__builtin_debugtrap();");
       break;
+  }
+  if (pk_alias) {
+    ctx.println("\t}}");
   }
   return true;
 }

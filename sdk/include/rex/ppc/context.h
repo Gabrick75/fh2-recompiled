@@ -150,6 +150,10 @@ constexpr uint32_t kRoundMask = 0x03;
 // denormals the console flushes and the per-site writes of the host FP control register (FPCR on ARM64, a
 // serializing write) are skipped. Read on the toggles' rare path only. One definition, in the runtime.
 extern std::atomic<bool> g_fixed_fp_mode;
+// Host FP control bits kept on in the hardware register but never in the cached csr (ppc_fixed_fp_flush): in fixed
+// mode with flush, FZ stays on for all guest code, so VMX flushes denormals as the Xenon does while the per-site
+// toggles, which only compare against the cached csr, stay no-ops. getcsr hides them and setcsr adds them back.
+extern std::atomic<uint32_t> g_fixed_fp_host_bits;
 
 struct FPSCRRegister {
   uint32_t csr;
@@ -164,8 +168,9 @@ struct FPSCRRegister {
   // Bits the guest owns; the rest is host policy seeded by InitHost.
   static constexpr uint32_t GuestMask = uint32_t(RoundMaskVal) | uint32_t(FlushMask);
 
-  inline uint32_t getcsr() noexcept { return Platform::getcsr(); }
-  inline void setcsr(uint32_t csr) noexcept { Platform::setcsr(csr); }
+  static uint32_t HostBits() noexcept { return g_fixed_fp_host_bits.load(std::memory_order_relaxed); }
+  inline uint32_t getcsr() noexcept { return Platform::getcsr() & ~HostBits(); }
+  inline void setcsr(uint32_t csr) noexcept { Platform::setcsr(csr | HostBits()); }
 
   // Restoring the whole word would unmask every FP exception when csr is 0.
   inline void restoreGuestBits(uint32_t saved) noexcept {
