@@ -22,6 +22,8 @@ set(FH2_SOURCES
     src/fh2_desempenho.cpp
     # One simulation step per frame shown: the vblank's step event held for the render thread (cvar fh2_ritmo_passos).
     src/fh2_passos.cpp
+    # The simulation step time the main loop measures: log and optional cap (cvar fh2_dt_max_ms).
+    src/fh2_tempo.cpp
     src/fh2_perfil.cpp
     src/fh2_censo.cpp
     # The game's Sleep and SwitchToThread per call site (cvar fh2_medir_esperas).
