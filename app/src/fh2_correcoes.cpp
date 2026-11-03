@@ -2,6 +2,7 @@
 //
 // Each hook keeps the game's own behaviour and only adds a check the console never needed.
 
+#include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc/func.h>
@@ -42,70 +43,58 @@ uint32_t CargarU32(const uint8_t* base, uint32_t address) {
 
 }  // namespace
 
-// Box-against-box contact (FH2 world props), the rare path of sub_82ED0488 through sub_82ECF9D8. With an S23 save
-// from right after the first festival event, two props rest exactly face to face where the player's car loads,
-// and the game closed every time it loaded there (on both renderers, and on the PC too).
+// Convex-against-convex contact (car hulls against each other, world props), sub_82ED0488 through sub_82ECF9D8.
 //
-// sub_82EC93F8 walks one face of a convex mesh: r3 = mesh (+84 faces, 12 bytes each; +98 the number of faces),
-// r4 = face, taken by sub_82ED0488 from the last word of a closest-point record. On this path the closest-point
-// routine never writes that word: it keeps a float (2E0DAEE0), so the "face" is 224 on a box of 10. The read runs
-// past the mesh into whatever follows it; on the console that is the next prop's mesh (they are laid out
-// 0x3D0 apart) and the garbage there happens to be harmless, here it is a null pointer and the game reads guest 0.
-// Keep the face inside the mesh.
-namespace {
-// What the last GJK test on this thread answered (see sub_82ECEB88 below): 0 apart, 1 intersect, 2 apart at
-// distance zero turned into intersect by the guard. And the first mesh of the pair sub_82ED0488 is walking.
-thread_local uint32_t g_gjk_ruta = 0;
-thread_local uint32_t g_malla_a = 0;
-constexpr uint32_t kCaraA = 0x82ED094C;  // return of the face walk of shape A (record word at r1+396)
-constexpr uint32_t kCaraB = 0x82ED097C;  // return of the face walk of shape B (record word at r1+412)
-}  // namespace
+// sub_82EC93F8(r3 = hull, r4 = feature) takes the feature from the last word of a closest-point record. It reads
+// the face record at hull+84 + feature*12 (lists at +0/+4, their lengths at +8/+9), and its vertex branch
+// (loc_82EC9618) takes the contact point from the vertex at hull+80 + feature*16. So the feature is not always a
+// face: a car hull of 18-20 faces gets 18-23 here in every car-on-car hit, and the console reads the face record
+// past the end of the array just the same (whatever follows it in the hull's data) and uses that vertex.
+//
+// The first guard (2026-10-11, two festival props loading face to face) kept the feature below the face count
+// (+98). That moved the contact to another vertex of the hull on every one of those hits, and the cars were
+// thrown into the air or sideways (2026-11-02: 72 remaps in a 74 s race, each burst on a car-on-car contact in
+// the captures). Now the feature is left alone, as on the console, unless the record it reads has a list
+// pointing at guest page zero: that is the festival props' crash (their records ran into a null pointer).
+REXCVAR_DEFINE_BOOL(fh2_colisao_cara_mod, false, "FH2",
+                    "Old guard of the convex contact: keep the feature index below the hull's face count. It moves "
+                    "car-on-car contacts to another vertex and throws the cars (app/src/fh2_correcoes.cpp)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REX_HOOK_RAW(sub_82EC93F8) {
   const uint32_t malla = ctx.r3.u32;
   const uint32_t cara = ctx.r4.u32 & 0xFF;
   const uint32_t caras = malla >= 0x10000 ? base[malla + 98] : 0;
-  // Both faces of a pair, logged when either is outside its mesh: is it the other mesh's index?
-  const uint32_t sitio = static_cast<uint32_t>(ctx.lr);
-  if (sitio == kCaraA) {
-    g_malla_a = malla;
-  } else if (sitio == kCaraB && g_malla_a >= 0x10000 && malla >= 0x10000) {
-    const uint32_t palabra_a = CargarU32(base, ctx.r1.u32 + 396), palabra_b = CargarU32(base, ctx.r1.u32 + 412);
-    const uint32_t cara_a = palabra_a & 0xFF, caras_a = base[g_malla_a + 98];
-    const uint32_t cara_b = palabra_b & 0xFF, caras_b = caras;
-    if (cara_a >= caras_a || cara_b >= caras_b) {
-      static std::atomic<int> pares{0};
-      if (pares.fetch_add(1, std::memory_order_relaxed) < 300) {
-        static const char* const kRutas[] = {"separadas", "penetrando", "forzada"};
-        REXLOG_WARN("[fh2] par fuera de malla: A cara {} ({:08X}) de {} ({:08X}) | B cara {} ({:08X}) de {} ({:08X}) | gjk {}",
-                    cara_a, palabra_a, caras_a, g_malla_a, cara_b, palabra_b, caras_b, malla,
-                    kRutas[g_gjk_ruta < 3 ? g_gjk_ruta : 0]);
-      }
-    }
-  }
   if (caras != 0 && cara >= caras) {
-    // Counted, not only the first few: to see whether these line up with the cars thrown in collisions. One line
-    // per second at most (with the raw word, the mesh and the caller), and a total every 10 s.
+    static std::atomic<uint64_t> fuera{0}, corregidas{0};
+    fuera.fetch_add(1, std::memory_order_relaxed);
+    bool corregir = REXCVAR_GET(fh2_colisao_cara_mod);
+    if (!corregir) {
+      // The record the game is about to read, past the face array.
+      const uint32_t registro = CargarU32(base, malla + 84) + cara * 12;
+      const uint32_t lista_0 = CargarU32(base, registro + 0), lista_4 = CargarU32(base, registro + 4);
+      const uint8_t largo_8 = base[registro + 8], largo_9 = base[registro + 9];
+      corregir = (largo_9 != 0 && lista_4 < 0x10000) || (largo_8 != 0 && lista_0 < 0x10000);
+    }
+    if (corregir) {
+      const uint64_t n = corregidas.fetch_add(1, std::memory_order_relaxed);
+      if (n < 8) {
+        REXLOG_WARN("[fh2] sub_82EC93F8 (desde {:08X}): rasgo {} de una malla de {} caras ({:08X}): se usa la cara {}",
+                    static_cast<uint32_t>(ctx.lr), cara, caras, malla, cara % caras);
+      }
+      ctx.r4.u64 = cara % caras;
+    }
     using Reloj = std::chrono::steady_clock;
-    static std::atomic<uint64_t> total{0}, desde_informe{0};
-    static std::atomic<int64_t> ultimo_linea{0}, ultimo_informe{0};
+    static std::atomic<int64_t> ultimo_informe{0};
     const int64_t ahora =
         std::chrono::duration_cast<std::chrono::milliseconds>(Reloj::now().time_since_epoch()).count();
-    total.fetch_add(1, std::memory_order_relaxed);
-    const uint64_t n = desde_informe.fetch_add(1, std::memory_order_relaxed) + 1;
-    int64_t previo = ultimo_linea.load(std::memory_order_relaxed);
-    if (ahora - previo >= 1000 && ultimo_linea.compare_exchange_strong(previo, ahora)) {
-      REXLOG_WARN("[fh2] sub_82EC93F8 (desde {:08X}): cara {} (palabra {:08X}) de una malla de {} ({:08X}): se usa la {}",
-                  static_cast<uint32_t>(ctx.lr), cara, ctx.r4.u32, caras, malla, cara % caras);
-    }
-    previo = ultimo_informe.load(std::memory_order_relaxed);
+    int64_t previo = ultimo_informe.load(std::memory_order_relaxed);
     if (previo == 0) {
       ultimo_informe.compare_exchange_strong(previo, ahora);
     } else if (ahora - previo >= 10000 && ultimo_informe.compare_exchange_strong(previo, ahora)) {
-      desde_informe.store(0, std::memory_order_relaxed);
-      REXLOG_WARN("[fh2] caras fuera de malla: {} en 10 s ({} en total)", n, total.load());
+      REXLOG_INFO("[fh2] rasgos mas alla de las caras: {} en total, {} corregidos ({})", fuera.load(),
+                  corregidas.load(), REXCVAR_GET(fh2_colisao_cara_mod) ? "guarda antigua" : "solo punteros nulos");
     }
-    ctx.r4.u64 = cara % caras;
   }
   __imp__sub_82EC93F8(ctx, base);
 }
@@ -118,7 +107,6 @@ REX_HOOK_RAW(sub_82EC93F8) {
 REX_HOOK_RAW(sub_82ECEB88) {
   const uint32_t punto_a = ctx.r4.u32, punto_b = ctx.r5.u32;
   __imp__sub_82ECEB88(ctx, base);
-  g_gjk_ruta = (ctx.r3.u32 & 0xFF) != 0 ? 1 : 0;
   if ((ctx.r3.u32 & 0xFF) != 0 || punto_a < 0x10000 || punto_b < 0x10000) {
     return;
   }
@@ -127,7 +115,6 @@ REX_HOOK_RAW(sub_82ECEB88) {
       return;
     }
   }
-  g_gjk_ruta = 2;
   static std::atomic<int> reported{0};
   if (reported.fetch_add(1, std::memory_order_relaxed) < 4) {
     REXLOG_WARN("[fh2] sub_82ECEB88 (desde {:08X}): formas a distancia cero tratadas como en contacto",
