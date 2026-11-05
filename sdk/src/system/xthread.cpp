@@ -63,11 +63,13 @@ REXCVAR_DEFINE_BOOL(ppc_fixed_fp_mode, REX_FIXED_FP_MODE_DEFAULT, "CPU",
 
 // With ppc_fixed_fp_mode, the console's VMX flush-to-zero without the toggles: FZ is set once per thread and kept
 // on, so VMX results match the Xenon (whose VMX always flushes denormals). The scalar FPU then flushes too, where
-// the Xenon keeps them; denormal scalar values are far rarer in game code than VMX ones (packed integers and
-// near-zero lanes in the collision and audio code).
-REXCVAR_DEFINE_BOOL(ppc_fixed_fp_flush, true, "CPU",
+// the Xenon keeps them (ARM64's FPCR.FZ covers scalar and AdvSIMD alike). Off by default since 0.4.4: FH2's scalar
+// code needs its denormals, and with this on some car parts flickered in the chase cameras on every run (gone with
+// it off, 2026-11-05, S23).
+REXCVAR_DEFINE_BOOL(ppc_fixed_fp_flush, false, "CPU",
                     "With ppc_fixed_fp_mode, keep flush-to-zero on for all guest code: VMX flushes denormals as the "
-                    "console does (the scalar FPU flushes them too). Off: VMX keeps them");
+                    "console does, but the scalar FPU flushes them too and FH2's car parts flicker. Off: VMX keeps "
+                    "them");
 
 namespace rex::ppc {
 std::atomic<bool> g_fixed_fp_mode{REX_FIXED_FP_MODE_DEFAULT};
