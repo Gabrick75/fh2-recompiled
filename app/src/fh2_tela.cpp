@@ -51,6 +51,11 @@ REXCVAR_DEFINE_DOUBLE(fh2_tela_fator, 1.0, "FH2",
     .range(0.5, 4.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+REXCVAR_DEFINE_BOOL(fh2_tela_hud, true, "FH2",
+                    "Keep the HUD at 16:9 while the world is widened for a stretched screen (the native renderer "
+                    "squeezes its draws sideways around the centre)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_STRING(fh2_tela_sitios, "8262CCF0,8262D070,8244E280,82B2420C", "FH2",
                       "Call sites of sub_823F2290 that are widened (hex return addresses separated by commas; empty = "
                       "all): the world's, not the big map's 82789008")
@@ -142,6 +147,16 @@ void Informar() {
               texto.empty() ? " | sin llamadas" : texto);
 }
 
+// The factor last applied to the gameplay camera (82B2420C) and when, for the HUD.
+constexpr uint32_t kSitioCamara = 0x82B2420C;
+std::atomic<float> g_fator_mundo{1.0f};
+std::atomic<int64_t> g_mundo_ms{0};
+
+int64_t AhoraMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
 // Whether this call site is widened (fh2_tela_sitios, read once: the list needs a restart).
 bool SitioElegido(uint32_t retorno) {
   static const std::vector<uint32_t> sitios = [] {
@@ -179,5 +194,17 @@ REX_HOOK_RAW(sub_823F2290) {
   }
   if (std::abs(fator - 1.0) > 0.001 && ancho == 1280 && alto == 720 && SitioElegido(retorno)) {
     ctx.f1.f64 = double(float(ctx.f1.f64 * fator));
+    if (retorno == kSitioCamara) {
+      g_fator_mundo.store(float(fator), std::memory_order_relaxed);
+      g_mundo_ms.store(AhoraMs(), std::memory_order_relaxed);
+    }
   }
+}
+
+// For the native renderer (nfsmw_nativo_dibujos.cpp): the HUD's squeeze, the world's factor while the gameplay
+// camera was widened in the last quarter of a second (it almost stops with the big map open), else 1.
+float Fh2TelaFactorHud() {
+  if (!REXCVAR_GET(fh2_tela_hud)) return 1.0f;
+  if (AhoraMs() - g_mundo_ms.load(std::memory_order_relaxed) > 250) return 1.0f;
+  return g_fator_mundo.load(std::memory_order_relaxed);
 }

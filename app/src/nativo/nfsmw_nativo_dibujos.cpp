@@ -54,6 +54,10 @@ static const uint32_t kSpirvResplandorSuave[1] = {0};
 #include "nfsmw_nativo_ganchos.h"  // nfsmw_d3d_vegetacion_juego
 #include "nfsmw_reflejo_demanda.h"  // nfsmw_reflejo_visibilidad
 #include "nfsmw_shader_library.h"
+#if defined(FH2_RECOMP)
+// app/src/fh2_tela.cpp: how much to squeeze the HUD sideways this frame (1 = not at all).
+float Fh2TelaFactorHud();
+#endif
 
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
@@ -4340,6 +4344,41 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (encuadre_vacio != 0) {
       return Fh2DiagSalida(p, __LINE__, true);  // empty viewport or scissor: as before
     }
+#if defined(FH2_RECOMP)
+    /*
+     * The HUD at 16:9 on a stretched screen (app/src/fh2_tela.cpp). With the picture stretched to a wider screen the
+     * world is drawn with the screen's aspect, but the HUD is drawn as on the console and would come out stretched.
+     * Its draws (the 2_10_10_10_AS_10_10_10_10 view over the scene's 2_10_10_10 composite, as in
+     * Fh2HdrFotoAntesDelHud) are squeezed sideways around the centre by the same factor, only while the world is
+     * widened: the map, menus and loading screens keep theirs. After the framing cache, which keeps the game's values.
+     */
+    if (r[gr::XE_GPU_REG_RB_COLOR_MASK] & 0xF) {
+      static uint32_t base_composicion = ~0u;
+      const uint32_t info_color = r[gr::XE_GPU_REG_RB_COLOR_INFO];
+      const uint32_t formato_color = (info_color >> 16) & 0xF;
+      if (formato_color == 2) {
+        base_composicion = info_color & 0xFFF;
+      } else if (formato_color == 10 && (info_color & 0xFFF) == base_composicion &&
+                 !((r[gr::XE_GPU_REG_RB_SURFACE_INFO] >> 16) & 0x3)) {
+        const float k = Fh2TelaFactorHud();
+        if (k > 1.001f || k < 0.999f) {
+          const float c = float(pase_ancho_) * 0.5f;
+          if (sin_recorte) {
+            ndc[0] /= k;
+            ndc[2] /= k;
+          } else {
+            viewport.x = c + (viewport.x - c) / k;
+            viewport.width /= k;
+          }
+          const int32_t x0 = int32_t(std::floor(c + (float(tijera.offset.x) - c) / k));
+          const int32_t x1 =
+              int32_t(std::ceil(c + (float(tijera.offset.x + int32_t(tijera.extent.width)) - c) / k));
+          tijera.offset.x = std::clamp(x0, 0, int32_t(pase_ancho_));
+          tijera.extent.width = uint32_t(std::max(1, std::clamp(x1, 0, int32_t(pase_ancho_)) - tijera.offset.x));
+        }
+      }
+    }
+#endif
 
     uint32_t especializacion = entrada->especializacion;
     if (composicion_sin_desenfoque) {  // the same value that decided the textures
