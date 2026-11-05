@@ -203,7 +203,7 @@
     <string name="off_no">Off</string>
     <string name="off_plural">Off</string>
     <string name="off_the_game_waits_for_each">Off: the game waits for each new graphics effect to be ready, which can stutter. On: it goes on without waiting, with less stutter, but an object may vanish or flicker for a moment.</string>
-    <string name="off_the_xbox_360_s_16">Off: the Xbox 360\'s 16:9 image, with black bars. On: fills the screen, but distorts the image.</string>
+    <string name="off_the_xbox_360_s_16">Off: the Xbox 360\'s 16:9 image, with black bars. On: fills the screen; while driving the game shows more of the world at the sides and keeps the HUD at 16:9, so nothing is distorted (menus and loading screens are stretched).</string>
     <string name="ok">ok</string>
     <string name="on_a_thread_of_its_own">On: the game\'s sound is processed apart and spares the processor, but on some devices it stutters or sounds robotic. Off: as before. Takes effect the next time the game starts.</string>
     <string name="opening_the_driver_and_creating_a">Opening the driver and creating a Vulkan device…</string>

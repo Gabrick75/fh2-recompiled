@@ -201,7 +201,7 @@
     <string name="off_no">No</string>
     <string name="off_plural">Desactivadas</string>
     <string name="off_the_game_waits_for_each">Desactivado: el juego espera a que cada efecto gráfico nuevo esté listo, y puede dar un tirón. Activado: sigue sin esperar, con menos tirones, pero algún objeto puede desaparecer o parpadear un instante.</string>
-    <string name="off_the_xbox_360_s_16">Desactivado: la imagen 16:9 de Xbox 360, con barras negras. Activado: llena la pantalla, pero distorsiona la imagen.</string>
+    <string name="off_the_xbox_360_s_16">Desactivado: la imagen 16:9 de Xbox 360, con barras negras. Activado: llena la pantalla; al conducir el juego muestra más del mundo a los lados y mantiene el HUD en 16:9, sin distorsión (los menús y las pantallas de carga se estiran).</string>
     <string name="ok">ok</string>
     <string name="on_a_thread_of_its_own">Activado: el sonido del juego se procesa aparte y alivia el procesador, pero en algunos dispositivos se entrecorta o suena robótico. Desactivado: como antes. Se aplica la próxima vez que se abra el juego.</string>
     <string name="opening_the_driver_and_creating_a">Abriendo el driver y creando un dispositivo Vulkan…</string>

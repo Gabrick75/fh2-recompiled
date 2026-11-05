@@ -201,7 +201,7 @@
     <string name="off_no">Não</string>
     <string name="off_plural">Desligadas</string>
     <string name="off_the_game_waits_for_each">Desligado: o jogo espera cada efeito gráfico novo ficar pronto, e pode dar um tranco. Ligado: segue sem esperar, com menos trancos, mas algum objeto pode sumir ou piscar por um instante.</string>
-    <string name="off_the_xbox_360_s_16">Desligado: a imagem 16:9 do Xbox 360, com barras pretas. Ligado: preenche a tela, mas distorce a imagem.</string>
+    <string name="off_the_xbox_360_s_16">Desligado: a imagem 16:9 do Xbox 360, com barras pretas. Ligado: preenche a tela; dirigindo, o jogo mostra mais do mundo nas laterais e mantém o HUD em 16:9, sem distorcer (menus e telas de carregamento ficam esticados).</string>
     <string name="ok">ok</string>
     <string name="on_a_thread_of_its_own">Ligado: o som do jogo é processado à parte e alivia o processador, mas em alguns aparelhos o som sai travando ou robótico. Desligado: como antes. Vale na próxima vez que o jogo abrir.</string>
     <string name="opening_the_driver_and_creating_a">Abrindo o driver e criando um dispositivo Vulkan…</string>
