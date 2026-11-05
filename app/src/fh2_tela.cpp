@@ -112,6 +112,12 @@ void Anotar(uint32_t retorno, uint32_t ancho, uint32_t alto) {
   }
 }
 
+// Diagnostics: the per-frame method (vtable slot 2) of some ForzaUI scenes: CHud, CHudCommon, CAnthem_PreRace,
+// CAnthem_PauseMenu, CBaseLoading.
+constexpr std::array<uint32_t, 5> kEscenas = {0x8281C310, 0x828188A8, 0x826D59C8, 0x826D9878, 0x8283A2F0};
+constexpr std::array<const char*, 5> kNombresEscenas = {"CHud", "CHudCommon", "PreRace", "PauseMenu", "BaseLoading"};
+std::array<std::atomic<uint64_t>, kEscenas.size()> g_escenas{};
+
 void Informar() {
   using Reloj = std::chrono::steady_clock;
   static std::atomic<int64_t> ultimo{0};
@@ -139,6 +145,13 @@ void Informar() {
       if (m) texto += fmt::format(" {}x{}={}", clave >> 16, clave & 0xFFFF, m);
     }
   }
+  std::string escenas;
+  for (size_t i = 0; i < kEscenas.size(); ++i) {
+    if (const uint64_t n = g_escenas[i].exchange(0, std::memory_order_relaxed)) {
+      escenas += fmt::format(" {}={}", kNombresEscenas[i], n);
+    }
+  }
+  if (!escenas.empty()) texto += " | escenas" + escenas;
   if (const uint64_t otros = g_otros.load(std::memory_order_relaxed)) {
     texto += fmt::format(" | otros sitios {}", otros);
   }
@@ -230,3 +243,16 @@ REX_HOOK_RAW(sub_8280E0A0) {
   g_carga_ms.store(AhoraMs(), std::memory_order_relaxed);
   __imp__sub_8280E0A0(ctx, base);
 }
+
+#define FH2_TELA_ESCENA(indice, nombre)                              \
+  REX_EXTERN(__imp__##nombre);                                      \
+  REX_HOOK_RAW(nombre) {                                            \
+    g_escenas[indice].fetch_add(1, std::memory_order_relaxed);      \
+    __imp__##nombre(ctx, base);                                     \
+  }
+FH2_TELA_ESCENA(0, sub_8281C310)
+FH2_TELA_ESCENA(1, sub_828188A8)
+FH2_TELA_ESCENA(2, sub_826D59C8)
+FH2_TELA_ESCENA(3, sub_826D9878)
+FH2_TELA_ESCENA(4, sub_8283A2F0)
+#undef FH2_TELA_ESCENA
