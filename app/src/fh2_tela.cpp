@@ -112,12 +112,6 @@ void Anotar(uint32_t retorno, uint32_t ancho, uint32_t alto) {
   }
 }
 
-// Diagnostics: the per-frame method (vtable slot 2) of some ForzaUI scenes: CHud, CHudCommon, CAnthem_PreRace,
-// CAnthem_PauseMenu, CBaseLoading.
-constexpr std::array<uint32_t, 5> kEscenas = {0x8281C310, 0x828188A8, 0x826D59C8, 0x826D9878, 0x8283A2F0};
-constexpr std::array<const char*, 5> kNombresEscenas = {"CHud", "CHudCommon", "PreRace", "PauseMenu", "BaseLoading"};
-std::array<std::atomic<uint64_t>, kEscenas.size()> g_escenas{};
-
 void Informar() {
   using Reloj = std::chrono::steady_clock;
   static std::atomic<int64_t> ultimo{0};
@@ -145,13 +139,6 @@ void Informar() {
       if (m) texto += fmt::format(" {}x{}={}", clave >> 16, clave & 0xFFFF, m);
     }
   }
-  std::string escenas;
-  for (size_t i = 0; i < kEscenas.size(); ++i) {
-    if (const uint64_t n = g_escenas[i].exchange(0, std::memory_order_relaxed)) {
-      escenas += fmt::format(" {}={}", kNombresEscenas[i], n);
-    }
-  }
-  if (!escenas.empty()) texto += " | escenas" + escenas;
   if (const uint64_t otros = g_otros.load(std::memory_order_relaxed)) {
     texto += fmt::format(" | otros sitios {}", otros);
   }
@@ -164,7 +151,7 @@ void Informar() {
 constexpr uint32_t kSitioCamara = 0x82B2420C;
 std::atomic<float> g_fator_mundo{1.0f};
 std::atomic<int64_t> g_mundo_ms{0};
-std::atomic<int64_t> g_carga_ms{0};  // the last frame a loading screen ran (see the hooks at the end)
+std::atomic<int64_t> g_hud_ms{0};  // the last frame the gameplay HUD's scene ran (see the hook at the end)
 
 int64_t AhoraMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
@@ -216,43 +203,25 @@ REX_HOOK_RAW(sub_823F2290) {
 }
 
 // For the native renderer (nfsmw_nativo_dibujos.cpp): the HUD's squeeze, the world's factor while the gameplay
-// camera was widened in the last quarter of a second (it almost stops with the big map open) and no loading screen
-// is up, else 1.
+// camera was widened and the gameplay HUD's scene ran in the last quarter of a second, else 1.
 float Fh2TelaFactorHud() {
   if (!REXCVAR_GET(fh2_tela_hud)) return 1.0f;
   const int64_t ahora = AhoraMs();
   if (ahora - g_mundo_ms.load(std::memory_order_relaxed) > 250) return 1.0f;
-  if (ahora - g_carga_ms.load(std::memory_order_relaxed) <= 250) return 1.0f;  // a loading screen is up
+  if (ahora - g_hud_ms.load(std::memory_order_relaxed) > 250) return 1.0f;  // a menu or loading screen instead
   return g_fator_mundo.load(std::memory_order_relaxed);
 }
 
 
-// The loading screens (ForzaUI::CDynamicTipLoadingScreen, vtable 8206813C, and its Functional variant, 82068414,
-// found through their RTTI). Their third virtual method (sub_8280DE70, sub_8280E0A0) runs once a frame while a tip
-// screen is up and stops when it closes (PC, 2026-11-05: both tip screens matched the captures). The world keeps
-// being drawn behind them with the camera widened, but the screen is a 16:9 layer drawn through the HUD's view:
-// squeezed with the HUD it showed the world at its sides. While one ran in the last quarter of a second the HUD is
-// not squeezed.
-REX_EXTERN(__imp__sub_8280DE70);
-REX_HOOK_RAW(sub_8280DE70) {
-  g_carga_ms.store(AhoraMs(), std::memory_order_relaxed);
-  __imp__sub_8280DE70(ctx, base);
+// The gameplay HUD's scene (ForzaUI::CHud, vtable 82002B54, found through its RTTI). Its per-frame method (vtable slot 2,
+// sub_8281C310; the loading screens and menus have their own in the same slot) runs once a frame while the HUD is up,
+// in free roam and in races, and stops for popups, loading screens, race intros and the race menu (PC, 2026-11-05,
+// against captures). Those are 16:9 layers drawn through the HUD's view over the widened world: squeezed, the loading
+// screens showed the world at their sides and the race menu's darkened backdrop left the sides bright, and their
+// pieces cannot be told apart by their vertices (the menu's boxes are local -50..50 quads placed by the shader). So
+// the HUD's view is squeezed only while the HUD's scene runs.
+REX_EXTERN(__imp__sub_8281C310);
+REX_HOOK_RAW(sub_8281C310) {
+  g_hud_ms.store(AhoraMs(), std::memory_order_relaxed);
+  __imp__sub_8281C310(ctx, base);
 }
-REX_EXTERN(__imp__sub_8280E0A0);
-REX_HOOK_RAW(sub_8280E0A0) {
-  g_carga_ms.store(AhoraMs(), std::memory_order_relaxed);
-  __imp__sub_8280E0A0(ctx, base);
-}
-
-#define FH2_TELA_ESCENA(indice, nombre)                              \
-  REX_EXTERN(__imp__##nombre);                                      \
-  REX_HOOK_RAW(nombre) {                                            \
-    g_escenas[indice].fetch_add(1, std::memory_order_relaxed);      \
-    __imp__##nombre(ctx, base);                                     \
-  }
-FH2_TELA_ESCENA(0, sub_8281C310)
-FH2_TELA_ESCENA(1, sub_828188A8)
-FH2_TELA_ESCENA(2, sub_826D59C8)
-FH2_TELA_ESCENA(3, sub_826D9878)
-FH2_TELA_ESCENA(4, sub_8283A2F0)
-#undef FH2_TELA_ESCENA

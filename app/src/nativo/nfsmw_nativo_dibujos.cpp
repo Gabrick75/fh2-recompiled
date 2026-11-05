@@ -98,30 +98,22 @@ static const uint32_t kSpirvResplandorSuave[1] = {0};
 #if defined(FH2_RECOMP)
 // app/src/fh2_tela.cpp: how much to squeeze the HUD sideways this frame (1 = not at all).
 float Fh2TelaFactorHud();
-REXCVAR_DEFINE_BOOL(fh2_tela_diag_hud, true, "FH2",
+REXCVAR_DEFINE_BOOL(fh2_tela_diag_hud, false, "FH2",
                     "Debug: log, every 2 s, the draws of the HUD's view (pixel shader, blend, scissor) and whether "
                     "they were squeezed (app/src/fh2_tela.cpp)");
 namespace {
 // Draws of the HUD's view per pixel shader and blend, reported every 2 s (ring thread only).
-void Fh2TelaDiagHud(int ps, uint32_t blend, const VkRect2D& tijera, float k, bool extension, float x_min,
-                    float x_max, bool completo) {
+void Fh2TelaDiagHud(int ps, uint32_t blend, const VkRect2D& tijera, float k) {
   struct Cuenta {
     uint64_t dibujos = 0, comprimidos = 0;
     VkRect2D tijera{};
-    bool extension = false;
-    float x_min = 0.0f, x_max = 0.0f;
   };
   static std::map<uint64_t, Cuenta> cuentas;
   static auto inicio = std::chrono::steady_clock::now();
-  Cuenta& c = cuentas[(uint64_t(uint32_t(ps)) << 33) | (uint64_t(completo) << 32) | blend];
+  Cuenta& c = cuentas[(uint64_t(uint32_t(ps)) << 32) | blend];
   ++c.dibujos;
   c.comprimidos += (k > 1.001f || k < 0.999f) ? 1 : 0;
   c.tijera = tijera;
-  if (extension) {
-    c.x_min = c.extension ? std::min(c.x_min, x_min) : x_min;
-    c.x_max = c.extension ? std::max(c.x_max, x_max) : x_max;
-    c.extension = true;
-  }
   const auto ahora = std::chrono::steady_clock::now();
   if (ahora - inicio < std::chrono::seconds(2)) return;
   inicio = ahora;
@@ -133,11 +125,11 @@ void Fh2TelaDiagHud(int ps, uint32_t blend, const VkRect2D& tijera, float k, boo
     total += v.dibujos;
     comprimidos += v.comprimidos;
   }
-  for (size_t i = 0; i < lista.size() && i < 20; ++i) {
+  for (size_t i = 0; i < lista.size() && i < 14; ++i) {
     const auto& [clave, v] = lista[i];
-    texto += fmt::format(" | PS n{}{} bl {:08X} x{} (c {}) x {}", int32_t(clave >> 33), (clave >> 32) & 1 ? " ENTERO" : "",
-                         uint32_t(clave), v.dibujos, v.comprimidos,
-                         v.extension ? fmt::format("{:.2f}..{:.2f}", v.x_min, v.x_max) : std::string("?"));
+    texto += fmt::format(" | PS n{} bl {:08X} x{} (c {}) tij {},{} {}x{}", int32_t(clave >> 32), uint32_t(clave),
+                         v.dibujos, v.comprimidos, v.tijera.offset.x, v.tijera.offset.y, v.tijera.extent.width,
+                         v.tijera.extent.height);
   }
   REXLOG_INFO("[tela hud] 2 s: {} dibujos, {} comprimidos, {} tipos{}", total, comprimidos, lista.size(), texto);
   cuentas.clear();
@@ -4397,7 +4389,8 @@ class DibujosVulkanImpl final : public DibujosVulkan {
      * world is drawn with the screen's aspect, but the HUD is drawn as on the console and would come out stretched.
      * Its draws (the 2_10_10_10_AS_10_10_10_10 view over the scene's 2_10_10_10 composite, as in
      * Fh2HdrFotoAntesDelHud) are squeezed sideways around the centre by the same factor, only while the world is
-     * widened: the map, menus and loading screens keep theirs. After the framing cache, which keeps the game's values.
+     * widened and the gameplay HUD's scene runs (Fh2TelaFactorHud): the map, menus and loading screens, drawn through
+     * the same view, keep theirs. After the framing cache, which keeps the game's values.
      */
     if (r[gr::XE_GPU_REG_RB_COLOR_MASK] & 0xF) {
       static uint32_t base_composicion = ~0u;
@@ -4407,51 +4400,10 @@ class DibujosVulkanImpl final : public DibujosVulkan {
         base_composicion = info_color & 0xFFF;
       } else if (formato_color == 10 && (info_color & 0xFFF) == base_composicion &&
                  !((r[gr::XE_GPU_REG_RB_SURFACE_INFO] >> 16) & 0x3)) {
-        float k = Fh2TelaFactorHud();
-        /*
-         * Layers that cover the whole width (the race menu's darkened, blurred backdrop, vignettes, fades) are left
-         * as they are: squeezed, they left the screen's sides uncovered. The HUD's own pieces are smaller. The
-         * extent is read from the position attribute (32-bit floats), in clip space (-1..1) or in pixels
-         * (0..1280); with another format it is unknown and the draw is squeezed.
-         */
-        float x_min = 0.0f, x_max = 0.0f;
-        bool extension = false;
-        if (k > 1.001f || k < 0.999f || REXCVAR_GET(fh2_tela_diag_hud)) {
-          for (const AtributoVertices& a : entrada->atributos) {
-            if (a.ubicacion != 0) continue;
-            if (a.formato != VK_FORMAT_R32G32_SFLOAT && a.formato != VK_FORMAT_R32G32B32_SFLOAT &&
-                a.formato != VK_FORMAT_R32G32B32A32_SFLOAT) {
-              break;
-            }
-            const Origen& o = origenes[a.enlace];
-            const uint32_t zancada = entrada->enlaces[a.enlace].zancada;
-            if (!zancada || !o.datos) break;
-            const uint32_t n = std::min<uint32_t>(o.bytes / zancada, 4096);
-            for (uint32_t v = 0; v < n; ++v) {
-              const size_t byte = size_t(v) * zancada + a.offset;
-              if (byte + 4 > o.bytes) break;
-              uint32_t palabra;
-              std::memcpy(&palabra, o.datos + byte, 4);
-              const float x = Flotante(xenos::GpuSwap(palabra, o.orden));
-              if (!std::isfinite(x)) continue;
-              if (!extension) {
-                x_min = x_max = x;
-                extension = true;
-              } else {
-                x_min = std::min(x_min, x);
-                x_max = std::max(x_max, x);
-              }
-            }
-            break;
-          }
-        }
-        const bool ancho_completo =
-            extension && ((x_min <= -0.95f && x_max >= 0.95f) || (x_min <= 2.0f && x_max >= 1278.0f));
+        const float k = Fh2TelaFactorHud();
         if (REXCVAR_GET(fh2_tela_diag_hud)) {
-          Fh2TelaDiagHud(ps ? int(ps->numero) : -1, r[gr::XE_GPU_REG_RB_BLENDCONTROL0], tijera,
-                         ancho_completo ? 1.0f : k, extension, x_min, x_max, ancho_completo);
+          Fh2TelaDiagHud(ps ? int(ps->numero) : -1, r[gr::XE_GPU_REG_RB_BLENDCONTROL0], tijera, k);
         }
-        if (ancho_completo) k = 1.0f;
         if (k > 1.001f || k < 0.999f) {
           const float c = float(pase_ancho_) * 0.5f;
           if (sin_recorte) {
