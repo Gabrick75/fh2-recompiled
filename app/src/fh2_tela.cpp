@@ -34,11 +34,11 @@
 
 #include <fmt/format.h>
 
-REXCVAR_DEFINE_BOOL(fh2_tela_registro, true, "FH2",
+REXCVAR_DEFINE_BOOL(fh2_tela_registro, false, "FH2",
                     "Debug: log the calls of the viewport aspect function (sub_823F2290) per call site and the "
                     "viewport sizes (app/src/fh2_tela.cpp)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(fh2_tela_registro_s, 2.0, "FH2", "Debug: seconds between the [tela] reports");
+REXCVAR_DEFINE_DOUBLE(fh2_tela_registro_s, 5.0, "FH2", "Debug: seconds between the [tela] reports");
 REXCVAR_DEFINE_DOUBLE(fh2_tela_aspecto, 0.0, "FH2",
                       "Width / height of the screen the picture is stretched to (0 = not stretched): the world is "
                       "drawn with that aspect into the 16:9 image, so the stretch does not distort it "
@@ -112,13 +112,6 @@ void Anotar(uint32_t retorno, uint32_t ancho, uint32_t alto) {
   }
 }
 
-// Diagnostics: calls to the loading screens' own methods (ForzaUI::CDynamicTipLoadingScreen vtable 8206813C,
-// CDynamicTipLoadingScreenFunctional 82068414, CNonFunctionalLoadingScreen 820749C4: the entries that differ from the
-// base class), to find one the game calls every frame while a loading screen is up.
-constexpr std::array<uint32_t, 10> kMetodosCarga = {0x828133C8, 0x8280DE70, 0x82815658, 0x8280E0A0, 0x82815808,
-                                                    0x827F56A8, 0x827F09C0, 0x8287F628, 0x8287D960, 0x82882268};
-std::array<std::atomic<uint64_t>, kMetodosCarga.size()> g_metodos_carga{};
-
 void Informar() {
   using Reloj = std::chrono::steady_clock;
   static std::atomic<int64_t> ultimo{0};
@@ -146,13 +139,6 @@ void Informar() {
       if (m) texto += fmt::format(" {}x{}={}", clave >> 16, clave & 0xFFFF, m);
     }
   }
-  std::string carga;
-  for (size_t i = 0; i < kMetodosCarga.size(); ++i) {
-    if (const uint64_t n = g_metodos_carga[i].exchange(0, std::memory_order_relaxed)) {
-      carga += fmt::format(" {:08X}={}", kMetodosCarga[i], n);
-    }
-  }
-  if (!carga.empty()) texto += " | carga" + carga;
   if (const uint64_t otros = g_otros.load(std::memory_order_relaxed)) {
     texto += fmt::format(" | otros sitios {}", otros);
   }
@@ -165,6 +151,7 @@ void Informar() {
 constexpr uint32_t kSitioCamara = 0x82B2420C;
 std::atomic<float> g_fator_mundo{1.0f};
 std::atomic<int64_t> g_mundo_ms{0};
+std::atomic<int64_t> g_carga_ms{0};  // the last frame a loading screen ran (see the hooks at the end)
 
 int64_t AhoraMs() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
@@ -216,28 +203,30 @@ REX_HOOK_RAW(sub_823F2290) {
 }
 
 // For the native renderer (nfsmw_nativo_dibujos.cpp): the HUD's squeeze, the world's factor while the gameplay
-// camera was widened in the last quarter of a second (it almost stops with the big map open), else 1.
+// camera was widened in the last quarter of a second (it almost stops with the big map open) and no loading screen
+// is up, else 1.
 float Fh2TelaFactorHud() {
   if (!REXCVAR_GET(fh2_tela_hud)) return 1.0f;
-  if (AhoraMs() - g_mundo_ms.load(std::memory_order_relaxed) > 250) return 1.0f;
+  const int64_t ahora = AhoraMs();
+  if (ahora - g_mundo_ms.load(std::memory_order_relaxed) > 250) return 1.0f;
+  if (ahora - g_carga_ms.load(std::memory_order_relaxed) <= 250) return 1.0f;  // a loading screen is up
   return g_fator_mundo.load(std::memory_order_relaxed);
 }
 
-// The loading screens' methods, counted (kMetodosCarga).
-#define FH2_TELA_METODO_CARGA(indice, nombre)                                    \
-  REX_EXTERN(__imp__##nombre);                                                  \
-  REX_HOOK_RAW(nombre) {                                                        \
-    g_metodos_carga[indice].fetch_add(1, std::memory_order_relaxed);            \
-    __imp__##nombre(ctx, base);                                                 \
-  }
-FH2_TELA_METODO_CARGA(0, sub_828133C8)
-FH2_TELA_METODO_CARGA(1, sub_8280DE70)
-FH2_TELA_METODO_CARGA(2, sub_82815658)
-FH2_TELA_METODO_CARGA(3, sub_8280E0A0)
-FH2_TELA_METODO_CARGA(4, sub_82815808)
-FH2_TELA_METODO_CARGA(5, sub_827F56A8)
-FH2_TELA_METODO_CARGA(6, sub_827F09C0)
-FH2_TELA_METODO_CARGA(7, sub_8287F628)
-FH2_TELA_METODO_CARGA(8, sub_8287D960)
-FH2_TELA_METODO_CARGA(9, sub_82882268)
-#undef FH2_TELA_METODO_CARGA
+
+// The loading screens (ForzaUI::CDynamicTipLoadingScreen, vtable 8206813C, and its Functional variant, 82068414,
+// found through their RTTI). Their third virtual method (sub_8280DE70, sub_8280E0A0) runs once a frame while a tip
+// screen is up and stops when it closes (PC, 2026-11-05: both tip screens matched the captures). The world keeps
+// being drawn behind them with the camera widened, but the screen is a 16:9 layer drawn through the HUD's view:
+// squeezed with the HUD it showed the world at its sides. While one ran in the last quarter of a second the HUD is
+// not squeezed.
+REX_EXTERN(__imp__sub_8280DE70);
+REX_HOOK_RAW(sub_8280DE70) {
+  g_carga_ms.store(AhoraMs(), std::memory_order_relaxed);
+  __imp__sub_8280DE70(ctx, base);
+}
+REX_EXTERN(__imp__sub_8280E0A0);
+REX_HOOK_RAW(sub_8280E0A0) {
+  g_carga_ms.store(AhoraMs(), std::memory_order_relaxed);
+  __imp__sub_8280E0A0(ctx, base);
+}

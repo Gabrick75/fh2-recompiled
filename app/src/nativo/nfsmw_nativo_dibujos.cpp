@@ -98,7 +98,7 @@ static const uint32_t kSpirvResplandorSuave[1] = {0};
 #if defined(FH2_RECOMP)
 // app/src/fh2_tela.cpp: how much to squeeze the HUD sideways this frame (1 = not at all).
 float Fh2TelaFactorHud();
-REXCVAR_DEFINE_BOOL(fh2_tela_diag_hud, true, "FH2",
+REXCVAR_DEFINE_BOOL(fh2_tela_diag_hud, false, "FH2",
                     "Debug: log, every 2 s, the draws of the HUD's view (pixel shader, blend, scissor) and whether "
                     "they were squeezed (app/src/fh2_tela.cpp)");
 namespace {
