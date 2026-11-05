@@ -1,4 +1,4 @@
-// fh2 - the main view's aspect ratio ("tela" means "screen"), step 1 of filling non-16:9 screens without distortion.
+// fh2 - the main view's aspect ratio ("tela" means "screen"): fill a non-16:9 screen without distortion.
 //
 // sub_823F2290 is the only function in default.xex that returns a viewport's width / height (r3 = viewport, width
 // at +8, height at +12, the ratio in f1). The camera, its culling frustum and its projection take the aspect from
@@ -6,13 +6,18 @@
 // field into the same 16:9 image; a presentation stretched to the screen then shows it undistorted. Forza Horizon
 // 1 has the same function (sub_823E22C8, referencias/pinyon-shift), where it is hooked for the same purpose.
 //
-// It has seven call sites: 8244E280, 82A35000, 828EC844, 82789008, 82B2420C, 8262CCF0 and 8262D070 (the last two in
-// sub_8262CC40). Which of them is the gameplay camera, the pause map, the menus or the render-to-texture views is
-// not known yet: fh2_tela_registro logs, every few seconds, the calls per site and the viewport sizes each one saw.
+// It has seven call sites. Logged on the PC (fh2_tela_registro, 2026-11-05) and tried with the ratio x1.3:
+//   8262CCF0, 8262D070 (sub_8262CC40), 8244E280, 82B2420C  1280x720 once a frame in the open world; widened together
+//                                     the world draws wider with nothing missing at the edges. 82B2420C almost stops
+//                                     (1.8/s) when the pause map is open: the gameplay camera.
+//   82789008                          256x256 in the open world (the minimap) and 1280x720 with the big map open.
+//                                     Widened, the big map came out with its edges cut: left alone.
+//   82A35000, 828EC844                never called.
+// The HUD does not go through this function (it kept its shape on the PC).
 //
-// fh2_tela_fator (1 = off) multiplies the ratio of every 1280x720 call: a test to see the hook work (on a 16:9 window
-// the picture looks squeezed sideways, with more of the scene at the edges). fh2_tela_sitios limits it to some call
-// sites (return addresses in hex, separated by commas; empty = all), to tell them apart on screen.
+// fh2_tela_aspecto is the screen's width / height when the picture is stretched to it (GameActivity sends it; 0 or
+// 16:9 = off); the world's sites get the ratio times aspecto / (16/9). fh2_tela_fator (1 = off) replaces that factor,
+// for tests, and fh2_tela_sitios replaces the sites (hex return addresses separated by commas).
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -22,6 +27,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -33,15 +39,21 @@ REXCVAR_DEFINE_BOOL(fh2_tela_registro, false, "FH2",
                     "viewport sizes (app/src/fh2_tela.cpp)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(fh2_tela_registro_s, 5.0, "FH2", "Debug: seconds between the [tela] reports");
+REXCVAR_DEFINE_DOUBLE(fh2_tela_aspecto, 0.0, "FH2",
+                      "Width / height of the screen the picture is stretched to (0 = not stretched): the world is "
+                      "drawn with that aspect into the 16:9 image, so the stretch does not distort it "
+                      "(app/src/fh2_tela.cpp)")
+    .range(0.0, 8.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_DOUBLE(fh2_tela_fator, 1.0, "FH2",
-                      "Test: multiply the aspect ratio of every 1280x720 viewport by this (1 = off), so the game "
-                      "draws a wider horizontal field into its 16:9 image (app/src/fh2_tela.cpp)")
+                      "Test: multiply the world's 1280x720 aspect ratio by this instead of the one fh2_tela_aspecto "
+                      "gives (1 = not used)")
     .range(0.5, 4.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_STRING(fh2_tela_sitios, "", "FH2",
-                      "Test: call sites of sub_823F2290 that fh2_tela_fator applies to (hex return addresses separated "
-                      "by commas, e.g. 82B2420C,8244E280; empty = all)")
+REXCVAR_DEFINE_STRING(fh2_tela_sitios, "8262CCF0,8262D070,8244E280,82B2420C", "FH2",
+                      "Call sites of sub_823F2290 that are widened (hex return addresses separated by commas; empty = "
+                      "all): the world's, not the big map's 82789008")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REX_EXTERN(__imp__sub_823F2290);
@@ -125,11 +137,12 @@ void Informar() {
   if (const uint64_t otros = g_otros.load(std::memory_order_relaxed)) {
     texto += fmt::format(" | otros sitios {}", otros);
   }
-  REXLOG_INFO("[tela] {:.1f} s, fator {:.3f}{}", segundos, REXCVAR_GET(fh2_tela_fator),
+  REXLOG_INFO("[tela] {:.1f} s, aspecto {:.4f}, fator {:.3f}{}", segundos, REXCVAR_GET(fh2_tela_aspecto),
+              REXCVAR_GET(fh2_tela_fator),
               texto.empty() ? " | sin llamadas" : texto);
 }
 
-// Whether fh2_tela_fator applies to this call site (read once: the list needs a restart).
+// Whether this call site is widened (fh2_tela_sitios, read once: the list needs a restart).
 bool SitioElegido(uint32_t retorno) {
   static const std::vector<uint32_t> sitios = [] {
     std::vector<uint32_t> lista;
@@ -142,7 +155,7 @@ bool SitioElegido(uint32_t retorno) {
       if (!pieza.empty()) lista.push_back(static_cast<uint32_t>(std::stoul(pieza, nullptr, 16)));
       inicio = fin + 1;
     }
-    REXLOG_INFO("[tela] fator {:.3f} en {}", REXCVAR_GET(fh2_tela_fator), lista.empty() ? "todos los sitios" : texto);
+    REXLOG_INFO("[tela] sitios: {}", lista.empty() ? "todos" : texto);
     return lista;
   }();
   return sitios.empty() || std::find(sitios.begin(), sitios.end(), retorno) != sitios.end();
@@ -159,8 +172,12 @@ REX_HOOK_RAW(sub_823F2290) {
     Anotar(retorno, ancho, alto);
     Informar();
   }
-  const double fator = REXCVAR_GET(fh2_tela_fator);
-  if (fator != 1.0 && ancho == 1280 && alto == 720 && SitioElegido(retorno)) {
+  double fator = REXCVAR_GET(fh2_tela_fator);
+  if (fator == 1.0) {
+    const double aspecto = REXCVAR_GET(fh2_tela_aspecto);
+    if (aspecto > 0.0) fator = aspecto / (16.0 / 9.0);
+  }
+  if (std::abs(fator - 1.0) > 0.001 && ancho == 1280 && alto == 720 && SitioElegido(retorno)) {
     ctx.f1.f64 = double(float(ctx.f1.f64 * fator));
   }
 }

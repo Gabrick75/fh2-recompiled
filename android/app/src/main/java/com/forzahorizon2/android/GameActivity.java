@@ -72,6 +72,8 @@ public final class GameActivity extends SDLActivity
     private static native float nativeFrameMs();
     // Relative HDR (android_hdr.cpp): the display's current HDR/SDR ratio, for the presenter's highlights.
     private static native void nativeSetHdrHeadroom(float ratio);
+    /** The screen's width / height when the picture is stretched to it, 0 when it is not (app/src/fh2_tela.cpp). */
+    private static native void nativeSetScreenAspect(float aspect);
 
     // Relative HDR's listener of the display's HDR/SDR ratio while the game is in front (null otherwise).
     private Display hdrDisplay;
@@ -481,6 +483,12 @@ public final class GameActivity extends SDLActivity
         // A layout change made from its own listener only applies on the next pass: post it.
         mLayout.post(() -> mSurface.setLayoutParams(lp));
         Log.i(TAG, "Superfície: vista " + w + "x" + h + (stretched ? " (esticada)" : " (16:9)"));
+        // Stretched, the game draws its world with the view's aspect into the 16:9 image, so it is not distorted.
+        try {
+            nativeSetScreenAspect(stretched ? (float) w / h : 0f);
+        } catch (UnsatisfiedLinkError e) {
+            // The game's library did not load (SDL shows its own error).
+        }
     }
 
     private TextView overlayLabel(String text) {
