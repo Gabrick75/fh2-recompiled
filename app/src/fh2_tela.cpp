@@ -10,18 +10,21 @@
 // sub_8262CC40). Which of them is the gameplay camera, the pause map, the menus or the render-to-texture views is
 // not known yet: fh2_tela_registro logs, every few seconds, the calls per site and the viewport sizes each one saw.
 //
-// fh2_tela_fator (1 = off) multiplies the ratio of every 1280x720 call, from any site: a test to see the hook work
-// (on a 16:9 window the picture looks squeezed sideways, with more of the scene at the edges).
+// fh2_tela_fator (1 = off) multiplies the ratio of every 1280x720 call: a test to see the hook work (on a 16:9 window
+// the picture looks squeezed sideways, with more of the scene at the edges). fh2_tela_sitios limits it to some call
+// sites (return addresses in hex, separated by commas; empty = all), to tell them apart on screen.
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc/func.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include <fmt/format.h>
 
@@ -35,6 +38,11 @@ REXCVAR_DEFINE_DOUBLE(fh2_tela_fator, 1.0, "FH2",
                       "draws a wider horizontal field into its 16:9 image (app/src/fh2_tela.cpp)")
     .range(0.5, 4.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_STRING(fh2_tela_sitios, "", "FH2",
+                      "Test: call sites of sub_823F2290 that fh2_tela_fator applies to (hex return addresses separated "
+                      "by commas, e.g. 82B2420C,8244E280; empty = all)")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REX_EXTERN(__imp__sub_823F2290);
 
@@ -121,6 +129,25 @@ void Informar() {
               texto.empty() ? " | sin llamadas" : texto);
 }
 
+// Whether fh2_tela_fator applies to this call site (read once: the list needs a restart).
+bool SitioElegido(uint32_t retorno) {
+  static const std::vector<uint32_t> sitios = [] {
+    std::vector<uint32_t> lista;
+    const std::string texto = REXCVAR_GET(fh2_tela_sitios);
+    size_t inicio = 0;
+    while (inicio < texto.size()) {
+      size_t fin = texto.find(',', inicio);
+      if (fin == std::string::npos) fin = texto.size();
+      const std::string pieza = texto.substr(inicio, fin - inicio);
+      if (!pieza.empty()) lista.push_back(static_cast<uint32_t>(std::stoul(pieza, nullptr, 16)));
+      inicio = fin + 1;
+    }
+    REXLOG_INFO("[tela] fator {:.3f} en {}", REXCVAR_GET(fh2_tela_fator), lista.empty() ? "todos los sitios" : texto);
+    return lista;
+  }();
+  return sitios.empty() || std::find(sitios.begin(), sitios.end(), retorno) != sitios.end();
+}
+
 }  // namespace
 
 REX_HOOK_RAW(sub_823F2290) {
@@ -133,7 +160,7 @@ REX_HOOK_RAW(sub_823F2290) {
     Informar();
   }
   const double fator = REXCVAR_GET(fh2_tela_fator);
-  if (fator != 1.0 && ancho == 1280 && alto == 720) {
+  if (fator != 1.0 && ancho == 1280 && alto == 720 && SitioElegido(retorno)) {
     ctx.f1.f64 = double(float(ctx.f1.f64 * fator));
   }
 }
