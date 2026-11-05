@@ -154,6 +154,10 @@ extern std::atomic<bool> g_fixed_fp_mode;
 // mode with flush, FZ stays on for all guest code, so VMX flushes denormals as the Xenon does while the per-site
 // toggles, which only compare against the cached csr, stay no-ops. getcsr hides them and setcsr adds them back.
 extern std::atomic<uint32_t> g_fixed_fp_host_bits;
+// Guard of the host FP control register on guest threads (src/system/xthread.cpp), from the kernel's wait calls:
+// flush-to-zero found on without ppc_fixed_fp_flush asking for it (host code that set it and left it) is logged and
+// cleared. The generated code only compares against its cached csr, so it would never notice.
+void VerifyHostFpControl(const char* where) noexcept;
 
 struct FPSCRRegister {
   uint32_t csr;

@@ -74,6 +74,27 @@ REXCVAR_DEFINE_BOOL(ppc_fixed_fp_flush, false, "CPU",
 namespace rex::ppc {
 std::atomic<bool> g_fixed_fp_mode{REX_FIXED_FP_MODE_DEFAULT};
 std::atomic<uint32_t> g_fixed_fp_host_bits{0};
+
+void VerifyHostFpControl(const char* where) noexcept {
+  // Only in fixed mode: otherwise the guest's own toggles turn flush-to-zero on around VMX code, and the cached csr
+  // says so.
+  if (!g_fixed_fp_mode.load(std::memory_order_relaxed)) {
+    return;
+  }
+  using Platform = FPSCRRegister::Platform;
+  const uint32_t raw = Platform::getcsr();
+  const uint32_t unexpected = raw & uint32_t(Platform::FlushMask) & ~g_fixed_fp_host_bits.load(std::memory_order_relaxed);
+  if (!unexpected) [[likely]] {
+    return;
+  }
+  Platform::setcsr(raw & ~unexpected);
+  static std::atomic<uint64_t> found{0};
+  const uint64_t n = found.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (n <= 20 || (n & (n - 1)) == 0) {
+    REXLOG_WARN("[fp] flush-to-zero encendido sin pedirlo en un hilo del juego ({}, FPCR {:08X}): apagado ({} veces)",
+                where, raw, n);
+  }
+}
 }  // namespace rex::ppc
 
 namespace rex::system {
