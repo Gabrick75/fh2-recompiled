@@ -34,11 +34,11 @@
 
 #include <fmt/format.h>
 
-REXCVAR_DEFINE_BOOL(fh2_tela_registro, false, "FH2",
+REXCVAR_DEFINE_BOOL(fh2_tela_registro, true, "FH2",
                     "Debug: log the calls of the viewport aspect function (sub_823F2290) per call site and the "
                     "viewport sizes (app/src/fh2_tela.cpp)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(fh2_tela_registro_s, 5.0, "FH2", "Debug: seconds between the [tela] reports");
+REXCVAR_DEFINE_DOUBLE(fh2_tela_registro_s, 2.0, "FH2", "Debug: seconds between the [tela] reports");
 REXCVAR_DEFINE_DOUBLE(fh2_tela_aspecto, 0.0, "FH2",
                       "Width / height of the screen the picture is stretched to (0 = not stretched): the world is "
                       "drawn with that aspect into the 16:9 image, so the stretch does not distort it "

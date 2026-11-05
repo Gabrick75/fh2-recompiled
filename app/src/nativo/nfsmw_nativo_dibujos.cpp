@@ -54,10 +54,6 @@ static const uint32_t kSpirvResplandorSuave[1] = {0};
 #include "nfsmw_nativo_ganchos.h"  // nfsmw_d3d_vegetacion_juego
 #include "nfsmw_reflejo_demanda.h"  // nfsmw_reflejo_visibilidad
 #include "nfsmw_shader_library.h"
-#if defined(FH2_RECOMP)
-// app/src/fh2_tela.cpp: how much to squeeze the HUD sideways this frame (1 = not at all).
-float Fh2TelaFactorHud();
-#endif
 
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
@@ -94,8 +90,51 @@ float Fh2TelaFactorHud();
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <map>
 #if defined(__linux__)
 #include <unistd.h>  // sysconf: the phone's RAM, for the vertex cache's size
+#endif
+
+#if defined(FH2_RECOMP)
+// app/src/fh2_tela.cpp: how much to squeeze the HUD sideways this frame (1 = not at all).
+float Fh2TelaFactorHud();
+REXCVAR_DEFINE_BOOL(fh2_tela_diag_hud, true, "FH2",
+                    "Debug: log, every 2 s, the draws of the HUD's view (pixel shader, blend, scissor) and whether "
+                    "they were squeezed (app/src/fh2_tela.cpp)");
+namespace {
+// Draws of the HUD's view per pixel shader and blend, reported every 2 s (ring thread only).
+void Fh2TelaDiagHud(int ps, uint32_t blend, const VkRect2D& tijera, float k) {
+  struct Cuenta {
+    uint64_t dibujos = 0, comprimidos = 0;
+    VkRect2D tijera{};
+  };
+  static std::map<uint64_t, Cuenta> cuentas;
+  static auto inicio = std::chrono::steady_clock::now();
+  Cuenta& c = cuentas[(uint64_t(uint32_t(ps)) << 32) | blend];
+  ++c.dibujos;
+  c.comprimidos += (k > 1.001f || k < 0.999f) ? 1 : 0;
+  c.tijera = tijera;
+  const auto ahora = std::chrono::steady_clock::now();
+  if (ahora - inicio < std::chrono::seconds(2)) return;
+  inicio = ahora;
+  std::vector<std::pair<uint64_t, Cuenta>> lista(cuentas.begin(), cuentas.end());
+  std::sort(lista.begin(), lista.end(), [](const auto& a, const auto& b) { return a.second.dibujos > b.second.dibujos; });
+  std::string texto;
+  uint64_t total = 0, comprimidos = 0;
+  for (const auto& [clave, v] : lista) {
+    total += v.dibujos;
+    comprimidos += v.comprimidos;
+  }
+  for (size_t i = 0; i < lista.size() && i < 14; ++i) {
+    const auto& [clave, v] = lista[i];
+    texto += fmt::format(" | PS n{} bl {:08X} x{} (c {}) tij {},{} {}x{}", int32_t(clave >> 32), uint32_t(clave),
+                         v.dibujos, v.comprimidos, v.tijera.offset.x, v.tijera.offset.y, v.tijera.extent.width,
+                         v.tijera.extent.height);
+  }
+  REXLOG_INFO("[tela hud] 2 s: {} dibujos, {} comprimidos, {} tipos{}", total, comprimidos, lista.size(), texto);
+  cuentas.clear();
+}
+}  // namespace
 #endif
 
 /*
@@ -4361,6 +4400,9 @@ class DibujosVulkanImpl final : public DibujosVulkan {
       } else if (formato_color == 10 && (info_color & 0xFFF) == base_composicion &&
                  !((r[gr::XE_GPU_REG_RB_SURFACE_INFO] >> 16) & 0x3)) {
         const float k = Fh2TelaFactorHud();
+        if (REXCVAR_GET(fh2_tela_diag_hud)) {
+          Fh2TelaDiagHud(ps ? int(ps->numero) : -1, r[gr::XE_GPU_REG_RB_BLENDCONTROL0], tijera, k);
+        }
         if (k > 1.001f || k < 0.999f) {
           const float c = float(pase_ancho_) * 0.5f;
           if (sin_recorte) {
