@@ -90,8 +90,51 @@ static const uint32_t kSpirvResplandorSuave[1] = {0};
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <map>
 #if defined(__linux__)
 #include <unistd.h>  // sysconf: the phone's RAM, for the vertex cache's size
+#endif
+
+#if defined(FH2_RECOMP)
+// app/src/fh2_tela.cpp: how much to squeeze the HUD sideways this frame (1 = not at all).
+float Fh2TelaFactorHud();
+REXCVAR_DEFINE_BOOL(fh2_tela_diag_hud, false, "FH2",
+                    "Debug: log, every 2 s, the draws of the HUD's view (pixel shader, blend, scissor) and whether "
+                    "they were squeezed (app/src/fh2_tela.cpp)");
+namespace {
+// Draws of the HUD's view per pixel shader and blend, reported every 2 s (ring thread only).
+void Fh2TelaDiagHud(int ps, uint32_t blend, const VkRect2D& tijera, float k) {
+  struct Cuenta {
+    uint64_t dibujos = 0, comprimidos = 0;
+    VkRect2D tijera{};
+  };
+  static std::map<uint64_t, Cuenta> cuentas;
+  static auto inicio = std::chrono::steady_clock::now();
+  Cuenta& c = cuentas[(uint64_t(uint32_t(ps)) << 32) | blend];
+  ++c.dibujos;
+  c.comprimidos += (k > 1.001f || k < 0.999f) ? 1 : 0;
+  c.tijera = tijera;
+  const auto ahora = std::chrono::steady_clock::now();
+  if (ahora - inicio < std::chrono::seconds(2)) return;
+  inicio = ahora;
+  std::vector<std::pair<uint64_t, Cuenta>> lista(cuentas.begin(), cuentas.end());
+  std::sort(lista.begin(), lista.end(), [](const auto& a, const auto& b) { return a.second.dibujos > b.second.dibujos; });
+  std::string texto;
+  uint64_t total = 0, comprimidos = 0;
+  for (const auto& [clave, v] : lista) {
+    total += v.dibujos;
+    comprimidos += v.comprimidos;
+  }
+  for (size_t i = 0; i < lista.size() && i < 14; ++i) {
+    const auto& [clave, v] = lista[i];
+    texto += fmt::format(" | PS n{} bl {:08X} x{} (c {}) tij {},{} {}x{}", int32_t(clave >> 32), uint32_t(clave),
+                         v.dibujos, v.comprimidos, v.tijera.offset.x, v.tijera.offset.y, v.tijera.extent.width,
+                         v.tijera.extent.height);
+  }
+  REXLOG_INFO("[tela hud] 2 s: {} dibujos, {} comprimidos, {} tipos{}", total, comprimidos, lista.size(), texto);
+  cuentas.clear();
+}
+}  // namespace
 #endif
 
 /*
@@ -4340,6 +4383,45 @@ class DibujosVulkanImpl final : public DibujosVulkan {
     if (encuadre_vacio != 0) {
       return Fh2DiagSalida(p, __LINE__, true);  // empty viewport or scissor: as before
     }
+#if defined(FH2_RECOMP)
+    /*
+     * The HUD at 16:9 on a stretched screen (app/src/fh2_tela.cpp). With the picture stretched to a wider screen the
+     * world is drawn with the screen's aspect, but the HUD is drawn as on the console and would come out stretched.
+     * Its draws (the 2_10_10_10_AS_10_10_10_10 view over the scene's 2_10_10_10 composite, as in
+     * Fh2HdrFotoAntesDelHud) are squeezed sideways around the centre by the same factor, only while the world is
+     * widened and the gameplay HUD's scene runs (Fh2TelaFactorHud): the map, menus and loading screens, drawn through
+     * the same view, keep theirs. After the framing cache, which keeps the game's values.
+     */
+    if (r[gr::XE_GPU_REG_RB_COLOR_MASK] & 0xF) {
+      static uint32_t base_composicion = ~0u;
+      const uint32_t info_color = r[gr::XE_GPU_REG_RB_COLOR_INFO];
+      const uint32_t formato_color = (info_color >> 16) & 0xF;
+      if (formato_color == 2) {
+        base_composicion = info_color & 0xFFF;
+      } else if (formato_color == 10 && (info_color & 0xFFF) == base_composicion &&
+                 !((r[gr::XE_GPU_REG_RB_SURFACE_INFO] >> 16) & 0x3)) {
+        const float k = Fh2TelaFactorHud();
+        if (REXCVAR_GET(fh2_tela_diag_hud)) {
+          Fh2TelaDiagHud(ps ? int(ps->numero) : -1, r[gr::XE_GPU_REG_RB_BLENDCONTROL0], tijera, k);
+        }
+        if (k > 1.001f || k < 0.999f) {
+          const float c = float(pase_ancho_) * 0.5f;
+          if (sin_recorte) {
+            ndc[0] /= k;
+            ndc[2] /= k;
+          } else {
+            viewport.x = c + (viewport.x - c) / k;
+            viewport.width /= k;
+          }
+          const int32_t x0 = int32_t(std::floor(c + (float(tijera.offset.x) - c) / k));
+          const int32_t x1 =
+              int32_t(std::ceil(c + (float(tijera.offset.x + int32_t(tijera.extent.width)) - c) / k));
+          tijera.offset.x = std::clamp(x0, 0, int32_t(pase_ancho_));
+          tijera.extent.width = uint32_t(std::max(1, std::clamp(x1, 0, int32_t(pase_ancho_)) - tijera.offset.x));
+        }
+      }
+    }
+#endif
 
     uint32_t especializacion = entrada->especializacion;
     if (composicion_sin_desenfoque) {  // the same value that decided the textures
