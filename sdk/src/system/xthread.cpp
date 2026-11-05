@@ -711,6 +711,16 @@ void XThread::Execute() {
           : 0u,
       std::memory_order_relaxed);
   ctx->fpscr.InitHost();
+  {
+    // Once a session: the FP policy every guest thread starts with (a cvar left in the user's config wins over the
+    // default, and the chase cameras' flickering car parts follow ppc_fixed_fp_flush).
+    static std::atomic<bool> informado{false};
+    if (!informado.exchange(true)) {
+      REXLOG_INFO("[fp] ppc_fixed_fp_mode={} ppc_fixed_fp_flush={} bits fijos {:08X} csr {:08X}",
+                  REXCVAR_GET(ppc_fixed_fp_mode), REXCVAR_GET(ppc_fixed_fp_flush),
+                  rex::ppc::g_fixed_fp_host_bits.load(std::memory_order_relaxed), ctx->fpscr.csr);
+    }
+  }
 
   // Convert this host thread to a fiber so SwitchTo works bidirectionally.
   // Required on Windows before any CreateFiber; provides the fallback handle

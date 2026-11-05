@@ -701,6 +701,19 @@ public final class GameActivity extends SDLActivity
             header.append(option.getKey()).append(" = ")
                     .append(value.length() > 60 ? value.substring(0, 60) + "…" : value).append('\n');
         }
+        // The user's fh2.toml (files/fh2/user), which the native side loads before the command line: a cvar left
+        // in it wins over the code's default, and the app's folder cannot be read from adb on a release build.
+        header.append("-- fh2.toml do usuário\n");
+        File settings = new File(userRoot, SETTINGS);
+        try {
+            for (String line : new String(readAll(new FileInputStream(settings)),
+                    java.nio.charset.StandardCharsets.UTF_8).split("\n")) {
+                String trimmed = line.trim();
+                if (!trimmed.isEmpty() && !trimmed.startsWith("#")) header.append(trimmed).append('\n');
+            }
+        } catch (IOException e) {
+            header.append("(não lido: ").append(e.getMessage()).append(")\n");
+        }
         header.append("-- argumentos do jogo\n");
         for (String argument : args) {
             header.append(argument).append('\n');
