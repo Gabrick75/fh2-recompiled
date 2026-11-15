@@ -380,4 +380,6 @@
     <string name="frame_gen">Geração de quadros</string>
     <string name="frame_gen_description">Desenha um quadro entre cada dois que o jogo faz, e os 30 FPS chegam à tela como 60. Melhor com o limite de FPS em 30: a tela passa para pelo menos o dobro do limite. Gasta GPU e mostra cada quadro real cerca de meio quadro depois.</string>
     <string name="frame_gen_beta">Beta: ainda em testes. Luzes dos carros no drift e bordas em movimento rápido podem mostrar borrões ou fantasmas.</string>
+    <string name="old_stretch">Esticamento antigo da tela</string>
+    <string name="old_stretch_description">A imagem esticada na tela inteira como antes da 0.4.5: distorcida, mas o mapa e o velocímetro sempre aparecem, inclusive em telas mais estreitas que 16:9 (dobráveis, tablets). Enquanto ligado, desativa a opção acima.</string>
 </resources>

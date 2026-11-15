@@ -123,6 +123,7 @@ public final class TouchControlsView extends View {
     float arrowLock = 1.0f;         // how far the arrows turn the wheel, 1 = full lock
     boolean hideWithGamepad = true;
     boolean stretch = true;
+    boolean stretchLegacy = false;  // the old distorted stretch; overrides stretch (GameOptions.stretchLegacy)
 
     // State.
     private boolean editing;
@@ -197,6 +198,7 @@ public final class TouchControlsView extends View {
         arrowLock = prefs.getFloat("arrow_lock", arrowLock);
         hideWithGamepad = prefs.getBoolean("hide_with_gamepad", hideWithGamepad);
         stretch = prefs.getBoolean("stretch", stretch);
+        stretchLegacy = prefs.getBoolean("stretch_legacy", stretchLegacy);
         String json = prefs.getString("layout", null);
         if (json == null) {
             return;
@@ -240,6 +242,7 @@ public final class TouchControlsView extends View {
                 .putFloat("arrow_lock", arrowLock)
                 .putBoolean("hide_with_gamepad", hideWithGamepad)
                 .putBoolean("stretch", stretch)
+                .putBoolean("stretch_legacy", stretchLegacy)
                 .apply();
     }
 
