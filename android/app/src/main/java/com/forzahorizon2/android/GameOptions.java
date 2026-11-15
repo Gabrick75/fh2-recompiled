@@ -256,6 +256,17 @@ final class GameOptions {
         context.getSharedPreferences("fh2_controls", Context.MODE_PRIVATE).edit().putBoolean("stretch", value).apply();
     }
 
+    // The old stretch (quick fix, see app/src/fh2_tela.cpp): the 16:9 image stretched to the screen as before
+    // 0.4.5, distorted but with the whole HUD on screens narrower than 16:9. Overrides stretch while on.
+    static boolean stretchLegacy(Context context) {
+        return context.getSharedPreferences("fh2_controls", Context.MODE_PRIVATE).getBoolean("stretch_legacy", false);
+    }
+
+    static void stretchLegacy(Context context, boolean value) {
+        context.getSharedPreferences("fh2_controls", Context.MODE_PRIVATE).edit()
+                .putBoolean("stretch_legacy", value).apply();
+    }
+
     // The steering arrows also live with the touch controls; the launcher sets them before the game reads them.
     static boolean steeringArrows(Context context) {
         return context.getSharedPreferences("fh2_controls", Context.MODE_PRIVATE).getBoolean("steering_arrows", false);

@@ -382,4 +382,6 @@
     <string name="frame_gen">Frame generation</string>
     <string name="frame_gen_description">Draws a frame between every two the game makes, so 30 FPS reach the screen as 60. Best with the FPS limit at 30: the screen switches to at least twice the limit. Costs GPU time and shows each real frame about half a frame later.</string>
     <string name="frame_gen_beta">Beta: still being tested. Car lights while drifting and fast moving edges can show smears or ghosts.</string>
+    <string name="old_stretch">Old screen stretch</string>
+    <string name="old_stretch_description">The image stretched to the whole screen as before 0.4.5: distorted, but the minimap and speedometer always show, also on screens narrower than 16:9 (foldables, tablets). Turns off the option above while on.</string>
 </resources>

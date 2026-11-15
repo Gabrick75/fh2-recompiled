@@ -81,6 +81,9 @@ public final class GameActivity extends SDLActivity
 
     private final Handler clock = new Handler(Looper.getMainLooper());
     private boolean stretched = true;
+    // The old stretch: the whole screen without widening the world (aspect 0), as before 0.4.5. A quick fix for
+    // screens narrower than 16:9, where the widened mode pushes the minimap and speedometer off the sides.
+    private boolean stretchedLegacy;
     private TextView fpsLabel;
     // When the mouse's pointer capture was last asked for.
     private long lastMouseCapture;
@@ -139,6 +142,7 @@ public final class GameActivity extends SDLActivity
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
         root.addView(toolbar, barParams);
         stretched = controls.stretch;
+        stretchedLegacy = controls.stretchLegacy;
         layoutSurface();
         // The bench's fh2.uso shows both lines for that run.
         boolean benchUsage = getIntent() != null && getIntent().getBooleanExtra("fh2.uso", false);
@@ -387,7 +391,7 @@ public final class GameActivity extends SDLActivity
             refreshGamepads();
         }
         updateTiltListener();
-        applyStretch(controls.stretch);
+        applyStretch(controls.stretch, controls.stretchLegacy);
         startRelativeHdr();
     }
 
@@ -422,8 +426,9 @@ public final class GameActivity extends SDLActivity
         }
     }
 
-    private void applyStretch(boolean stretch) {
+    private void applyStretch(boolean stretch, boolean legacy) {
         stretched = stretch;
+        stretchedLegacy = legacy;
         if (mLayout != null) {
             mLayout.requestLayout();
             resizeSurface(mLayout.getWidth(), mLayout.getHeight());
@@ -461,17 +466,21 @@ public final class GameActivity extends SDLActivity
     private int lastWidth = -1;
     private int lastHeight = -1;
     private boolean lastStretched;
+    private boolean lastStretchedLegacy;
 
     private void resizeSurface(int width, int height) {
-        if (width <= 0 || height <= 0 || (width == lastWidth && height == lastHeight && stretched == lastStretched)) {
+        if (width <= 0 || height <= 0 || (width == lastWidth && height == lastHeight && stretched == lastStretched
+                && stretchedLegacy == lastStretchedLegacy)) {
             return;
         }
         lastWidth = width;
         lastHeight = height;
         lastStretched = stretched;
+        lastStretchedLegacy = stretchedLegacy;
+        boolean fill = stretched || stretchedLegacy;
         int w = width;
         int h = height;
-        if (!stretched) {
+        if (!fill) {
             if (width * 9 > height * 16) {
                 w = height * 16 / 9;
             } else {
@@ -482,10 +491,12 @@ public final class GameActivity extends SDLActivity
         lp.addRule(android.widget.RelativeLayout.CENTER_IN_PARENT);
         // A layout change made from its own listener only applies on the next pass: post it.
         mLayout.post(() -> mSurface.setLayoutParams(lp));
-        Log.i(TAG, "Superfície: vista " + w + "x" + h + (stretched ? " (esticada)" : " (16:9)"));
+        Log.i(TAG, "Superfície: vista " + w + "x" + h
+                + (stretchedLegacy ? " (esticada, antiga)" : stretched ? " (esticada)" : " (16:9)"));
         // Stretched, the game draws its world with the view's aspect into the 16:9 image, so it is not distorted.
+        // The old stretch leaves the game at 16:9 and lets the stretch distort it.
         try {
-            nativeSetScreenAspect(stretched ? (float) w / h : 0f);
+            nativeSetScreenAspect(stretched && !stretchedLegacy ? (float) w / h : 0f);
         } catch (UnsatisfiedLinkError e) {
             // The game's library did not load (SDL shows its own error).
         }
@@ -1005,9 +1016,16 @@ public final class GameActivity extends SDLActivity
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(dp(20), dp(8), dp(20), dp(8));
 
-        panel.addView(toggle(tr(R.string.image_stretched_to_the_whole_screen), controls.stretch, on -> {
+        View stretchToggle = toggle(tr(R.string.image_stretched_to_the_whole_screen), controls.stretch, on -> {
             controls.stretch = on;
-            applyStretch(on);
+            applyStretch(on, controls.stretchLegacy);
+        });
+        stretchToggle.setEnabled(!controls.stretchLegacy);
+        panel.addView(stretchToggle);
+        panel.addView(toggle(tr(R.string.old_stretch), controls.stretchLegacy, on -> {
+            controls.stretchLegacy = on;
+            stretchToggle.setEnabled(!on);
+            applyStretch(controls.stretch, on);
         }));
         panel.addView(toggle(tr(R.string.vibrate_on_touch), controls.haptics, on -> controls.haptics = on));
         panel.addView(toggle(tr(R.string.hide_the_controls_when_a_gamepad), controls.hideWithGamepad,

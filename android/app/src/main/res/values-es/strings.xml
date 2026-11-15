@@ -380,4 +380,6 @@
     <string name="frame_gen">Generación de cuadros</string>
     <string name="frame_gen_description">Dibuja un cuadro entre cada dos que hace el juego, y los 30 FPS llegan a la pantalla como 60. Mejor con el límite de FPS en 30: la pantalla pasa a por lo menos el doble del límite. Gasta GPU y muestra cada cuadro real cerca de medio cuadro después.</string>
     <string name="frame_gen_beta">Beta: todavía en pruebas. Las luces de los coches al derrapar y los bordes en movimiento rápido pueden mostrar manchas o fantasmas.</string>
+    <string name="old_stretch">Estiramiento antiguo de la pantalla</string>
+    <string name="old_stretch_description">La imagen estirada a toda la pantalla como antes de la 0.4.5: distorsionada, pero el minimapa y el velocímetro siempre se ven, también en pantallas más estrechas que 16:9 (plegables, tabletas). Mientras está activado, desactiva la opción de arriba.</string>
 </resources>

@@ -1227,6 +1227,26 @@ public final class MainActivity extends AppCompatActivity {
 
     // ---- Display, performance, sound -----------------------------------------------------------------------
 
+    // Stretch and the old stretch (a quick fix for screens narrower than 16:9, app/src/fh2_tela.cpp): while the old
+    // one is on, the current one is greyed out, since the old one overrides it.
+    private LinearLayout stretchRowView;
+
+    private LinearLayout stretchRow() {
+        stretchRowView = ui.toggleRow(tr(R.string.stretch_to_the_whole_screen),
+                tr(R.string.off_the_xbox_360_s_16),
+                GameOptions.stretch(this), v -> GameOptions.stretch(this, v));
+        Menu.setRowEnabled(stretchRowView, !GameOptions.stretchLegacy(this));
+        return stretchRowView;
+    }
+
+    private LinearLayout legacyStretchRow() {
+        return ui.toggleRow(tr(R.string.old_stretch), tr(R.string.old_stretch_description),
+                GameOptions.stretchLegacy(this), v -> {
+                    GameOptions.stretchLegacy(this, v);
+                    if (stretchRowView != null) Menu.setRowEnabled(stretchRowView, !v);
+                });
+    }
+
     private ScrollView displayPage() {
         boolean hdrSupported = GameOptions.hdrCapabilities(this) != null;
         // Relative HDR (Android 15+): the white follows the brightness slider, so there is no white to choose.
@@ -1234,10 +1254,7 @@ public final class MainActivity extends AppCompatActivity {
         return pageScroll(ui.pageTitle(pageName(DISPLAY),
                         tr(R.string.the_final_image_and_what_shows)),
                 ui.header(tr(R.string.image)),
-                ui.group(resolutionRow(),
-                        ui.toggleRow(tr(R.string.stretch_to_the_whole_screen),
-                                tr(R.string.off_the_xbox_360_s_16),
-                                GameOptions.stretch(this), v -> GameOptions.stretch(this, v))),
+                ui.group(resolutionRow(), stretchRow(), legacyStretchRow()),
                 ui.header(tr(R.string.presentation)),
                 ui.group(ui.choiceRow(GameOptions.PRESENT_MODE, tr(R.string.present_mode),
                                 tr(R.string.fifo_waits_for_the_screen_s),
