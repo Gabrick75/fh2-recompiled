@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 
 #if defined(__linux__)
@@ -388,5 +389,43 @@ REX_HOOK_RAW(sub_824041C8) {
                   faces);
     }
     ctx.f1.f64 = limit;
+  }
+}
+
+// POW (sub_82448CA8)
+//
+// The game's pow(x, y) is the C runtime's software one (x in f1, y in f2, result in f1). perf on the game's render
+// thread (the frame pacer: 69 % of a core at 30 FPS) put 47 % of its time in this one function, called from the
+// render-list build (sub_82DAF5A0 / sub_82DAF468 / sub_82DAE538). The host's libm does it in a fraction of the time.
+// fh2_pow: 0 = the game's own, 1 = host pow, 2 = run both, use the game's result and log the disagreements.
+REXCVAR_DEFINE_INT32(fh2_pow, 0, "FH2",
+                     "pow: 0 the game's own software pow, 1 the host's libm pow, 2 check (both; the game's result is "
+                     "used and disagreements are logged)");
+
+REX_EXTERN(__imp__sub_82448CA8);
+REX_HOOK_RAW(sub_82448CA8) {
+  const int32_t mode = REXCVAR_GET(fh2_pow);
+  if (mode == 0) {
+    __imp__sub_82448CA8(ctx, base);
+    return;
+  }
+  const double x = ctx.f1.f64;
+  const double y = ctx.f2.f64;
+  if (mode == 1) {
+    ctx.f1.f64 = std::pow(x, y);
+    return;
+  }
+  __imp__sub_82448CA8(ctx, base);
+  static std::atomic<uint64_t> calls{0}, bad{0};
+  const double game = ctx.f1.f64;
+  const double host = std::pow(x, y);
+  const bool same = (std::isnan(game) && std::isnan(host)) || game == host ||
+                    std::fabs(game - host) <= 1e-9 * std::max(std::fabs(game), std::fabs(host));
+  const uint64_t n = calls.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (!same && bad.fetch_add(1, std::memory_order_relaxed) < 20) {
+    REXLOG_INFO("[fh2] pow differs: pow({:.17g}, {:.17g}) game {:.17g} host {:.17g}", x, y, game, host);
+  }
+  if (n % 2000000 == 0) {
+    REXLOG_INFO("[fh2] pow check: {} calls, {} differ", n, bad.load(std::memory_order_relaxed));
   }
 }

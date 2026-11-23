@@ -134,6 +134,11 @@ Known issues:
    tools/rodar_pc.sh
    ```
 
+   **Frame rate.** The Xbox 360 game draws one frame every two vblanks, so it is a 30 FPS game, and the guest's
+   vblank rate (`--video_mode_refresh_rate`, 60 Hz by default) is twice its frame rate. For 60 FPS run
+   `FPS=60 tools/rodar_pc.sh --nfsmw_renderizador=nativo` (the script passes `--video_mode_refresh_rate=120`).
+   `FPS` takes 12 to 120. The `nfsmw_limite_fps` option from the NFSMW code is not applied in this app; use `FPS`.
+
    **Regenerate the code after pulling changes to `app/overrides.toml`** (or any other `app/*.toml`). The
    generated code is not in Git. This Linux build regenerates it when those files change, but the Android build
    (step 4) cannot run the code generator, so if you only build the APK a fix made there does not reach it. For

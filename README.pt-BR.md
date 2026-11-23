@@ -135,6 +135,12 @@ Problemas conhecidos:
    tools/rodar_pc.sh
    ```
 
+   **Taxa de quadros.** O jogo do Xbox 360 desenha um quadro a cada dois vblanks, então é um jogo de 30 FPS, e a
+   taxa de vblank do convidado (`--video_mode_refresh_rate`, 60 Hz por padrão) é o dobro da taxa de quadros. Para
+   60 FPS rode `FPS=60 tools/rodar_pc.sh --nfsmw_renderizador=nativo` (o script passa
+   `--video_mode_refresh_rate=120`). `FPS` aceita de 12 a 120. A opção `nfsmw_limite_fps`, vinda do código do
+   NFSMW, não é aplicada neste app; use `FPS`.
+
    **Regenere o código depois de baixar mudanças no `app/overrides.toml`** (ou em qualquer outro `app/*.toml`). O
    código gerado não fica no Git. Esta compilação para Linux o regenera quando esses arquivos mudam, mas a do
    Android (passo 4) não consegue rodar o gerador; então, se você só compila o APK, uma correção feita ali não

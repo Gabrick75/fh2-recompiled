@@ -280,6 +280,11 @@ Depois, no mesmo dia:
 
 Com isso, abertura, título, carregamento, menu e corrida saem no PC como na emulação, a 30 fps.
 
+> **Nota (2026-11-23):** os 30 fps do PC não são um teto do renderizador nem do hardware. O jogo desenha um quadro a
+> cada dois vblanks do convidado, e o vblank estava em 60 Hz. Com `--video_mode_refresh_rate=120` (ou
+> `FPS=60 tools/rodar_pc.sh`) a corrida roda a ~60 fps em 720p, sem mudar mais nada (log: `vblanks` a 120/s, quadros a
+> 15–18 ms). Antes, `nfsmw_limite_fps` parecia fazer o mesmo, mas não é aplicada neste app.
+
 **Android:** no Moto G9 Play (Adreno 610, driver Vulkan 1.1.128 da Qualcomm) o renderizador nativo não desenha. Falta
 `VK_EXT_descriptor_indexing`, de que ele precisa para as tabelas de texturas. Caminhos possíveis: carregar o Turnip
 (libadrenotools; o launcher já importa drivers) ou um modo sem descriptor indexing.
