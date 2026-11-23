@@ -796,8 +796,9 @@ REXCVAR_DEFINE_BOOL(fh2_nativo_borrados_diferidos, true, "FH2",
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_INT32(fh2_nativo_escala, 100, "FH2",
                      "Native renderer: render scale in percent of 1280x720 for the scene and post-processing "
-                     "(12-100, 12 = 160x90); read once at start")
-    .range(12, 100)
+                     "(12-300, 12 = 160x90; above 100 the targets are bigger than the guest's, 150 = 1920x1080); "
+                     "read once at start")
+    .range(12, 300)
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 #endif
 
@@ -5376,8 +5377,8 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
   // fh2_nativo_escala: the image size of a render target of that pitch (only 1280 is scaled; see the cvar).
   void Fh2Escalar(uint32_t pitch, uint32_t alto, uint32_t& ancho_imagen, uint32_t& alto_imagen) {
     if (fh2_escala_ == 0) {
-      fh2_escala_ = uint32_t(std::clamp(REXCVAR_GET(fh2_nativo_escala), 12, 100));
-      if (fh2_escala_ < 100) {
+      fh2_escala_ = uint32_t(std::clamp(REXCVAR_GET(fh2_nativo_escala), 12, 300));
+      if (fh2_escala_ != 100) {
         REXLOG_INFO("[fh2 nativo] escala de render {} %: los destinos de 1280 se dibujan a {}x{}", fh2_escala_,
                     ((1280 * fh2_escala_ / 100) + 15) & ~15u, (((1280 * fh2_escala_ / 100) + 15) & ~15u) * 720 / 1280);
       }
@@ -5397,7 +5398,7 @@ class DestinosVulkan final : public DestinosNativos, public ContextoDestinos {
       }
       return;
     }
-    if (fh2_escala_ >= 100 || pitch != 1280) {
+    if (fh2_escala_ == 100 || pitch != 1280) {
       return;
     }
     ancho_imagen = ((pitch * fh2_escala_ / 100) + 15) & ~15u;
